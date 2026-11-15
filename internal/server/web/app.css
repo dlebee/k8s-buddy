@@ -326,3 +326,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 .drawer-grip:hover::after, .drawer.resizing .drawer-grip::after { background: var(--accent); }
 .drawer.resizing { cursor: ew-resize; user-select: none; }
 .drawer.resizing .drawer-panel { animation: none; }
+
+/* CPU / memory cells in the pod list */
+td.uc { min-width: 92px; font-variant-numeric: tabular-nums; }
+td.uc > span { display: block; font-size: 12px; line-height: 1.2; }
+td.uc i { position: relative; display: block; height: 4px; margin-top: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+td.uc i b { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--ok); }
+td.uc.over i b { background: var(--accent); }
+td.uc.warn i b { background: var(--warn); }
+td.uc.bad i b { background: var(--bad); }
+td.uc.bad > span { color: var(--bad); }
+td.uc i u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+
+/* Kubernetes version with a hover card */
+.k8sv { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--faint); text-underline-offset: 3px; outline: none; }
+.k8sv small { font-size: 10.5px; font-weight: 600; margin-left: 2px; }
+.k8sv.warn small { color: var(--warn); }
+.k8sv.bad small, .k8sv.bad { color: var(--bad); }
+.ctx-ver { font-size: 12px; margin-right: 8px; }
+.kv-pop { position: fixed; z-index: 100; display: none; width: 360px; max-width: calc(100vw - 16px); background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px 14px; pointer-events: none; }
+.kv-card { font-size: 12.5px; }
+.kv-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.kv-head b { font-size: 14px; }
+.kv-pill { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--ok-soft, var(--surface-2)); color: var(--ok); }
+.kv-pill.warn { background: var(--warn-soft, var(--surface-2)); color: var(--warn); }
+.kv-pill.bad { background: var(--bad-soft, var(--surface-2)); color: var(--bad); }
+.kv-row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; padding: 5px 0; border-top: 1px solid var(--border); }
+.kv-row > span:first-child { color: var(--muted); }
+.kv-row.warn > span:last-child { color: var(--warn); }
+.kv-row.bad > span:last-child { color: var(--bad); }
+.kv-note { margin-top: 6px; font-size: 11.5px; color: var(--faint); }

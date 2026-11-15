@@ -1,13 +1,17 @@
 package monitor
 
 import (
+	"math"
+
 	"encoding/json"
 	"fmt"
+	"github.com/dlebee/k8s-buddy/internal/alert"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -183,4 +187,47 @@ func lookupEOL(gitVersion string) (eolEntry, bool) {
 	}
 	e, ok := c.byMinor[minor]
 	return e, ok
+}
+
+// K8sRelease is one Kubernetes minor line from the cached endoflife.date table.
+type K8sRelease struct {
+	Minor       string    `json:"minor"`
+	LatestPatch string    `json:"latestPatch"`
+	Released    time.Time `json:"released,omitzero"`
+	EOL         time.Time `json:"eol"`
+}
+
+// K8sReleases lists the known minor versions, newest first, and when the table was fetched.
+func K8sReleases() ([]K8sRelease, time.Time) {
+	c := ensureEOL()
+	if c == nil {
+		return []K8sRelease{}, time.Time{}
+	}
+	out := make([]K8sRelease, 0, len(c.Entries))
+	for _, e := range c.Entries {
+		out = append(out, K8sRelease{Minor: e.Minor, LatestPatch: e.LatestPatch, Released: e.ReleaseDate, EOL: e.EOL})
+	}
+	key := func(m string) int {
+		var a, b int
+		fmt.Sscanf(m, "%d.%d", &a, &b)
+		return a*1000 + b
+	}
+	slices.SortFunc(out, func(x, y K8sRelease) int { return key(y.Minor) - key(x.Minor) })
+	return out, c.FetchedAt
+}
+
+// eolSeverity grades how close a minor version is to upstream end-of-life: a warning within two
+// months, critical within one month or once it has passed. ok is false when it's further out.
+func eolSeverity(e eolEntry, now time.Time) (sev alert.Severity, title string, ok bool) {
+	days := int(math.Ceil(e.EOL.Sub(now).Hours() / 24))
+	date := e.EOL.Format("2006-01-02")
+	switch {
+	case now.After(e.EOL):
+		return alert.Critical, fmt.Sprintf("Kubernetes %s is past upstream EOL (%s)", e.Minor, date), true
+	case now.AddDate(0, 1, 0).After(e.EOL):
+		return alert.Critical, fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s)", e.Minor, days, date), true
+	case now.AddDate(0, 2, 0).After(e.EOL):
+		return alert.Warning, fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s)", e.Minor, days, date), true
+	}
+	return "", "", false
 }

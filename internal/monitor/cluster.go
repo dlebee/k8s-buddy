@@ -92,18 +92,20 @@ type cluster struct {
 	stats       *Stats
 	statsAt     time.Time
 
-	informers map[string]cache.SharedIndexInformer
-	pods      corelisters.PodLister
-	pvcs      corelisters.PersistentVolumeClaimLister
-	services  corelisters.ServiceLister
-	nodes     corelisters.NodeLister
-	events    corelisters.EventLister
-	deploys   appslisters.DeploymentLister
-	sts       appslisters.StatefulSetLister
-	ds        appslisters.DaemonSetLister
-	cs        kubernetes.Interface
-	retry     chan struct{}
-	azureCLI  bool
+	informers    map[string]cache.SharedIndexInformer
+	pods         corelisters.PodLister
+	pvcs         corelisters.PersistentVolumeClaimLister
+	services     corelisters.ServiceLister
+	nodes        corelisters.NodeLister
+	events       corelisters.EventLister
+	deploys      appslisters.DeploymentLister
+	sts          appslisters.StatefulSetLister
+	ds           appslisters.DaemonSetLister
+	cs           kubernetes.Interface
+	metricsMu    sync.Mutex
+	metricsCache *metricsCacheEntry
+	retry        chan struct{}
+	azureCLI     bool
 	// onAzureFailure reports whether an expired Azure CLI session explains a credential error.
 	onAzureFailure func(*cluster) bool
 	runCtx         context.Context
@@ -243,19 +245,12 @@ func (c *cluster) checkEOL(v string) {
 		c.store.ResolveMissing(c.name, "k8s-eol", nil)
 		return
 	}
-	now := time.Now()
-	days := int(e.EOL.Sub(now).Hours() / 24)
-	if days > 60 {
+	sev, title, ok := eolSeverity(e, time.Now())
+	if !ok {
 		c.store.ResolveMissing(c.name, "k8s-eol", nil)
 		return
 	}
-	sev := alert.Notice
-	title := fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s)", e.Minor, days, e.EOL.Format("2006-01-02"))
-	if days < 0 {
-		sev = alert.Warning
-		title = fmt.Sprintf("Kubernetes %s is past upstream EOL (%s)", e.Minor, e.EOL.Format("2006-01-02"))
-	}
-	detail := "Latest patch upstream is " + e.LatestPatch + ". Managed distros (EKS/GKE/AKS) usually extend support — check your provider."
+	detail := "Latest patch upstream is " + e.LatestPatch + ". Providers may support it a little longer — check yours and plan the upgrade."
 	c.store.Observe(alert.Alert{
 		Key:      "k8s-eol/" + e.Minor,
 		Source:   "k8s-eol",

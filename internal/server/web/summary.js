@@ -2,6 +2,7 @@
 // (from /api/object) and returns HTML; actions (shell, port-forward, open related) are bound after.
 import { esc, ago, api } from '/static/common.js';
 import { describeCron, nextRuns } from '/static/cron.js';
+import { verSpan, versionCardHTML } from '/static/versions.js';
 import { pickForward, pickShell, forwardsFor, openForward } from '/static/forwards.js';
 
 // ---------- small helpers ----------
@@ -623,11 +624,12 @@ function nodeSummary(o, ctx) {
     ${facts([
       ['Status', pill(ready?.status === 'True' ? 'Ready' : 'NotReady', ready?.status === 'True' ? 'ok' : 'bad'), ready ? `since ${when(ready.lastTransitionTime)}` : ''],
       ['Roles', esc(roles.join(', ') || 'worker')],
-      ['Kubelet', esc(info.kubeletVersion || '–'), esc(info.containerRuntimeVersion || '')],
+      ['Kubelet', verSpan(info.kubeletVersion) || '–', esc(info.containerRuntimeVersion || '')],
       ['OS', esc(info.osImage || '–'), `${esc(info.kernelVersion || '')} · ${esc(info.architecture || '')}`],
       ['Address', esc((addrs.find((a) => a.type === 'InternalIP') || addrs[0] || {}).address || '–'), esc((addrs.find((a) => a.type === 'Hostname') || {}).address || '')],
       ['Age', esc(ago(md.creationTimestamp))],
     ])}
+    ${info.kubeletVersion ? section('Kubernetes version', versionCardHTML(info.kubeletVersion)) : ''}
     ${section('Capacity <span class="muted">allocatable of total</span>', `<div class="rv-meters">
       ${meter('CPU', qty(alloc.cpu), qty(cap.cpu), cores, reserved('cpu', cores))}
       ${meter('Memory', qty(alloc.memory), qty(cap.memory), bytes, reserved('memory', bytes))}

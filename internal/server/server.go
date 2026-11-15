@@ -130,7 +130,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		list, err := s.mgr.Resources(monitor.ResourceQuery{
 			Kind: q.Get("kind"), Clusters: listParam(r, "cluster"), Namespaces: listParam(r, "namespace"),
-			Search: q.Get("q"), Problems: q.Get("problems") == "1", Limit: limit,
+			Search: q.Get("q"), Problems: q.Get("problems") == "1", Limit: limit, Sort: q.Get("sort"),
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -240,6 +240,10 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, map[string]any{"revision": hv.Revision, "status": hv.Status, "chart": hv.Chart, "chartVersion": hv.ChartVersion,
 			"appVersion": hv.AppVersion, "empty": len(hv.Values) == 0, "yaml": string(y)})
+	})
+	mux.HandleFunc("GET /api/k8s-releases", func(w http.ResponseWriter, r *http.Request) {
+		rel, at := monitor.K8sReleases()
+		writeJSON(w, map[string]any{"releases": rel, "fetchedAt": at})
 	})
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {

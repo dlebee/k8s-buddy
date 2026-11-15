@@ -1,5 +1,6 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
 import { logsTab } from '/static/logs.js';
+import { loadReleases, verSpan } from '/static/versions.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
 import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from '/static/scope.js';
@@ -125,7 +126,7 @@ async function exposure(params) {
 
 // ---------- overview ----------
 async function overview() {
-  const [ov, pending] = await Promise.all([loadClusters(), api('/api/alerts?' + new URLSearchParams({ scope: 'pending', limit: '3000', cluster: scopeParam('clusters') }))]);
+  const [ov, pending] = await Promise.all([loadClusters(), api('/api/alerts?' + new URLSearchParams({ scope: 'pending', limit: '3000', cluster: scopeParam('clusters') })), loadReleases()]);
   if (current !== 'overview') return;
   pruneClusters(ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name));
   const allMonitored = ov.clusters.filter((c) => c.status !== 'excluded');
@@ -177,7 +178,7 @@ function clusterCard(c) {
   const active = s ? s.pods - s.podsDone : 0;
   const podPct = active ? (s.podsRunning / active) * 100 : 0, badPct = active ? (s.podsProblem / active) * 100 : 0;
   return `<div class="card cluster h-${h}" data-name="${esc(c.name)}" data-status="${c.status}">
-    <div class="top"><span class="dot ${c.status === 'connected' ? h : c.status}"></span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span><span class="ver">${esc(c.version || '')}</span></div>
+    <div class="top"><span class="dot ${c.status === 'connected' ? h : c.status}"></span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>${verSpan(c.version)}</div>
     ${s ? `<div class="metrics">
         <div><b class="${s.nodesReady < s.nodes ? 'bad' : ''}">${s.nodesReady}/${s.nodes}</b>nodes</div>
         <div title="${s.podsDone} completed job pods not counted"><b>${s.podsRunning}/${s.pods - s.podsDone}</b>pods${s.podsDone ? ` · ${s.podsDone} done` : ''}</div>
@@ -254,11 +255,25 @@ function renderSubnav(active) {
   subnav.querySelector('a.on')?.scrollIntoView({ block: 'nearest' });
 }
 
+// ---------- CPU / memory cells (pods) ----------
+const fmtCPU = (m) => (m >= 1000 ? `${+(m / 1000).toFixed(m >= 10000 ? 0 : 1)} cores` : `${m}m`);
+const fmtMem = (b) => { const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)}${u[i]}`; };
+function usageCell(used, req, lim, fmt, isMem) {
+  const has = used >= 0;
+  const ref = lim > 0 ? lim : req > 0 ? req : 0;
+  const pct = has && ref ? Math.min(100, (used / ref) * 100) : 0;
+  const tone = !has ? '' : lim > 0 && used >= lim * 0.9 ? 'bad' : req > 0 && used > req ? (isMem ? 'warn' : 'over') : 'ok';
+  const tip = [has ? `using ${fmt(used)}` : 'no live sample', req > 0 ? `request ${fmt(req)}` : 'no request', lim > 0 ? `limit ${fmt(lim)}` : 'no limit',
+    has && ref ? `${Math.round((used / ref) * 100)}% of ${lim > 0 ? 'limit' : 'request'}` : ''].filter(Boolean).join(' · ');
+  return `<td class="uc ${tone}" title="${esc(tip)}"><span>${has ? fmt(used) : req > 0 ? `<span class="muted">req ${fmt(req)}</span>` : '<span class="muted">–</span>'}</span>${ref ? `<i><b style="width:${pct}%"></b>${lim > 0 && req > 0 ? `<u style="left:${Math.min(100, (req / lim) * 100)}%"></u>` : ''}</i>` : ''}</td>`;
+}
+const usageCells = (u) => u ? usageCell(u.cpu, u.cpuReq, u.cpuLim, fmtCPU) + usageCell(u.mem, u.memReq, u.memLim, fmtMem, true) : '<td></td><td></td>';
+
 async function resources(params) {
-  await loadKinds();
+  await Promise.all([loadKinds(), loadReleases()]);
   const ov = clustersCache || await loadClusters();
   const kind = params.get('kind') || 'pods';
-  const f = { kind, q: params.get('q') || '', problems: params.get('problems') === '1' };
+  const f = { kind, q: params.get('q') || '', problems: params.get('problems') === '1', sort: params.get('sort') || '' };
   const clusterNames = ov.clusters.filter((c) => c.stats).map((c) => c.name);
   renderSubnav(kind);
   const crd = crds.find((c) => crKind(c) === kind);
@@ -273,13 +288,14 @@ async function resources(params) {
     <div class="card"><div class="table-wrap" id="resTable"><div class="empty">Loading…</div></div><div class="table-foot" id="resFoot" hidden></div></div>`;
 
   const update = (patch) => go('resources', { ...f, problems: f.problems ? '1' : '', ...patch });
+  resources.setSort = (s) => update({ sort: s });
   view.querySelector('#fProblems').onchange = (e) => update({ problems: e.target.checked ? '1' : '' });
   const q = view.querySelector('#fQ');
   q.oninput = debounce(() => { f.q = q.value; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); load(); }, 250);
   if (f.q) { q.focus(); q.setSelectionRange(f.q.length, f.q.length); }
 
   async function load() {
-    const qs = new URLSearchParams({ kind: f.kind, cluster: scopeParam('clusters'), namespace: scopeParam('namespaces'), q: f.q, problems: f.problems ? '1' : '' });
+    const qs = new URLSearchParams({ kind: f.kind, cluster: scopeParam('clusters'), namespace: scopeParam('namespaces'), q: f.q, problems: f.problems ? '1' : '', sort: f.sort });
     const list = await api('/api/resources?' + qs);
     if (current !== 'resources' || route().params.get('kind') && route().params.get('kind') !== f.kind) return;
     lastList = list;
@@ -291,7 +307,9 @@ async function resources(params) {
   }
 
   function renderTable(list) {
-    const cols = ['', 'Name', ...(list.namespaced ? ['Namespace'] : []), 'Cluster', 'Status', ...list.columns, 'Age'];
+    const usage = list.items.some((r) => r.usage);
+    const cols = ['', 'Name', ...(list.namespaced ? ['Namespace'] : []), 'Cluster', 'Status', ...(usage ? ['CPU', 'Memory'] : []), ...list.columns, 'Age'];
+    const usageAt = usage ? (list.namespaced ? 5 : 4) : -1; // CPU column, right after Status; Memory follows
     const key = (r, i) => {
       const off = list.namespaced ? 1 : 0;
       if (i === 0) return HEALTH_ORDER[r.health];
@@ -300,11 +318,12 @@ async function resources(params) {
       if (i === 2 + off) return r.cluster;
       if (i === 3 + off) return r.status;
       if (i === cols.length - 1) return -new Date(r.created).getTime();
-      const v = r.cols[i - 4 - off]; const n = parseFloat(v);
+      if (usage && (i === usageAt || i === usageAt + 1)) { const u = r.usage || {}; return i === usageAt ? -(u.cpu * 1e6 + Math.max(u.cpuReq, 0)) : -(u.mem * 1e3 + Math.max(u.memReq, 0) / 1e9); }
+      const v = r.cols[i - 4 - off - (usage ? 2 : 0)]; const n = parseFloat(v);
       return isNaN(n) || String(n) !== String(v).split('/')[0] ? v : n;
     };
     const items = [...list.items];
-    if (resState.sort != null) {
+    if (resState.sort != null && !(usage && f.sort && (resState.sort === usageAt || resState.sort === usageAt + 1))) {
       items.sort((a, b) => { const x = key(a, resState.sort), y = key(b, resState.sort); return (x < y ? -1 : x > y ? 1 : 0) * (resState.asc ? 1 : -1); });
     }
     const wrap = view.querySelector('#resTable');
@@ -313,18 +332,23 @@ async function resources(params) {
       const denied = list.unavailable.length && list.unavailable.every((u) => u.reason === 'no access');
       wrap.innerHTML = `<div class="empty"><span class="big">${waiting ? '⏳' : denied ? '🔒' : f.problems ? '✨' : '🔍'}</span>${waiting ? 'Loading…' : denied ? "You don't have access to list these on any cluster." : f.problems ? 'No problems here.' : 'Nothing here.'}</div>`;
     } else {
-      wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th data-i="${i}" class="${resState.sort === i ? 'sorted' + (resState.asc ? ' asc' : '') : ''}">${esc(c)}</th>`).join('')}</tr></thead><tbody>
+      const sortedCol = usage && f.sort ? (f.sort === 'cpu' ? usageAt : usageAt + 1) : resState.sort;
+      wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th data-i="${i}" class="${sortedCol === i ? 'sorted' + (resState.asc || (usage && f.sort) ? '' : ' asc') : ''}"${usage && i >= usageAt && i <= usageAt + 1 ? ' title="Sort heaviest first, across all pods"' : ''}>${esc(c)}</th>`).join('')}</tr></thead><tbody>
         ${items.map((r, idx) => `<tr data-idx="${idx}">
           <td style="width:18px"><span class="dot ${r.health}"></span></td>
           <td class="name" title="${esc(r.name)}">${esc(r.name)}</td>
           ${list.namespaced ? `<td>${esc(r.namespace)}</td>` : ''}
           <td class="muted">${esc(r.cluster)}</td>
           <td>${healthPill(r.health, r.status)}</td>
-          ${r.cols.map((c) => `<td title="${esc(c)}">${esc(c)}</td>`).join('')}
+          ${usage ? usageCells(r.usage) : ''}
+          ${r.cols.map((c, ci) => f.kind === 'nodes' && list.columns[ci] === 'Version' ? `<td>${verSpan(c)}</td>` : `<td title="${esc(c)}">${esc(c)}</td>`).join('')}
           <td class="muted">${ago(r.created)}</td></tr>`).join('')}
       </tbody></table>`;
       wrap.querySelectorAll('th').forEach((th) => th.onclick = () => {
         const i = +th.dataset.i;
+        // CPU/Memory sort on the server so "heaviest" covers every pod, not just the rows shown.
+        if (usage && (i === usageAt || i === usageAt + 1)) { const s = i === usageAt ? 'cpu' : 'memory'; resState.sort = null; resources.setSort(f.sort === s ? '' : s); return; }
+        if (f.sort) { f.sort = ''; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); }
         resState.asc = resState.sort === i ? !resState.asc : true;
         resState.sort = i;
         renderTable(list);
@@ -341,6 +365,7 @@ async function resources(params) {
     if (by('loading').length) notes.push(`Loading from ${plural(by('loading').length, 'cluster')}… (first look at this kind takes a few seconds)`);
     if (by('no access').length) notes.push(`No access on ${by('no access').join(', ')}`);
     if (by('error').length) notes.push(`Errors on ${by('error').join(', ')}`);
+    if (usage && list.noMetrics?.length) notes.push(`No live usage from ${list.noMetrics.join(', ')} (metrics API unavailable) — showing requests only`);
     if (by('loading').length) setTimeout(() => current === 'resources' && resources.refresh?.(), 2500);
     foot.hidden = !notes.length; foot.textContent = notes.join(' · ');
     foot.title = list.unavailable.filter((u) => u.detail).map((u) => `${u.cluster}: ${u.detail}`).join('\n');
@@ -764,7 +789,7 @@ async function doctor() {
 
 // ---------- settings ----------
 async function settings() {
-  const [s, ov] = await Promise.all([api('/api/settings'), loadClusters()]);
+  const [s, ov] = await Promise.all([api('/api/settings'), loadClusters(), loadReleases()]);
   if (current !== 'settings') return;
   view.innerHTML = `
     ${head('Settings', 'Saved to your user config directory.')}
@@ -773,7 +798,7 @@ async function settings() {
         <div>
           <div class="toolbar"><button class="btn sm" id="selNone">Uncheck all</button><button class="btn sm" id="selAll">Check all</button><button class="btn sm danger" id="selBad">Uncheck unreachable</button></div>
           <div class="ctx-list">${ov.clusters.map((c) => `<label><input type="checkbox" data-ctx="${esc(c.name)}" ${s.excludedContexts.includes(c.name) ? '' : 'checked'}>
-            <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span><span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span></label>`).join('')}</div>
+            <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span>${c.version ? verSpan(c.version, 'ctx-ver') : ''}<span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span></label>`).join('')}</div>
         </div></div>
       <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config.</span></div>
         <input class="input" id="kubeconfig" style="width:100%" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"></div>

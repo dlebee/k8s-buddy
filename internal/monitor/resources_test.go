@@ -183,3 +183,12 @@ func TestDecodeHelmRelease(t *testing.T) {
 		t.Fatal("garbage accepted")
 	}
 }
+
+func TestCmpUsageSortsByLiveUsage(t *testing.T) {
+	busy := &RowUsage{Mem: 900, MemReq: 100}
+	idle := &RowUsage{Mem: 50, MemReq: 7000}
+	unknown := &RowUsage{Mem: -1, MemReq: 9000}
+	if cmpUsage(busy, idle, "memory") <= 0 || cmpUsage(idle, unknown, "memory") <= 0 {
+		t.Fatal("live usage must rank above requests, and sampled pods above unsampled ones")
+	}
+}

@@ -437,16 +437,9 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 	ver := c.version
 	c.mu.Unlock()
 	if e, ok := lookupEOL(ver); ok {
-		days := int(time.Until(e.EOL).Hours() / 24)
-		switch {
-		case days < 0:
-			add("k8s-eol", alert.Warning, "Cluster", "", c.name,
-				fmt.Sprintf("Kubernetes %s is past upstream EOL (%s) · latest patch %s", e.Minor, e.EOL.Format("2006-01-02"), e.LatestPatch),
-				"Managed distros (EKS/GKE/AKS) may still support this — check your provider.")
-		case days < 60:
-			add("k8s-eol", alert.Notice, "Cluster", "", c.name,
-				fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s) · latest patch %s", e.Minor, days, e.EOL.Format("2006-01-02"), e.LatestPatch),
-				"Managed distros (EKS/GKE/AKS) may extend support.")
+		if sev, title, ok := eolSeverity(e, time.Now()); ok {
+			add("k8s-eol", sev, "Cluster", "", c.name, title+" · latest patch "+e.LatestPatch,
+				"Providers may support it a little longer — check yours and plan the upgrade.")
 		}
 	}
 	return out, problems

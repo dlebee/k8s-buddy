@@ -32,6 +32,17 @@ type Resource struct {
 	Health    Health    `json:"health"`
 	Created   time.Time `json:"created"`
 	Cols      []string  `json:"cols"`
+	// Usage is set on pods: summed container requests/limits and live usage (-1 = unknown/unset).
+	Usage *RowUsage `json:"usage,omitempty"`
+}
+
+type RowUsage struct {
+	CPU    int64 `json:"cpu"` // millicores
+	Mem    int64 `json:"mem"` // bytes
+	CPUReq int64 `json:"cpuReq"`
+	CPULim int64 `json:"cpuLim"`
+	MemReq int64 `json:"memReq"`
+	MemLim int64 `json:"memLim"`
 }
 
 type kindSpec struct {
@@ -131,14 +142,17 @@ type ResourceQuery struct {
 	Search     string
 	Problems   bool
 	Limit      int
+	Sort       string // "cpu" or "memory": heaviest first (pods)
 }
 
 type ResourceList struct {
-	Kind        string        `json:"kind"`
-	Columns     []string      `json:"columns"`
-	Namespaced  bool          `json:"namespaced"`
-	Items       []Resource    `json:"items"`
-	Total       int           `json:"total"`
+	Kind       string     `json:"kind"`
+	Columns    []string   `json:"columns"`
+	Namespaced bool       `json:"namespaced"`
+	Items      []Resource `json:"items"`
+	Total      int        `json:"total"`
+	// NoMetrics lists clusters whose metrics API didn't answer (pods only).
+	NoMetrics   []string      `json:"noMetrics,omitempty"`
 	Problems    int           `json:"problems"`
 	Namespaces  []string      `json:"namespaces"`
 	Unavailable []Unavailable `json:"unavailable"`
@@ -182,6 +196,10 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 		return ResourceList{}, fmt.Errorf("unknown kind %q", q.Kind)
 	}
 	out := newResourceList(q.Kind, spec.columns, spec.namespaced)
+	var metrics map[string]map[string]ResourceNumbers
+	if q.Kind == "pods" {
+		metrics = m.podMetricsByCluster(q.Clusters)
+	}
 	var rows []Resource
 	for _, c := range m.connected() {
 		if !inScope(q.Clusters, c.name) {
@@ -204,8 +222,17 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 			out.Unavailable = append(out.Unavailable, unavailable(c, spec.resource))
 			continue
 		}
+		mm, hasMetrics := metrics[c.name]
+		if q.Kind == "pods" && !hasMetrics {
+			out.NoMetrics = append(out.NoMetrics, c.name)
+		}
 		for _, r := range spec.list(c) {
 			r.Cluster = c.name
+			if r.Usage != nil && hasMetrics {
+				if u, ok := mm[r.Namespace+"/"+r.Name]; ok {
+					r.Usage.CPU, r.Usage.Mem = u.CPU, u.Memory
+				}
+			}
 			rows = append(rows, r)
 		}
 	}
@@ -248,6 +275,11 @@ func (out *ResourceList) apply(rows []Resource, q ResourceQuery) {
 	slices.SortStableFunc(out.Items, func(a, b Resource) int {
 		if q.Kind == "events" {
 			return b.Created.Compare(a.Created)
+		}
+		if (q.Sort == "cpu" || q.Sort == "memory") && a.Usage != nil && b.Usage != nil {
+			if d := cmpUsage(b.Usage, a.Usage, q.Sort); d != 0 {
+				return d
+			}
 		}
 		return strings.Compare(a.Cluster+"/"+a.Namespace+"/"+a.Name, b.Cluster+"/"+b.Namespace+"/"+b.Name)
 	})
@@ -355,7 +387,8 @@ func listPods(c *cluster) []Resource {
 		}
 		out = append(out, Resource{
 			Namespace: p.Namespace, Name: p.Name, Status: status, Health: h, Created: p.CreationTimestamp.Time,
-			Cols: []string{fmt.Sprintf("%d/%d", ready, len(p.Spec.Containers)), fmt.Sprint(restarts), p.Spec.NodeName, p.Status.PodIP},
+			Cols:  []string{fmt.Sprintf("%d/%d", ready, len(p.Spec.Containers)), fmt.Sprint(restarts), p.Spec.NodeName, p.Status.PodIP},
+			Usage: podRequests(p),
 		})
 	}
 	return out

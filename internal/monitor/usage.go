@@ -1,10 +1,12 @@
 package monitor
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -200,4 +202,106 @@ func metricsErr(err error) error {
 		return fmt.Errorf("metrics API not available on this cluster (metrics-server not installed?)")
 	}
 	return err
+}
+
+// podRequests sums a pod's container requests and limits; usage starts unknown.
+func podRequests(p *corev1.Pod) *RowUsage {
+	sum := func(rl func(corev1.Container) corev1.ResourceList, name corev1.ResourceName, milli bool) int64 {
+		var t int64 = -1
+		for _, ct := range p.Spec.Containers {
+			if v := quantity(rl(ct), name, milli); v >= 0 {
+				t = max(t, 0) + v
+			}
+		}
+		return t
+	}
+	req := func(c corev1.Container) corev1.ResourceList { return c.Resources.Requests }
+	lim := func(c corev1.Container) corev1.ResourceList { return c.Resources.Limits }
+	return &RowUsage{CPU: -1, Mem: -1,
+		CPUReq: sum(req, corev1.ResourceCPU, true), CPULim: sum(lim, corev1.ResourceCPU, true),
+		MemReq: sum(req, corev1.ResourceMemory, false), MemLim: sum(lim, corev1.ResourceMemory, false)}
+}
+
+// cmpUsage orders by live usage; pods without a sample sort after those with one, by request.
+func cmpUsage(a, b *RowUsage, by string) int {
+	used, req := func(u *RowUsage) int64 { return u.CPU }, func(u *RowUsage) int64 { return u.CPUReq }
+	if by == "memory" {
+		used, req = func(u *RowUsage) int64 { return u.Mem }, func(u *RowUsage) int64 { return u.MemReq }
+	}
+	if d := cmp.Compare(used(a), used(b)); d != 0 {
+		return d
+	}
+	return cmp.Compare(req(a), req(b))
+}
+
+type metricsCacheEntry struct {
+	at   time.Time
+	pods map[string]ResourceNumbers // "ns/name" → summed usage
+	err  error
+}
+
+const metricsTTL = 20 * time.Second
+
+// podMetricsByCluster fetches live pod usage for the clusters in scope, one cluster-wide metrics
+// call each (cached briefly), in parallel. Clusters without a metrics API are left out.
+func (m *Manager) podMetricsByCluster(scope []string) map[string]map[string]ResourceNumbers {
+	out := map[string]map[string]ResourceNumbers{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, c := range m.connected() {
+		if !inScope(scope, c.name) || !c.synced("pods") {
+			continue
+		}
+		wg.Go(func() {
+			if pods, err := c.allPodMetrics(); err == nil {
+				mu.Lock()
+				out[c.name] = pods
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return out
+}
+
+func (c *cluster) allPodMetrics() (map[string]ResourceNumbers, error) {
+	c.metricsMu.Lock()
+	defer c.metricsMu.Unlock()
+	if e := c.metricsCache; e != nil && time.Since(e.at) < metricsTTL {
+		return e.pods, e.err
+	}
+	// Short timeout: the pod list waits on this, and a slow metrics server shouldn't stall it.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	e := &metricsCacheEntry{at: time.Now()}
+	raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath("/apis/metrics.k8s.io/v1beta1/pods").DoRaw(ctx)
+	if err != nil {
+		e.err = metricsErr(err)
+	} else {
+		var l struct {
+			Items []struct {
+				Metadata   struct{ Namespace, Name string } `json:"metadata"`
+				Containers []struct {
+					Usage struct{ CPU, Memory string } `json:"usage"`
+				} `json:"containers"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &l); err != nil {
+			e.err = err
+		} else {
+			e.pods = make(map[string]ResourceNumbers, len(l.Items))
+			for _, it := range l.Items {
+				var n ResourceNumbers
+				for _, ct := range it.Containers {
+					cpu, _ := resource.ParseQuantity(firstNonEmpty(ct.Usage.CPU, "0"))
+					mem, _ := resource.ParseQuantity(firstNonEmpty(ct.Usage.Memory, "0"))
+					n.CPU += cpu.MilliValue()
+					n.Memory += mem.Value()
+				}
+				e.pods[it.Metadata.Namespace+"/"+it.Metadata.Name] = n
+			}
+		}
+	}
+	c.metricsCache = e
+	return e.pods, e.err
 }
