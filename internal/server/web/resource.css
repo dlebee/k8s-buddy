@@ -228,3 +228,6 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .rv-topo-pod:hover { border-color: var(--accent); }
 .rv-topo-pod i { display: inline-block; margin-right: 5px; vertical-align: 0; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--faint); }
 .rv-topo-pod.ok i { background: var(--ok); } .rv-topo-pod.warn i { background: var(--warn); } .rv-topo-pod.bad i { background: var(--bad); }
+.rv-visit { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--accent); font-size: 12px; line-height: 1; cursor: pointer; }
+.rv-visit:hover { border-color: var(--accent); background: var(--accent-soft, var(--surface)); }
+.rv-visit.err { color: var(--bad); border-color: var(--bad); }

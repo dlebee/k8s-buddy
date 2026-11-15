@@ -1,6 +1,6 @@
 // Per-kind summary components for the resource drawer. Each renderer takes the object as JSON
 // (from /api/object) and returns HTML; actions (shell, port-forward, open related) are bound after.
-import { esc, ago } from '/static/common.js';
+import { esc, ago, api } from '/static/common.js';
 import { pickForward, pickShell, forwardsFor, openForward } from '/static/forwards.js';
 
 // ---------- small helpers ----------
@@ -312,7 +312,7 @@ function ingressSummary(o, ctx) {
     ${section('Routes', `<div class="rv-routes">
       ${rules.map((r) => `<div class="rv-route">
         <div class="rv-host ${tlsHosts.has(r.host) ? 'tls' : ''}">${tlsHosts.has(r.host) ? '<span title="TLS">🔒</span>' : '<span class="muted" title="plain HTTP">○</span>'}<span>${esc(r.host || '*')}</span></div>
-        <div class="rv-paths">${arr(obj(r.http).paths).map((p) => `<div class="rv-path"><code>${esc(p.path || '/')}</code><span class="muted rv-ptype">${esc((p.pathType || '').replace('ImplementationSpecific', 'impl'))}</span><span class="rv-arrow"></span>${backend(p.backend)}</div>`).join('') || '<div class="rv-path muted">no paths</div>'}</div>
+        <div class="rv-paths">${arr(obj(r.http).paths).map((p) => `<div class="rv-path">${r.host && !r.host.startsWith('*') ? `<button class="rv-visit" data-visit-host="${esc(r.host)}" data-visit-path="${esc(p.path || '')}" title="Open ${tlsHosts.has(r.host) ? 'https' : 'http'}://${esc(r.host)}${esc(p.path || '/')} in your browser">↗</button>` : ''}<code>${esc(p.path || '/')}</code><span class="muted rv-ptype">${esc((p.pathType || '').replace('ImplementationSpecific', 'impl'))}</span><span class="rv-arrow"></span>${backend(p.backend)}</div>`).join('') || '<div class="rv-path muted">no paths</div>'}</div>
       </div>`).join('')}
       ${spec.defaultBackend ? `<div class="rv-route"><div class="rv-host"><span class="muted">default</span></div><div class="rv-paths"><div class="rv-path"><code>*</code><span class="rv-arrow"></span>${backend(spec.defaultBackend)}</div></div></div>` : ''}
       ${!rules.length && !spec.defaultBackend ? '<p class="muted">No rules.</p>' : ''}
@@ -529,6 +529,11 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
         root.querySelectorAll('[data-open-fwd]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openForward(a.dataset.openFwd, a.href); });
         root.querySelectorAll('[data-act="forward"]').forEach((b) => b.onclick = () => pickForward(b, target, ctx.forward.ports));
         root.querySelectorAll('[data-forward-port]').forEach((b) => b.onclick = () => pickForward(b, target, [{ port: +b.dataset.forwardPort }]));
+        root.querySelectorAll('[data-visit-host]').forEach((b) => b.onclick = async () => {
+          try {
+            await api('/api/ingress-open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cluster: d.cluster, namespace: d.namespace, name: d.name, host: b.dataset.visitHost, path: b.dataset.visitPath }) });
+          } catch (e) { b.title = e.message; b.classList.add('err'); }
+        });
         root.querySelectorAll('[data-act="shell"]').forEach((b) => b.onclick = () => pickShell(b, ctx.base, ctx.shell));
       };
       wire();

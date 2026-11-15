@@ -163,6 +163,24 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, hosts)
 	})
+	// Opens an ingress route in the default browser; the URL is rebuilt from the ingress itself.
+	mux.HandleFunc("POST /api/ingress-open", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Cluster, Namespace, Name, Host, Path string }
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		u, err := s.mgr.IngressURL(req.Cluster, req.Namespace, req.Name, req.Host, req.Path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := openURL(u); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /api/azure", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.AzureStatus()) })
 	mux.HandleFunc("POST /api/azure/login", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.StartAzureLogin()) })
 	mux.HandleFunc("GET /api/portforwards", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.forwards.snapshot()) })
