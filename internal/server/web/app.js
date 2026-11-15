@@ -1,4 +1,5 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
+import { logsTab } from '/static/logs.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
 import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from '/static/scope.js';
@@ -351,7 +352,11 @@ async function resources(params) {
 // ---------- drawer ----------
 const drawer = document.getElementById('drawer');
 let drawerSeq = 0;
+// The open tab's cleanup (a log stream, a timer) runs when another tab or drawer replaces it.
+let drawerCleanup = null;
+const runDrawerCleanup = () => { const f = drawerCleanup; drawerCleanup = null; f?.(); };
 function openDrawer({ eyebrow, title, tabs }) {
+  runDrawerCleanup();
   const seq = ++drawerSeq;
   document.getElementById('dEyebrow').innerHTML = eyebrow;
   document.getElementById('dTitle').textContent = title;
@@ -363,6 +368,7 @@ function openDrawer({ eyebrow, title, tabs }) {
     body.querySelectorAll('[data-azure-login]').forEach((b) => b.onclick = () => { startAzureLogin(); closeDrawer(); });
   };
   const show = async (i) => {
+    runDrawerCleanup();
     tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
     const t = tabs[i];
     body.scrollTop = 0;
@@ -374,12 +380,13 @@ function openDrawer({ eyebrow, title, tabs }) {
     body.innerHTML = t.html;
     bind();
     t.bind?.(body);
+    drawerCleanup = t.cleanup || null;
   };
   tabsEl.querySelectorAll('button').forEach((b) => b.onclick = () => show(+b.dataset.i));
   show(0);
   drawer.hidden = false;
 }
-function closeDrawer() { drawer.hidden = true; }
+function closeDrawer() { runDrawerCleanup(); drawer.hidden = true; }
 drawer.querySelectorAll('[data-close]').forEach((el) => el.onclick = closeDrawer);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !drawer.hidden) closeDrawer();
@@ -538,6 +545,8 @@ function summaryTab(kindId, target, { row, detail, fallback }) {
 
 const singular = (l) => l.replace(/ies$/, 'y').replace(/(sses|ches|shes|xes)$/, (m) => m.slice(0, -2)).replace(/s$/, '');
 
+const LOG_KINDS = new Set(['pods', 'deployments', 'statefulsets', 'daemonsets', 'jobs']);
+
 // openRelated opens the drawer for an object linked from a summary (a pod, node, volume...).
 function openRelated(kind, t) {
   resourceDrawer(kind, { cluster: t.cluster, namespace: t.namespace || '', name: t.name, health: '', status: '', cols: [] }, [])
@@ -552,7 +561,9 @@ function objectDrawer({ eyebrow, title, details, cluster, namespace, kind, name,
   if (kind === 'Ingress' && name) tabs.push(routingTab(cluster, namespace, name));
   if (kindId && name) {
     const target = { cluster, namespace, name };
-    tabs.push(summaryTab(kindId, target, { fallback: details }), describeTab(kindId, target));
+    tabs.push(summaryTab(kindId, target, { fallback: details }));
+    if (LOG_KINDS.has(kindId)) tabs.push(logsTab(kindId, target));
+    tabs.push(describeTab(kindId, target));
   }
   tabs.push({ label: 'Details', html: details });
   tabs.push(consoleTab(commands, cluster, namespace));
@@ -568,6 +579,7 @@ async function resourceDrawer(kind, r, columns) {
     ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
       : '<p class="muted">No warning events for this object.</p>'}`;
   const tabs = [summaryTab(kind, r, { row: r.status ? r : null, detail: d, fallback: generic })];
+  if (LOG_KINDS.has(kind)) tabs.push(logsTab(kind, r));
   if (kind !== 'helm') tabs.push(describeTab(kind, r));
   tabs.push(
     { label: kind === 'helm' ? 'Release' : 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },

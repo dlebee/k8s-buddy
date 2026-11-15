@@ -1,6 +1,7 @@
 // Per-kind summary components for the resource drawer. Each renderer takes the object as JSON
 // (from /api/object) and returns HTML; actions (shell, port-forward, open related) are bound after.
 import { esc, ago, api } from '/static/common.js';
+import { describeCron, nextRuns } from '/static/cron.js';
 import { pickForward, pickShell, forwardsFor, openForward } from '/static/forwards.js';
 
 // ---------- small helpers ----------
@@ -157,6 +158,53 @@ function containerCard(c, st, init) {
   </div>`;
 }
 
+// ---------- requests / limits / live usage ----------
+const fmtCPU = (m) => m < 0 ? '–' : m >= 1000 ? `${+(m / 1000).toFixed(m >= 10000 ? 0 : 2)}` : `${m}m`;
+const fmtMem = (b) => b < 0 ? '–' : bytes(b);
+const sumOf = (list, f) => { let any = false, t = 0; for (const x of list) { const v = f(x); if (v >= 0) { any = true; t += v; } } return any ? t : -1; };
+
+// usageBar draws live usage against request (dashed tick) and limit (solid tick).
+function usageBar(label, used, req, lim, fmt, isMem) {
+  const scale = Math.max(lim, req, used ?? 0, 1) * (lim > 0 ? 1 : 1.25);
+  const pct = (v) => Math.min(100, Math.max(0, (v / scale) * 100));
+  const has = used != null;
+  const tone = !has ? '' : lim > 0 && used >= lim * 0.9 ? 'bad' : req > 0 && used > req ? (isMem ? 'warn' : 'over') : 'ok';
+  const notes = [];
+  if (has && req > 0) notes.push(`${Math.round((used / req) * 100)}% of request`);
+  if (has && lim > 0) notes.push(`${Math.round((used / lim) * 100)}% of limit`);
+  if (lim < 0) notes.push('no limit');
+  if (req < 0) notes.push('no request');
+  const why = tone === 'bad' ? (isMem ? 'close to the memory limit: the container gets OOM-killed when it reaches it' : 'close to the CPU limit: the container is being throttled')
+    : tone === 'warn' ? 'above its memory request: first in line for eviction when the node runs short' : tone === 'over' ? 'bursting above its CPU request (fine while the node has spare CPU)' : '';
+  return `<div class="rv-use ${tone}" ${why ? `title="${esc(why)}"` : ''}>
+    <div class="rv-use-top"><b>${label}</b><span>${has ? fmt(used) : '<span class="muted">no data</span>'}<span class="muted"> · req ${fmt(req)} · lim ${fmt(lim)}</span></span></div>
+    <div class="rv-use-bar">${has ? `<span class="fill" style="width:${pct(used)}%"></span>` : ''}${req > 0 ? `<i class="req" style="left:${pct(req)}%" title="request ${fmt(req)}"></i>` : ''}${lim > 0 ? `<i class="lim" style="left:${pct(lim)}%" title="limit ${fmt(lim)}"></i>` : ''}</div>
+    <div class="muted rv-small">${notes.join(' · ')}</div></div>`;
+}
+
+function usageHTML(rep, single) {
+  if (!rep.pods.length) return '<p class="muted">No pods.</p>';
+  const note = rep.metrics ? `<p class="muted rv-small">Live usage from the metrics API, averaged over ${esc(rep.window || 'the last minute')} · refreshes every 15s</p>`
+    : `<p class="muted rv-small">⚠ ${esc(rep.metricsError || 'Metrics API unavailable')} — showing requests and limits only.</p>`;
+  if (single) {
+    const p = rep.pods[0];
+    return note + p.containers.map((c) => `<div class="rv-use-c">${p.containers.length > 1 ? `<div class="rv-c-name">${esc(c.name)}</div>` : ''}<div class="rv-use-grid">
+      ${usageBar('CPU', c.usage?.cpu, c.requests.cpu, c.limits.cpu, fmtCPU)}${usageBar('Memory', c.usage?.memory, c.requests.memory, c.limits.memory, fmtMem, true)}</div></div>`).join('');
+  }
+  const agg = (p, k, f) => sumOf(p.containers, (c) => f(c)?.[k] ?? -1);
+  const rows = rep.pods.map((p) => {
+    const u = (k) => { const v = agg(p, k, (c) => c.usage); return v < 0 ? null : v; };
+    return `<div class="rv-use-row"><button class="rv-topo-pod ${esc(p.health)}" data-open-pod="${esc(p.name)}" title="${esc(p.name + (p.containers.length > 1 ? '\ncontainers: ' + p.containers.map((c) => c.name).join(', ') : ''))}"><i></i>${esc(p.name)}</button>
+      ${usageBar('CPU', u('cpu'), agg(p, 'cpu', (c) => c.requests), agg(p, 'cpu', (c) => c.limits), fmtCPU)}
+      ${usageBar('Memory', u('memory'), agg(p, 'memory', (c) => c.requests), agg(p, 'memory', (c) => c.limits), fmtMem, true)}</div>`;
+  }).join('');
+  const total = (k, f) => sumOf(rep.pods, (p) => agg(p, k, f));
+  const tu = (k) => { const v = total(k, (c) => c.usage); return v < 0 ? null : v; };
+  return note + `<div class="rv-use-total">${usageBar(`CPU · ${rep.pods.length} pods`, tu('cpu'), total('cpu', (c) => c.requests), total('cpu', (c) => c.limits), fmtCPU)}
+    ${usageBar('Memory', tu('memory'), total('memory', (c) => c.requests), total('memory', (c) => c.limits), fmtMem, true)}</div>
+    <div class="rv-use-rows">${rows}</div>`;
+}
+
 function podOwner(md) {
   const o = arr(md.ownerReferences).find((x) => x.controller) || arr(md.ownerReferences)[0];
   if (!o) return null;
@@ -193,6 +241,7 @@ function podSummary(o, ctx) {
       owner && ['Controlled by', owner.kind ? `<a data-open="${esc(owner.kind)}" data-name="${esc(owner.name)}">${esc(owner.name)}</a>` : esc(owner.name), esc(owner.label)],
     ])}
     ${section(`Containers <span class="muted">${arr(spec.containers).length}</span>`, arr(spec.containers).map((c) => containerCard(c, byName[c.name])).join(''))}
+    ${status.phase === 'Running' || status.phase === 'Pending' ? section('Resources', '<div data-usage="1"><p class="muted">Loading usage…</p></div>') : ''}
     ${arr(spec.initContainers).length ? `<details class="rv-details" ${initDone ? '' : 'open'}><summary>Init containers <span class="muted">${arr(spec.initContainers).length}${initDone ? ' · all completed' : ''}</span></summary>
       ${arr(spec.initContainers).map((c) => containerCard(c, initBy[c.name], true)).join('')}</details>` : ''}
     ${section('Conditions', conditionChips(status.conditions))}
@@ -236,6 +285,7 @@ function workloadSummary(kind) {
         </div>
       </div>
       ${section('Images', `<div class="rv-images">${arr(tpl.containers).map((c) => `<div class="rv-img-row"><span class="rv-c-name">${esc(c.name)}</span>${image(c.image)}</div>`).join('')}</div>`)}
+      ${pods.length ? section('Resources', '<div data-usage="0"><p class="muted">Loading usage…</p></div>') : ''}
       ${section(`Pods <span class="muted">${pods.length}</span>`, podDots(pods, ctx), pods.length ? `<span class="rv-pod-sum">${['ok', 'warn', 'bad'].map((h) => { const n = pods.filter((p) => p.health === h).length; return n ? `<span><span class="dot ${h}"></span>${n}</span>` : ''; }).join('')}</span>` : '')}
       ${section('Selector', chips(obj(spec.selector).matchLabels))}
       ${conds.length ? section('Conditions', conditionChips(conds)) : ''}
@@ -435,6 +485,44 @@ function routeSummary(o, ctx) {
     ${trafficPath(kind, md.name, hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*', routes, ctx)}`;
 }
 
+// ---------- CronJob ----------
+function cronSummary(o, ctx) {
+  const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
+  // Without spec.timeZone the schedule runs in the controller manager's zone, which is UTC on
+  // managed clusters (AKS, EKS, GKE).
+  const tz = spec.timeZone || 'UTC';
+  let words, runs = [], err = '';
+  try { words = describeCron(spec.schedule); runs = spec.suspend ? [] : nextRuns(spec.schedule, tz, 5); } catch (e) { err = e.message; }
+  const localTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const fmt = (d, zone) => d.toLocaleString([], { timeZone: zone, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  const active = arr(status.active);
+  const tpl = obj(obj(obj(obj(spec.jobTemplate).spec).template).spec);
+  return `
+    ${facts([
+      ['Schedule', `<code>${esc(spec.schedule || '')}</code>`, esc(spec.timeZone ? spec.timeZone : 'UTC (cluster default)')],
+      ['State', spec.suspend ? pill('suspended', 'warn') : active.length ? pill(`${active.length} running`, 'accent') : pill('waiting', 'ok')],
+      ['Last run', status.lastScheduleTime ? esc(ago(status.lastScheduleTime)) + ' ago' : '<span class="muted">never</span>', status.lastScheduleTime ? new Date(status.lastScheduleTime).toLocaleString() : ''],
+      ['Last success', status.lastSuccessfulTime ? esc(ago(status.lastSuccessfulTime)) + ' ago' : '<span class="muted">none yet</span>', status.lastSuccessfulTime ? new Date(status.lastSuccessfulTime).toLocaleString() : '',
+        status.lastScheduleTime && (!status.lastSuccessfulTime || status.lastSuccessfulTime < status.lastScheduleTime) && !active.length ? 'warn' : ''],
+    ])}
+    ${section('When it runs', err ? `<p class="rv-warnline">⚠ Can't read this schedule: ${esc(err)}</p>` : `
+      <div class="cr-words">${esc(words)}${spec.timeZone ? '' : ' <span class="muted">(UTC)</span>'}</div>
+      ${spec.suspend ? '<p class="muted">Suspended: no runs are scheduled until it is resumed.</p>'
+        : runs.length ? `<table class="cr-runs"><thead><tr><th></th><th>Your time <span class="muted">${esc(localTZ)}</span></th><th>UTC</th>${spec.timeZone && spec.timeZone !== 'UTC' ? `<th>${esc(spec.timeZone)}</th>` : ''}</tr></thead><tbody>
+            ${runs.map((d) => `<tr><td class="muted">${esc(until(d.toISOString()))}</td><td>${esc(fmt(d, localTZ))}</td><td>${esc(fmt(d, 'UTC'))}</td>${spec.timeZone && spec.timeZone !== 'UTC' ? `<td>${esc(fmt(d, spec.timeZone))}</td>` : ''}</tr>`).join('')}
+          </tbody></table>${runs.length < 5 ? `<p class="muted rv-small">Only ${runs.length} run${runs.length === 1 ? '' : 's'} in the next 30 years.</p>` : ''}`
+          : '<p class="rv-warnline">⚠ This schedule never fires (the date does not exist).</p>'}`)}
+    ${section('Policy', facts([
+      ['Concurrency', esc(spec.concurrencyPolicy || 'Allow'), ({ Allow: 'runs may overlap', Forbid: 'skips a run while one is active', Replace: 'replaces the running job' })[spec.concurrencyPolicy || 'Allow']],
+      ['History kept', `${spec.successfulJobsHistoryLimit ?? 3} ok · ${spec.failedJobsHistoryLimit ?? 1} failed`],
+      spec.startingDeadlineSeconds != null ? ['Start deadline', `${spec.startingDeadlineSeconds}s`, 'missed runs older than this are skipped'] : null,
+    ]))}
+    ${active.length ? section('Running now', `<div class="rv-chips">${active.map((a) => `<a class="rv-backend accent" data-open="jobs" data-name="${esc(a.name)}">${esc(a.name)}</a>`).join('')}</div>`) : ''}
+    ${section('Images', `<div class="rv-images">${arr(tpl.containers).map((c) => `<div class="rv-img-row"><span class="rv-c-name">${esc(c.name)}</span>${image(c.image)}</div>`).join('')}</div>`)}
+    ${warnings(ctx.events)}
+    ${metadata(md)}`;
+}
+
 // ---------- PVC / PV ----------
 function pvcSummary(o, ctx) {
   const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
@@ -580,7 +668,7 @@ function helmSummary(_, ctx) {
 const RENDERERS = {
   pods: podSummary, deployments: workloadSummary('deployments'), statefulsets: workloadSummary('statefulsets'), daemonsets: workloadSummary('daemonsets'),
   services: serviceSummary, ingresses: ingressSummary, pvcs: pvcSummary, pvs: pvSummary, nodes: nodeSummary,
-  'cr:cert-manager.io/certificates': certSummary, helm: helmSummary,
+  'cr:cert-manager.io/certificates': certSummary, helm: helmSummary, cronjobs: cronSummary,
   'cr:gateway.networking.k8s.io/gateways': gatewaySummary,
   'cr:gateway.networking.k8s.io/httproutes': routeSummary, 'cr:gateway.networking.k8s.io/grpcroutes': routeSummary,
 };
@@ -613,6 +701,17 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
         root.querySelectorAll('[data-act="shell"]').forEach((b) => b.onclick = () => pickShell(b, ctx.base, ctx.shell));
       };
       wire();
+      const ub = root.querySelector('[data-usage]');
+      if (ub) {
+        const q = new URLSearchParams({ cluster: d.cluster, kind: d.kind, namespace: d.namespace || '', name: d.name });
+        const load = async () => {
+          if (!document.contains(ub)) return clearInterval(timer);
+          try { ub.innerHTML = usageHTML(await api('/api/usage?' + q), ub.dataset.usage === '1'); } catch (e) { ub.innerHTML = `<p class="muted">${esc(e.message.replace(/^\d+ /, ''))}</p>`; }
+          wire();
+        };
+        const timer = setInterval(load, 15000);
+        load();
+      }
       if (ctx.slots) {
         const rerender = () => {
           const el = root.querySelector('.rv');

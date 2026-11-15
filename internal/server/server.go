@@ -195,6 +195,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/portforwards/{id}/open", s.handleForwardOpen)
 	mux.HandleFunc("POST /api/shell", s.handleShell)
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
+	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		rep, err := s.mgr.Usage(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, rep)
+	})
 	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		out, err := s.mgr.Describe(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))
