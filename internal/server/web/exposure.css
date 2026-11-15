@@ -84,3 +84,7 @@
 .xp-li em { font-style: normal; color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
 .xp-route { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding: 2px 8px; word-break: break-all; }
 @media (max-width: 900px) { .xp-panel { position: absolute; right: 0; top: 0; bottom: 0; width: min(340px, 100%); z-index: 5; box-shadow: var(--shadow-lg); } }
+
+.xp-alert { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; font-size: 12.5px; border-top: 1px solid var(--border); }
+.xp-alert i { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
+.xp-alert .muted { font-size: 12px; }

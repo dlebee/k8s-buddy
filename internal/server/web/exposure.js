@@ -8,6 +8,35 @@ const KLABEL = { cluster: 'Cluster', controller: 'Ingress controller', gateway: 
 const DEPTHS = [['Entry', 1], ['Ingress', 2], ['Service', 3], ['Workload', 4], ['Pods', 5]];
 const GCOL = { cluster: '#dfe6ff', controller: '#5b93ff', gateway: '#f472b6', lb: '#b08cff', nodeport: '#ffa94d', ingress: '#2dd4bf', service: '#8fa3bf', workload: '#34d399', pod: '#34d399' };
 const HCOL = { ok: '#34d399', warn: '#fbbf24', bad: '#f87171', neutral: '#94a3b8' };
+// Alert severities, as rings and badges on the map.
+const SEV = { critical: '#f87171', warning: '#fbbf24', notice: '#60a5fa' };
+const SEV_RANK = { critical: 3, warning: 2, notice: 1 };
+
+// attachAlerts hangs pending alerts on the cluster and on the objects they name.
+function attachAlerts(clusters, alerts) {
+  const kindOf = (n) => n.kind === 'workload' ? n.wkind : n.kind === 'pod' ? 'Pod' : n.kind === 'ingress' ? n.rkind
+    : n.kind === 'gateway' ? 'Gateway' : ['service', 'lb', 'nodeport'].includes(n.kind) || (n.kind === 'controller' && !n.pseudo) ? 'Service' : null;
+  for (const c of clusters) {
+    c.alerts = alerts.filter((a) => a.cluster === c.name && SEV_RANK[a.severity]);
+    c.counts = { critical: 0, warning: 0, notice: 0 };
+    for (const a of c.alerts) c.counts[a.severity]++;
+    c.root.alerts = c.alerts;
+    const byObj = new Map();
+    for (const a of c.alerts) if (a.kind && a.name) {
+      const k = `${a.kind}|${a.namespace || ''}|${a.name}`;
+      if (!byObj.has(k)) byObj.set(k, []);
+      byObj.get(k).push(a);
+    }
+    for (const n of c.nodes) {
+      if (n.kind === 'cluster') continue;
+      const k = kindOf(n);
+      n.alerts = k ? byObj.get(`${k}|${n.ns || ''}|${n.name}`) || [] : [];
+    }
+    for (const n of c.nodes) n.asev = (n.alerts || []).reduce((m, a) => (SEV_RANK[a.severity] > (SEV_RANK[m] || 0) ? a.severity : m), '');
+  }
+}
+const alertLines = (list, max = 4) => list.slice().sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity]).slice(0, max)
+  .map((a) => `<span style="color:${SEV[a.severity]}">● ${esc(a.title)}</span>`).join('<br>') + (list.length > max ? `<br><span style="opacity:.7">+${list.length - max} more</span>` : '');
 const RING = [0, 190, 280, 365, 445, 515];
 // Kind labels: an "ingress" node is an Ingress or a Gateway API route.
 const kindLabel = (n) => n.kind === 'ingress' && n.rkind && n.rkind !== 'Ingress' ? n.rkind : n.pseudo && n.type === 'Gateway' ? 'Gateway (missing)' : KLABEL[n.kind];
@@ -238,9 +267,12 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
 
   // ---------- data ----------
   async function load() {
-    let data;
+    let data, alerts;
     try {
-      data = await api('/api/exposure?' + new URLSearchParams({ cluster: scoped.join(',') }));
+      [data, alerts] = await Promise.all([
+        api('/api/exposure?' + new URLSearchParams({ cluster: scoped.join(',') })),
+        api('/api/alerts?' + new URLSearchParams({ scope: 'pending', limit: '3000', cluster: scoped.join(',') })).catch(() => []),
+      ]);
     } catch (e) {
       if (!destroyed) $('gnote').textContent = 'Could not load exposure: ' + e.message;
       return;
@@ -249,6 +281,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     const selKey = S.sel && [S.clusters[S.sel.ci]?.name, S.sel.key];
     S.data = data.filter((c) => !scoped.length || scoped.includes(c.cluster)).sort((a, b) => a.cluster.localeCompare(b.cluster));
     S.clusters = S.data.map(buildCluster);
+    attachAlerts(S.clusters, alerts || []);
     S.families = layoutGalaxy(S.clusters);
     const tot = S.clusters.reduce((a, c) => { for (const k in c.stats) a[k] = (a[k] || 0) + c.stats[k]; return a; }, {});
     const waiting = S.clusters.filter((c) => c.status !== 'ok').length;
@@ -380,11 +413,24 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
         if (n.pseudo) { ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.fillStyle = 'rgba(6,9,19,.9)'; ctx.fill(); ctx.stroke(); } else ctx.fill();
         ctx.shadowBlur = 0;
         if (r > 5 && n.kind !== 'workload' && n.kind !== 'pod' && n.issue) { ctx.strokeStyle = HCOL.bad; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2); ctx.stroke(); }
+        if (n.asev && n.kind !== 'cluster' && r > 1.5) { // alert on this object: a ring in its severity colour
+          ctx.strokeStyle = SEV[n.asev]; ctx.lineWidth = n.asev === 'critical' ? 2.5 : 2;
+          if (n.asev === 'critical') { ctx.shadowColor = SEV.critical; ctx.shadowBlur = 10; }
+          ctx.setLineDash(n.asev === 'notice' ? [3, 3] : []);
+          ctx.beginPath(); ctx.arc(x, y, r + (n.issue ? 6.5 : 3.5), 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]); ctx.shadowBlur = 0;
+        }
+        if (n.kind === 'cluster' && c.alerts?.length) { // cluster badge: worst severity and the count, readable from far out
+          const worst = c.counts.critical ? 'critical' : c.counts.warning ? 'warning' : 'notice';
+          const br = clamp(r * .45, 5, 9), bx = x + r * .75, by = y - r * .75;
+          ctx.globalAlpha = 1; ctx.fillStyle = SEV[worst]; ctx.beginPath(); ctx.arc(bx, by, br + (sr > 30 ? 3 : 0), 0, Math.PI * 2); ctx.fill();
+          if (sr > 30) { ctx.fillStyle = '#060913'; ctx.font = '700 10px -apple-system,sans-serif'; ctx.textAlign = 'center'; ctx.fillText(String(c.alerts.length), bx, by + 3.5); }
+        }
         if (n.kind === 'workload' && r > 4 && n.total > 1) {
           ctx.strokeStyle = 'rgba(6,9,19,.9)'; ctx.lineWidth = 1.5;
           for (let i = 0; i < n.total; i++) { const a0 = -Math.PI / 2 + i * 2 * Math.PI / n.total; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a0) * r, y + Math.sin(a0) * r); ctx.stroke(); }
         }
-        if (S.sel === n) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 4, 0, Math.PI * 2); ctx.stroke(); }
+        if (S.sel === n) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + (n.asev ? (n.issue ? 10 : 7) : 4), 0, Math.PI * 2); ctx.stroke(); }
         if (!lit) { ctx.globalAlpha = 1; continue; }
         if (n.kind === 'cluster') {
           if (sr <= 8) { ctx.globalAlpha = 1; continue; }
@@ -392,13 +438,23 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
           const ly = sr < 70 ? cy + sr * .55 + 12 : cy + r + 16;
           const nm = c.name.replace(/-cluster$/, ''), tw = ctx.measureText(nm).width;
           const issues = c.stats.issues;
-          const full = sr > 22 && fits(cx - Math.max(tw, 150) / 2, ly - 12, Math.max(tw, 150), issues ? 46 : 32);
+          const counts = c.counts || {};
+          const sevParts = ['critical', 'warning', 'notice'].filter((sv) => counts[sv]).map((sv) => [sv, `${counts[sv]} ${sv}${counts[sv] > 1 && sv !== 'critical' ? 's' : ''}`]);
+          const full = sr > 22 && fits(cx - Math.max(tw, 170) / 2, ly - 12, Math.max(tw, 170), 32 + (issues ? 14 : 0) + (sevParts.length ? 14 : 0));
           if (!full && !fits(cx - tw / 2, ly - 12, tw, 16)) { ctx.globalAlpha = 1; continue; }
           ctx.fillText(nm, cx, ly);
           if (full) {
             ctx.font = '11px -apple-system,sans-serif'; ctx.fillStyle = '#93a3d6';
             ctx.fillText(c.status === 'ok' ? `${c.stats.entries} entry · ${c.stats.ing} ing · ${c.stats.pods} pods` : c.status === 'error' ? 'unreachable' : 'syncing…', cx, ly + 14);
-            if (issues) { ctx.fillStyle = '#f87171'; ctx.fillText(`● ${issues} issue${issues > 1 ? 's' : ''}`, cx, ly + 28); }
+            let line = ly + 28;
+            if (sevParts.length) { // "1 critical · 3 warnings · 2 notices", each in its colour
+              const sep = ' · ', widths = sevParts.map(([, t]) => ctx.measureText(t).width), sw = ctx.measureText(sep).width;
+              let x0 = cx - (widths.reduce((a, b) => a + b, 0) + sw * (sevParts.length - 1)) / 2;
+              ctx.textAlign = 'left';
+              sevParts.forEach(([sv, t], i) => { ctx.fillStyle = SEV[sv]; ctx.fillText(t, x0, line); x0 += widths[i]; if (i < sevParts.length - 1) { ctx.fillStyle = '#6f7ca8'; ctx.fillText(sep, x0, line); x0 += sw; } });
+              ctx.textAlign = 'center'; line += 14;
+            }
+            if (issues) { ctx.fillStyle = '#f87171'; ctx.fillText(`● ${issues} exposure issue${issues > 1 ? 's' : ''}`, cx, line); }
           }
         } else if (S.sel === n || (sr > 120 && n.span * RING[LAYER[n.kind]] * c.f * k >= 12.5) || (n.kind === 'pod' && r >= 2.5 && n.span * RING[5] * c.f * k >= 11)) {
           const right = Math.cos(n.ang) >= 0;
@@ -503,7 +559,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     return '';
   }
   function showTip(n, x, y) {
-    tip.innerHTML = `<b>${esc(n.name)}</b><span class="m">${kindLabel(n)}</span><br>${summary(n)}${n.issue ? `<br><span style="color:#f87171">⚠ ${esc(n.issue)}</span>` : ''}`;
+    tip.innerHTML = `<b>${esc(n.name)}</b><span class="m">${kindLabel(n)}</span><br>${summary(n)}${n.issue ? `<br><span style="color:#f87171">⚠ ${esc(n.issue)}</span>` : ''}${n.alerts?.length ? `<br>${alertLines(n.alerts)}` : ''}`;
     tip.style.display = 'block';
     const r = tip.getBoundingClientRect();
     tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + 'px';
@@ -555,11 +611,15 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     let html = `<button class="close" data-act="close" aria-label="Close">✕</button><div class="kind" style="color:${cssColor(n)}">${n.pseudo && n.type !== 'Gateway' ? 'Ingress class' : kindLabel(n)}</div><h2>${esc(n.name)}</h2>`;
     if (n.issue) html += `<div class="pill bad" style="margin-top:6px">⚠ ${esc(n.issue)}</div>`;
     if (n.note) html += `<div class="muted" style="margin-top:6px;font-size:12px">${esc(n.note)}</div>`;
+    const alerts = n.kind === 'cluster' ? c.alerts || [] : n.alerts || [];
     html += `<dl>${dl}</dl><div class="actions">
       ${target ? '<button class="btn primary" data-act="open">Open details</button>' : ''}
       ${S.view === 'galaxy' ? '<button class="btn" data-act="flow">Flow view</button><button class="btn" data-act="fly">Zoom to</button>' : '<button class="btn" data-act="galaxy">Show in galaxy</button>'}
       ${n.kind === 'workload' && S.depth < 5 ? `<button class="btn" data-act="pods">${S.expanded.has(nk(n)) ? 'Hide pods' : 'Pin pods'}</button>` : ''}
     </div>`;
+    if (alerts.length) html += `<h3>Alerts (${alerts.length})</h3>` + alerts.slice().sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity]).slice(0, 30)
+      .map((a) => `<div class="xp-alert"><i style="background:${SEV[a.severity]}"></i><div><b>${esc(a.title)}</b>${a.kind && n.kind === 'cluster' ? `<span class="muted"> · ${esc(a.kind)} ${esc(a.name || '')}</span>` : ''}${a.detail ? `<div class="muted">${esc(a.detail.slice(0, 160))}</div>` : ''}</div></div>`).join('')
+      + (alerts.length > 30 ? `<div class="muted">+${alerts.length - 30} more on the Alerts page</div>` : '');
     if (n.kind === 'ingress') html += `<h3>Routes (${routeCount(n)})</h3>` + routesOf(n).map((r) => `<div class="xp-route">${n.tls ? 'https' : 'http'}://${esc(r.r)} <span style="opacity:.6">→ ${esc(r.svc)}</span></div>`).join('');
     if (n.routes?.length) html += '<h3>Routes into this service</h3>' + n.routes.slice(0, 30).map((r) => `<div class="xp-route">${esc(r.r)} <span style="opacity:.6">← ${esc(r.ingName)}</span></div>`).join('');
     if (LAYER[n.kind] >= 2) {
@@ -720,6 +780,12 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
         el('title', {}, sg).textContent = n.issue;
       }
       if (n.issue) el('text', { x: NW - 14, y: 16, 'text-anchor': 'middle', style: 'fill:var(--bad);font-size:12px' }, g).textContent = '⚠';
+      if (n.asev) { // alert badge: severity colour, count
+        const ab = el('g', { transform: `translate(${n.issue ? NW - 32 : NW - 16},12)` }, g);
+        el('circle', { r: 7, fill: SEV[n.asev] }, ab);
+        el('text', { y: 3.5, 'text-anchor': 'middle', style: 'fill:#0b0e14;font-size:9.5px;font-weight:700' }, ab).textContent = String(n.alerts.length);
+        el('title', {}, ab).textContent = n.alerts.map((a) => `${a.severity}: ${a.title}`).join('\n');
+      }
       if (n.kind === 'workload') { // pod counter doubles as the expand toggle
         const expanded = open(n);
         const pc = el('g', { class: 'fpods', transform: `translate(${NW - 26},${NH / 2})`, style: `color:${col}` }, g);
@@ -803,7 +869,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
   function renderLegends() {
     const items = [['controller', 'Ingress controller'], ['gateway', 'Gateway'], ['lb', 'LoadBalancer'], ['nodeport', 'NodePort'], ['ingress', 'Ingress'], ['service', 'Service'], ['workload', 'Workload / pod']];
     $('glegend').innerHTML = items.map(([k, l]) => `<span><i style="background:${GCOL[k]};box-shadow:0 0 6px ${GCOL[k]}"></i>${l}</span>`).join('') +
-      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down / issue</span><span><b style="color:${HCOL.bad}">- - ✕</b> dangling service</span><span style="opacity:.7">dashed = shared backend · click a workload for its pods</span>`;
+      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down / issue</span><span><b style="color:${HCOL.bad}">- - ✕</b> dangling service</span><span><b style="color:${SEV.critical}">◯</b><b style="color:${SEV.warning}">◯</b><b style="color:${SEV.notice}">◌</b> alerts</span><span style="opacity:.7">dashed = shared backend · click a workload for its pods</span>`;
     $('flegend').innerHTML = items.map(([k, l]) => `<span><i style="background:var(--k-${k})"></i>${l}</span>`).join('') +
       `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down</span><span><b style="color:var(--bad)">- - ✕</b> dangling service</span><span>×N = pods, click to expand · − / + collapse</span>`;
   }
