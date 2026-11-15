@@ -47,10 +47,18 @@ function buildCluster(c, ci) {
   const add = (key, o) => { let n = nodes.get(key); if (!n) { n = { key, ci, children: [], parents: [], ...o }; nodes.set(key, n); } return n; };
   const link = (a, b) => { if (a.children.includes(b)) return; a.children.push(b); b.parents.push(a); edges.push({ a, b }); };
   const root = add('root', { kind: 'cluster', name: c.cluster, status: c.status, error: c.error, pods: c.pods });
-  const wl = (ns, w) => {
-    const key = `w:${ns}/${w.kind}/${w.name}`, fresh = !nodes.has(key);
-    const n = add(key, { kind: 'workload', name: w.name, ns, wkind: w.kind, total: w.total, ready: w.ready });
-    if (fresh) for (const p of w.pods || []) link(n, add(`p:${ns}/${p.name}`, { kind: 'pod', name: p.name, ns, status: p.status, health: p.health, ready: p.ready, restarts: p.restarts, node: p.node, ip: p.ip }));
+  // A workload reached by several services (one LB per StatefulSet pod, say) collects the union of
+  // their pods; each service remembers which of those pods it actually selects.
+  const wl = (ns, w, via) => {
+    const key = `w:${ns}/${w.kind}/${w.name}`;
+    const n = add(key, { kind: 'workload', name: w.name, ns, wkind: w.kind, total: 0, ready: 0 });
+    via.sel ??= new Set();
+    for (const p of w.pods || []) {
+      const pk = `p:${ns}/${p.name}`, fresh = !nodes.has(pk);
+      const pn = add(pk, { kind: 'pod', name: p.name, ns, status: p.status, health: p.health, ready: p.ready, restarts: p.restarts, node: p.node, ip: p.ip });
+      via.sel.add(pn);
+      if (fresh) { link(n, pn); n.total++; if (p.ready) n.ready++; }
+    }
     return n;
   };
   const sum = (ws, k) => ws.reduce((s, w) => s + w[k], 0);
@@ -64,7 +72,7 @@ function buildCluster(c, ci) {
     else if (!e.workloads.length) { en.issue = 'No pods behind this service'; en.dangling = true; }
     else if (e.type === 'LoadBalancer' && !e.addresses.length) en.issue = 'LoadBalancer has no external address yet';
     link(root, en);
-    for (const w of e.workloads) link(en, wl(e.namespace, w));
+    for (const w of e.workloads) link(en, wl(e.namespace, w, en));
     for (const i of e.ingresses) {
       const ig = add(`i:${i.namespace}/${i.name}`, { kind: 'ingress', name: i.name, ns: i.namespace, cls: i.class, tls: i.tls, hosts: i.hosts });
       link(en, ig);
@@ -74,7 +82,7 @@ function buildCluster(c, ci) {
         if (s.missing) { sv.issue = 'Backend service not found'; sv.dangling = true; }
         else if (!s.workloads.length) { sv.issue = 'No pods match this service selector'; sv.dangling = true; }
         link(ig, sv);
-        for (const w of s.workloads) link(sv, wl(s.namespace, w));
+        for (const w of s.workloads) link(sv, wl(s.namespace, w, sv));
       }
     }
   }
@@ -183,9 +191,22 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
 
   function relatedSet(n) {
     const s = new Set([n]);
-    const up = (x) => x.parents.forEach((p) => { if (!s.has(p)) { s.add(p); up(p); } });
-    const down = (x) => x.children.forEach((k) => { if (!s.has(k)) { s.add(k); down(k); } });
-    up(n); down(n);
+    const up = (x) => x.parents.forEach((p) => {
+      if (s.has(p)) return;
+      if (x.kind === 'pod' && p.kind !== 'workload' && p.sel && !p.sel.has(x)) return;
+      s.add(p); up(p);
+    });
+    // Below a service only the pods it selects count, not every pod of a shared workload.
+    const down = (x, sel) => x.children.forEach((k) => {
+      if (s.has(k) || (k.kind === 'pod' && sel && !sel.has(k))) return;
+      s.add(k); down(k, k.sel || sel);
+    });
+    if (n.kind === 'pod') {
+      // a pod's path up: its workload, and only the services that select it
+      const w = n.parents[0];
+      if (w) { s.add(w); w.parents.forEach((p) => { if (!p.sel || p.sel.has(n)) { s.add(p); up(p); } }); }
+    } else up(n);
+    down(n, n.sel);
     return s;
   }
 
@@ -484,7 +505,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
   const healthPill = (h) => `<span class="pill ${h}">${({ ok: 'healthy', warn: 'degraded', bad: 'down', neutral: 'done' })[h]}</span>`;
   function pathsTo(n) {
     const out = [];
-    const walk = (x, chain) => { if (out.length > 12) return; if (x.kind === 'cluster') { out.push(chain); return; } x.parents.forEach((p) => walk(p, [x, ...chain])); };
+    const walk = (x, chain) => { if (out.length > 12) return; if (x.kind === 'cluster') { out.push(chain); return; } x.parents.forEach((p) => { if (!(p.sel && chain[0]?.kind === 'pod' && !p.sel.has(chain[0]))) walk(p, [x, ...chain]); }); };
     walk(n, []);
     return out;
   }
