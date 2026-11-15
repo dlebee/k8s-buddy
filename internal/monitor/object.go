@@ -26,7 +26,9 @@ type ObjectDetail struct {
 	Pods      []PodBrief     `json:"pods,omitempty"`
 	// Services referenced by an ingress: name → ports (nil when the service doesn't exist).
 	Services map[string][]int32 `json:"services,omitempty"`
-	History  []HelmRevision     `json:"history,omitempty"`
+	// BackendPods are the pods each of an ingress's services selects (absent: no selector).
+	BackendPods map[string][]PodBrief `json:"backendPods,omitempty"`
+	History     []HelmRevision        `json:"history,omitempty"`
 	// PodCount is the number of pods scheduled on a node.
 	PodCount *int `json:"podCount,omitempty"`
 }
@@ -237,6 +239,7 @@ func (c *cluster) ingressBackends(d *ObjectDetail) {
 		}
 	}
 	d.Services = map[string][]int32{}
+	d.BackendPods = map[string][]PodBrief{}
 	if !c.synced("services") {
 		return
 	}
@@ -251,6 +254,9 @@ func (c *cluster) ingressBackends(d *ObjectDetail) {
 			ports = append(ports, p.Port)
 		}
 		d.Services[n] = ports
+		if len(svc.Spec.Selector) > 0 {
+			d.BackendPods[n] = c.podsMatching(d.Namespace, labels.SelectorFromSet(svc.Spec.Selector))
+		}
 	}
 }
 

@@ -318,7 +318,47 @@ function ingressSummary(o, ctx) {
       ${!rules.length && !spec.defaultBackend ? '<p class="muted">No rules.</p>' : ''}
     </div>`)}
     ${warnings(ctx.events)}
-    ${metadata(md)}`;
+    ${metadata(md)}
+    ${ingressTopology(md, rules, spec.defaultBackend, tlsHosts, ctx)}`;
+}
+
+// ingressTopology draws ingress → service → pods; a backend that leads nowhere ends in a red ✕.
+function ingressTopology(md, rules, defaultBackend, tlsHosts, ctx) {
+  const svcs = ctx.services || {}, bpods = ctx.backendPods || {};
+  const routes = new Map(); // service → ["host/path", ...]
+  const add = (b, r) => { const n = obj(obj(b).service).name; if (n) { if (!routes.has(n)) routes.set(n, []); routes.get(n).push(r); } };
+  for (const r of rules) for (const p of arr(obj(r.http).paths)) add(p.backend, (r.host || '*') + (p.path || '/'));
+  if (defaultBackend) add(defaultBackend, 'default backend');
+  if (!routes.size) return '';
+  const hosts = rules.map((r) => r.host).filter(Boolean);
+  const MAXP = 8;
+  // Pods share their workload's name; show just the distinguishing tail ("…-7d9f-abcde").
+  const short = (pods, svc) => {
+    const names = pods.map((p) => p.name);
+    let pre = names.length > 1 ? names.reduce((a, b) => { let i = 0; while (i < a.length && a[i] === b[i]) i++; return a.slice(0, i); }) : names[0].startsWith(svc) ? svc : '';
+    pre = pre.slice(0, pre.lastIndexOf('-') + 1);
+    return (n) => pre.length > 6 && n.length > pre.length ? '…-' + n.slice(pre.length) : n;
+  };
+  const rows = [...routes].map(([name, rs]) => {
+    const known = name in svcs, missing = known && svcs[name] == null, pods = bpods[name];
+    const dangling = missing || (pods && !pods.length);
+    const svcBox = missing
+      ? `<span class="rv-topo-box svc bad dashed" title="Service not found">${esc(name)}<small>missing</small></span>`
+      : `<a class="rv-topo-box svc ${dangling ? 'bad' : ''}" data-open="services" data-name="${esc(name)}" title="${esc(rs.join('\n'))}">${esc(name)}<small>${esc(rs.length === 1 ? rs[0] : plural(rs.length, 'route'))}</small></a>`;
+    const right = missing ? '<span class="rv-topo-x" title="Service not found">✕</span>'
+      : !known ? '<span class="muted rv-small">syncing…</span>'
+        : !pods ? '<span class="muted rv-small">no selector · manual endpoints</span>'
+          : !pods.length ? '<span class="rv-topo-x" title="No pods match this service selector">✕</span><span class="rv-topo-why">no pods match</span>'
+            : `<div class="rv-topo-pods">${pods.slice(0, MAXP).map((p, _, __, sh = short(pods, name)) => `<button class="rv-topo-pod ${esc(p.health)}" data-open-pod="${esc(p.name)}" title="${esc(`${p.name}\n${p.status} · ${p.ready} ready${p.restarts ? ` · ${p.restarts} restarts` : ''}`)}"><i></i>${esc(sh(p.name))}</button>`).join('')}${pods.length > MAXP ? `<span class="muted rv-small">+${pods.length - MAXP} more</span>` : ''}</div>`;
+    return `<div class="rv-topo-row ${dangling ? 'dangling' : ''}"><span class="rv-topo-wire"></span>${svcBox}<span class="rv-topo-wire ${dangling ? 'stub' : ''}"></span>${right}</div>`;
+  }).join('');
+  const lock = hosts.some((h) => tlsHosts.has(h)) ? '🔒 ' : '';
+  return section('Traffic path', `<div class="rv-topo">
+    <div class="rv-topo-head"><span>Ingress</span><span>Service</span><span>Pods</span></div>
+    <div class="rv-topo-body">
+      <div class="rv-topo-box ing">${esc(md.name)}<small>${lock}${esc(hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*')}</small></div>
+      <div class="rv-topo-rows">${rows}</div>
+    </div></div>`);
 }
 
 // ---------- PVC / PV ----------
@@ -473,7 +513,7 @@ export const hasRichSummary = (kind) => kind in RENDERERS;
 
 // renderSummary returns { html, bind } for the drawer. d is the /api/object response, events the warning events.
 export function renderSummary(kind, d, { row, events, open, fallback }) {
-  const ctx = { row, events, pods: d.pods, services: d.services, history: d.history, podCount: d.podCount, base: { cluster: d.cluster, namespace: d.namespace || '' } };
+  const ctx = { row, events, pods: d.pods, services: d.services, backendPods: d.backendPods, history: d.history, podCount: d.podCount, base: { cluster: d.cluster, namespace: d.namespace || '' } };
   const fn = RENDERERS[kind];
   const html = fn ? `<div class="rv">${fn(d.object || {}, ctx)}</div>` : fallback;
   return {
