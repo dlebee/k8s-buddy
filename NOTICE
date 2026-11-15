@@ -1,0 +1,8 @@
+k8s-buddy
+Copyright 2026 David Lebee
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes software developed by The Kubernetes Authors (k8s.io/client-go,
+k8s.io/apimachinery, k8s.io/api, k8s.io/kubectl and related modules), licensed
+under the Apache License, Version 2.0.

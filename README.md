@@ -95,4 +95,4 @@ kubeconfig ─▶ manager ─▶ one monitor per context (client-go informers + 
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
