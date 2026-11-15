@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -23,6 +24,7 @@ type DoctorCheck struct {
 }
 
 var doctorChecks = []DoctorCheck{
+	{"idle-loadbalancer", "LoadBalancers with no pods", "LoadBalancer services that hold an external IP (billed, and reachable) while no pod backs them."},
 	{"dangling-service", "Services with no pods", "Selector matches no running pods, so traffic goes nowhere."},
 	{"ingress-backend", "Broken ingress backends", "Ingress points at a missing service, a missing port, or a service with no pods."},
 	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
@@ -129,6 +131,27 @@ func (m *Manager) StartDoctor() bool {
 	return true
 }
 
+// idleLBMessage explains a LoadBalancer with nothing behind it: its address still exists (and is billed).
+func idleLBMessage(s *corev1.Service, why string) string {
+	var addrs []string
+	for _, in := range s.Status.LoadBalancer.Ingress {
+		addrs = append(addrs, firstNonEmpty(in.IP, in.Hostname))
+	}
+	if len(addrs) == 0 {
+		return "LoadBalancer has no pods behind it (" + why + ") and is still requesting an external IP"
+	}
+	return fmt.Sprintf("LoadBalancer %s has no pods behind it (%s); the address stays allocated and billed while serving nothing", strings.Join(addrs, ", "), why)
+}
+
+func hasEndpoints(slices []discoveryv1.EndpointSlice) bool {
+	for _, sl := range slices {
+		if len(sl.Endpoints) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func selectsAny(pods []*corev1.Pod, sel map[string]string) bool {
 	s := labels.SelectorFromSet(sel)
 	for _, p := range pods {
@@ -156,11 +179,35 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 	dangling := map[string]bool{}
 	for _, s := range svcs {
 		svcIndex[s.Namespace+"/"+s.Name] = s
-		if s.Spec.Type == corev1.ServiceTypeExternalName || len(s.Spec.Selector) == 0 {
+		if s.Spec.Type == corev1.ServiceTypeExternalName {
+			continue
+		}
+		lb := s.Spec.Type == corev1.ServiceTypeLoadBalancer
+		if len(s.Spec.Selector) == 0 {
+			// Selector-less services get hand-managed endpoints; only a LoadBalancer is worth the lookup.
+			if !lb {
+				continue
+			}
+			eps, err := c.cs.DiscoveryV1().EndpointSlices(s.Namespace).List(ctx, metav1.ListOptions{LabelSelector: discoveryv1.LabelServiceName + "=" + s.Name})
+			if err != nil {
+				problems = append(problems, "endpointslices: "+truncate(err.Error(), 120))
+				continue
+			}
+			if !hasEndpoints(eps.Items) {
+				dangling[s.Namespace+"/"+s.Name] = true
+				add("idle-loadbalancer", alert.Warning, "Service", s.Namespace, s.Name, idleLBMessage(s, "it has no selector and no endpoints"),
+					kubectl(c.name, s.Namespace, "get endpointslices -l "+discoveryv1.LabelServiceName+"="+s.Name))
+			}
 			continue
 		}
 		if !selectsAny(podsByNS[s.Namespace], s.Spec.Selector) {
 			dangling[s.Namespace+"/"+s.Name] = true
+			if lb {
+				add("idle-loadbalancer", alert.Warning, "Service", s.Namespace, s.Name,
+					idleLBMessage(s, fmt.Sprintf("selector %s matches no running pods", labels.SelectorFromSet(s.Spec.Selector))),
+					kubectl(c.name, s.Namespace, "get pods -l "+shellQuote(labels.SelectorFromSet(s.Spec.Selector).String())))
+				continue
+			}
 			add("dangling-service", alert.Warning, "Service", s.Namespace, s.Name,
 				fmt.Sprintf("selector %s matches no running pods", labels.SelectorFromSet(s.Spec.Selector)),
 				kubectl(c.name, s.Namespace, "get pods -l "+shellQuote(labels.SelectorFromSet(s.Spec.Selector).String())))
