@@ -22,3 +22,10 @@ func TestIdleLoadBalancerMessage(t *testing.T) {
 		t.Fatal("hasEndpoints")
 	}
 }
+
+func TestNodePorts(t *testing.T) {
+	s := &corev1.Service{Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: []corev1.ServicePort{{Port: 80, NodePort: 30080}, {Port: 443, NodePort: 30443}}}}
+	if got := nodePorts(s); got != "30080, 30443" {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -676,6 +676,8 @@ async function alertsView(scope) {
 
 // ---------- doctor ----------
 let doctorPoll;
+// Finding groups start collapsed; remember the ones the user opened across re-renders and re-runs.
+const doctorOpen = new Set();
 async function doctor() {
   const rep = await api('/api/doctor');
   if (current !== 'doctor') return;
@@ -700,7 +702,7 @@ async function doctor() {
     ${ran ? rep.checks.map((c) => {
       const list = byCheck[c.id] || [];
       const worst = list.reduce((m, x) => Math.max(m, RANK[x.severity]), -1);
-      return `<details class="card check" ${list.length && worst >= 2 ? 'open' : ''}>
+      return `<details class="card check" data-check="${esc(c.id)}" ${list.length && doctorOpen.has(c.id) ? 'open' : ''}>
         <summary><span class="pill ${!list.length ? 'ok' : worst >= 2 ? 'warn' : worst === 1 ? 'notice' : ''}">${list.length || '✓'}</span>
           <div><div class="t">${esc(c.title)}</div><div class="d">${esc(c.description)}</div></div><span class="chev">›</span></summary>
         ${list.map((x) => `<div class="finding"><div class="what">${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}</span></div>
@@ -708,6 +710,7 @@ async function doctor() {
           <div class="act"><button class="btn sm primary" data-finding="${rep.findings.indexOf(x)}">Open</button></div></div>`).join('')}
       </details>`;
     }).join('') : ''}`;
+  view.querySelectorAll('details.check').forEach((d) => d.ontoggle = () => { d.open ? doctorOpen.add(d.dataset.check) : doctorOpen.delete(d.dataset.check); });
   view.querySelector('#runDoctor').onclick = async () => { await post('/api/doctor'); doctor(); };
   mountPickers(view, clusters, [...new Set(rep.findings.map((x) => x.namespace).filter(Boolean))].sort());
   view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));

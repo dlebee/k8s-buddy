@@ -25,7 +25,8 @@ type DoctorCheck struct {
 
 var doctorChecks = []DoctorCheck{
 	{"idle-loadbalancer", "LoadBalancers with no pods", "LoadBalancer services that hold an external IP (billed, and reachable) while no pod backs them."},
-	{"dangling-service", "Services with no pods", "Selector matches no running pods, so traffic goes nowhere."},
+	{"idle-nodeport", "NodePorts with no pods", "NodePort services that open a port on every node while no pod backs them."},
+	{"dangling-service", "Internal services with no pods", "ClusterIP services whose selector matches no running pods, so traffic goes nowhere."},
 	{"ingress-backend", "Broken ingress backends", "Ingress points at a missing service, a missing port, or a service with no pods."},
 	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
 	{"nginx-mergeable", "NGINX mergeable ingresses", "Masters and minions NGINX ignores: minions without a master, masters without minions, and hosts claimed twice."},
@@ -143,6 +144,16 @@ func idleLBMessage(s *corev1.Service, why string) string {
 	return fmt.Sprintf("LoadBalancer %s has no pods behind it (%s); the address stays allocated and billed while serving nothing", strings.Join(addrs, ", "), why)
 }
 
+func nodePorts(s *corev1.Service) string {
+	var ports []string
+	for _, p := range s.Spec.Ports {
+		if p.NodePort != 0 {
+			ports = append(ports, fmt.Sprint(p.NodePort))
+		}
+	}
+	return strings.Join(ports, ", ")
+}
+
 func hasEndpoints(slices []discoveryv1.EndpointSlice) bool {
 	for _, sl := range slices {
 		if len(sl.Endpoints) > 0 {
@@ -205,6 +216,12 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 			if lb {
 				add("idle-loadbalancer", alert.Warning, "Service", s.Namespace, s.Name,
 					idleLBMessage(s, fmt.Sprintf("selector %s matches no running pods", labels.SelectorFromSet(s.Spec.Selector))),
+					kubectl(c.name, s.Namespace, "get pods -l "+shellQuote(labels.SelectorFromSet(s.Spec.Selector).String())))
+				continue
+			}
+			if s.Spec.Type == corev1.ServiceTypeNodePort {
+				add("idle-nodeport", alert.Warning, "Service", s.Namespace, s.Name,
+					fmt.Sprintf("NodePort %s is open on every node but selector %s matches no running pods", nodePorts(s), labels.SelectorFromSet(s.Spec.Selector)),
 					kubectl(c.name, s.Namespace, "get pods -l "+shellQuote(labels.SelectorFromSet(s.Spec.Selector).String())))
 				continue
 			}
