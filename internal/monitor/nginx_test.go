@@ -36,7 +36,7 @@ func ing(ns, name, typ, host string, age time.Duration, paths int, tls bool) *ne
 
 func TestNginxMergeIssues(t *testing.T) {
 	day := 24 * time.Hour
-	got := nginxMergeIssues([]*networkingv1.Ingress{
+	got := nginxMergeIssuesT([]*networkingv1.Ingress{
 		// healthy master + minion
 		ing("a", "api-master", "master", "api.example.com", 10*day, 0, true),
 		ing("a", "api-users", "minion", "api.example.com", 9*day, 2, false),
@@ -72,8 +72,54 @@ func TestNginxMergeIssues(t *testing.T) {
 	}
 
 	// Empty master that wins its host gets a notice.
-	got = nginxMergeIssues([]*networkingv1.Ingress{ing("x", "lonely", "master", "x.example.com", day, 0, true)})
+	got = nginxMergeIssuesT([]*networkingv1.Ingress{ing("x", "lonely", "master", "x.example.com", day, 0, true)})
 	if g := got["x/lonely"]; g.Severity != alert.Notice || !strings.Contains(g.Message, "no minions") {
 		t.Errorf("lonely master: %+v", g)
+	}
+}
+
+func nginxMergeIssuesT(ings []*networkingv1.Ingress) map[string]mergeIssue {
+	return nginxMergeIssues(ings, classInfo{})
+}
+
+func withAddress(i *networkingv1.Ingress) *networkingv1.Ingress {
+	i.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "4.249.60.143"}}
+	return i
+}
+
+func TestNginxIncSameHostPlainIngresses(t *testing.T) {
+	ci := classesFrom([]*networkingv1.IngressClass{{
+		ObjectMeta: metav1.ObjectMeta{Name: "nginx-oss"}, Spec: networkingv1.IngressClassSpec{Controller: nginxIncController},
+	}})
+	front := withAddress(ing("asc", "frontend", "", "explorer.example.com", time.Hour, 1, true))
+	metrics := ing("asc", "frontend-metrics", "", "explorer.example.com", time.Hour, 1, true)
+	got := nginxMergeIssues([]*networkingv1.Ingress{front, metrics}, ci)
+	if g := got["asc/frontend-metrics"]; !strings.Contains(g.Message, "already served by asc/frontend") {
+		t.Fatalf("got %+v", got)
+	}
+	if _, ok := got["asc/frontend"]; ok {
+		t.Fatal("served ingress must not be flagged")
+	}
+	// The community controller merges same-host ingresses: nothing to report.
+	ci.controllers["nginx-oss"] = communityController
+	if got := nginxMergeIssues([]*networkingv1.Ingress{front, metrics}, ci); len(got) != 0 {
+		t.Fatalf("community controller: %+v", got)
+	}
+}
+
+func TestForeignAnnotations(t *testing.T) {
+	i := ing("asc", "metrics", "", "x.example.com", time.Hour, 1, false)
+	i.Annotations["nginx.ingress.kubernetes.io/whitelist-source-range"] = "10.0.0.0/8"
+	i.Annotations["nginx.org/proxy-read-timeout"] = "3600"
+	keys, sec := foreignAnnotations(i, nginxIncController)
+	if len(keys) != 1 || keys[0] != "whitelist-source-range" || !sec {
+		t.Fatalf("nginx.org controller: %v %v", keys, sec)
+	}
+	keys, sec = foreignAnnotations(i, communityController)
+	if len(keys) != 1 || keys[0] != "proxy-read-timeout" || sec {
+		t.Fatalf("community controller: %v %v", keys, sec)
+	}
+	if keys, _ := foreignAnnotations(i, "traefik.io/ingress-controller"); len(keys) != 0 {
+		t.Fatalf("other controllers: %v", keys)
 	}
 }

@@ -27,6 +27,7 @@ var doctorChecks = []DoctorCheck{
 	{"ingress-backend", "Broken ingress backends", "Ingress points at a missing service, a missing port, or a service with no pods."},
 	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
 	{"nginx-mergeable", "NGINX mergeable ingresses", "Masters and minions NGINX ignores: minions without a master, masters without minions, and hosts claimed twice."},
+	{"ingress-annotations", "Annotations for the wrong NGINX", "Ingress annotations meant for the other NGINX controller are silently ignored — risky when they restrict access."},
 	{"pdb-blocking", "PDBs blocking drains", "PodDisruptionBudgets that currently allow zero disruptions will stall node drains and upgrades."},
 	{"hpa-target", "HPAs with missing targets", "Autoscaler targets a workload that does not exist."},
 	{"orphaned-pv", "Released / failed volumes", "PersistentVolumes no claim uses anymore; their disks usually still cost money."},
@@ -171,7 +172,13 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 	} else {
 		classes := map[string]bool{}
 		hasDefault := false
+		var ci classInfo
 		if ics, err := c.cs.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{}); err == nil {
+			icPtrs := make([]*networkingv1.IngressClass, len(ics.Items))
+			for i := range ics.Items {
+				icPtrs[i] = &ics.Items[i]
+			}
+			ci = classesFrom(icPtrs)
 			for _, ic := range ics.Items {
 				classes[ic.Name] = true
 				if ic.Annotations[networkingv1.AnnotationIsDefaultIngressClass] == "true" {
@@ -195,7 +202,24 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 		for i := range ings.Items {
 			ptrs[i] = &ings.Items[i]
 		}
-		merge := nginxMergeIssues(ptrs)
+		merge := nginxMergeIssues(ptrs, ci)
+		for _, ing := range ptrs {
+			ctrl := ci.controllerFor(ingressClassOf(ing.Annotations, ing.Spec.IngressClassName))
+			if keys, security := foreignAnnotations(ing, ctrl); len(keys) > 0 {
+				sev, why := alert.Notice, ""
+				if security {
+					sev, why = alert.Warning, " — including access restrictions, so the endpoint is likely more exposed than intended"
+				}
+				other := "ingress-nginx (community)"
+				if ctrl == communityController {
+					other = "NGINX Inc (nginx.org)"
+				}
+				add("ingress-annotations", sev, "Ingress", ing.Namespace, ing.Name,
+					fmt.Sprintf("served by %s but uses %s annotations it ignores: %s%s", ctrl, other, strings.Join(keys, ", "), why),
+					kubectl(c.name, ing.Namespace, "describe ingress "+ing.Name))
+			}
+		}
+
 		for _, ing := range ptrs {
 			if mi, ok := merge[ingressKey(ing)]; ok {
 				add("nginx-mergeable", mi.Severity, "Ingress", ing.Namespace, ing.Name, mi.Message, kubectl(c.name, ing.Namespace, "describe ingress "+ing.Name))

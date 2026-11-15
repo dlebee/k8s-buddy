@@ -315,16 +315,24 @@ func ingressClassOf(annotations map[string]string, className *string) string {
 
 func (c *cluster) detectIngresses() []alert.Alert {
 	ings, _ := c.ingresses.List(labels.Everything())
-	merge := nginxMergeIssues(ings)
+	ci := c.classInfo()
+	merge := nginxMergeIssues(ings, ci)
 	var out []alert.Alert
 	for _, ing := range ings {
 		if len(ing.Status.LoadBalancer.Ingress) > 0 || ing.DeletionTimestamp != nil || time.Since(ing.CreationTimestamp.Time) < ingressNoAddressFor {
 			continue
 		}
 		class := ingressClassOf(ing.Annotations, ing.Spec.IngressClassName)
-		detail := "no controller has picked it up"
-		if class != "" {
-			detail = fmt.Sprintf("class %q — is that controller running?", class)
+		var detail string
+		switch ctrl := ci.controllerFor(class); {
+		case class == "" && ci.def == "":
+			detail = "no ingress class set and the cluster has no default class"
+		case ctrl == "" && len(ci.controllers) > 0:
+			detail = fmt.Sprintf("ingress class %q doesn't exist", class)
+		case ctrl != "":
+			detail = fmt.Sprintf("class %q (%s) hasn't published an address — the controller likely rejected it; check its logs", firstNonEmpty(class, ci.def), ctrl)
+		default:
+			detail = fmt.Sprintf("class %q — no controller has picked it up", class)
 		}
 		title := "Ingress has no address · ingress/" + ing.Name
 		if mi, ok := merge[ingressKey(ing)]; ok {
@@ -339,6 +347,73 @@ func (c *cluster) detectIngresses() []alert.Alert {
 		})
 	}
 	return out
+}
+
+// ---------- ingress controllers ----------
+
+const (
+	nginxIncController  = "nginx.org/ingress-controller"
+	communityController = "k8s.io/ingress-nginx"
+)
+
+type classInfo struct {
+	controllers map[string]string
+	def         string
+}
+
+func classesFrom(list []*networkingv1.IngressClass) classInfo {
+	ci := classInfo{controllers: map[string]string{}}
+	for _, ic := range list {
+		ci.controllers[ic.Name] = ic.Spec.Controller
+		if ic.Annotations[networkingv1.AnnotationIsDefaultIngressClass] == "true" {
+			ci.def = ic.Name
+		}
+	}
+	return ci
+}
+
+func (ci classInfo) controllerFor(class string) string {
+	if class == "" {
+		class = ci.def
+	}
+	return ci.controllers[class]
+}
+
+func (c *cluster) classInfo() classInfo {
+	if c.ingressClasses == nil || !c.synced("ingressclasses") {
+		return classInfo{}
+	}
+	list, _ := c.ingressClasses.List(labels.Everything())
+	return classesFrom(list)
+}
+
+// Annotation prefixes each NGINX flavour understands; the other one silently ignores them.
+var annotationPrefix = map[string]string{
+	nginxIncController:  "nginx.org/",
+	communityController: "nginx.ingress.kubernetes.io/",
+}
+
+var securityAnnotations = []string{"whitelist-source-range", "allowlist-source-range", "denylist-source-range", "auth-", "enable-modsecurity", "basic-auth", "jwt"}
+
+// foreignAnnotations returns annotations meant for the other NGINX controller than the one serving ing.
+func foreignAnnotations(ing *networkingv1.Ingress, controller string) (keys []string, security bool) {
+	for other, prefix := range annotationPrefix {
+		if other == controller || annotationPrefix[controller] == "" {
+			continue
+		}
+		for k := range ing.Annotations {
+			if name, ok := strings.CutPrefix(k, prefix); ok {
+				keys = append(keys, name)
+				for _, s := range securityAnnotations {
+					if strings.HasPrefix(name, s) {
+						security = true
+					}
+				}
+			}
+		}
+	}
+	slices.Sort(keys)
+	return keys, security
 }
 
 // ---------- NGINX (F5 nginx.org) mergeable ingresses ----------
@@ -365,7 +440,7 @@ func ingressPaths(ing *networkingv1.Ingress) int {
 // nginxMergeIssues finds mergeable ingresses NGINX will ignore: minions without a master, masters
 // without minions, masters with paths, and hosts claimed by more than one master/plain ingress
 // (NGINX keeps the oldest). Results are keyed by namespace/name.
-func nginxMergeIssues(ings []*networkingv1.Ingress) map[string]mergeIssue {
+func nginxMergeIssues(ings []*networkingv1.Ingress, ci classInfo) map[string]mergeIssue {
 	type member struct {
 		ing *networkingv1.Ingress
 		typ string
@@ -416,7 +491,25 @@ func nginxMergeIssues(ings []*networkingv1.Ingress) map[string]mergeIssue {
 				contenders = append(contenders, m)
 			}
 		}
+		class := g[:strings.Index(g, "|")]
 		if !mergeable {
+			// NGINX Inc doesn't merge separate plain ingresses for one host: it serves one and
+			// rejects the others. Trust the controller's verdict: only the ones without an address.
+			if ci.controllerFor(class) == nginxIncController && len(contenders) > 1 {
+				var served *networkingv1.Ingress
+				for _, m := range contenders {
+					if len(m.ing.Status.LoadBalancer.Ingress) > 0 && served == nil {
+						served = m.ing
+					}
+				}
+				if served != nil {
+					for _, m := range contenders {
+						if len(m.ing.Status.LoadBalancer.Ingress) == 0 {
+							set(m.ing, alert.Warning, fmt.Sprintf("%s is already served by %s — NGINX (nginx.org) doesn't merge separate ingresses for one host, so this one is ignored and its paths and annotations don't apply (put the paths in one ingress, or use master/minions)", host, ingressKey(served)))
+						}
+					}
+				}
+			}
 			continue
 		}
 		slices.SortStableFunc(contenders, func(a, b member) int {

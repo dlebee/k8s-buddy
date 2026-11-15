@@ -92,26 +92,27 @@ type cluster struct {
 	stats       *Stats
 	statsAt     time.Time
 
-	informers   map[string]cache.SharedIndexInformer
-	pods        corelisters.PodLister
-	pvcs        corelisters.PersistentVolumeClaimLister
-	services    corelisters.ServiceLister
-	nodes       corelisters.NodeLister
-	events      corelisters.EventLister
-	deploys     appslisters.DeploymentLister
-	sts         appslisters.StatefulSetLister
-	ds          appslisters.DaemonSetLister
-	cs          kubernetes.Interface
-	runCtx      context.Context
-	ingresses   networkinglisters.IngressLister
-	helm        cache.GenericLister
-	dynf        dynamicinformer.DynamicSharedInformerFactory
-	dynListers  map[string]cache.GenericLister
-	disc        discoveryCache
-	tables      tableCache
-	configmaps  corelisters.ConfigMapLister
-	secrets     corelisters.SecretLister
-	nodesSynced atomic.Bool
+	informers      map[string]cache.SharedIndexInformer
+	pods           corelisters.PodLister
+	pvcs           corelisters.PersistentVolumeClaimLister
+	services       corelisters.ServiceLister
+	nodes          corelisters.NodeLister
+	events         corelisters.EventLister
+	deploys        appslisters.DeploymentLister
+	sts            appslisters.StatefulSetLister
+	ds             appslisters.DaemonSetLister
+	cs             kubernetes.Interface
+	runCtx         context.Context
+	ingresses      networkinglisters.IngressLister
+	ingressClasses networkinglisters.IngressClassLister
+	helm           cache.GenericLister
+	dynf           dynamicinformer.DynamicSharedInformerFactory
+	dynListers     map[string]cache.GenericLister
+	disc           discoveryCache
+	tables         tableCache
+	configmaps     corelisters.ConfigMapLister
+	secrets        corelisters.SecretLister
+	nodesSynced    atomic.Bool
 }
 
 func newCluster(name, server string, cfg *rest.Config, store *alert.Store) *cluster {
@@ -275,17 +276,19 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	sts := f.Apps().V1().StatefulSets()
 	ds := f.Apps().V1().DaemonSets()
 	ings := f.Networking().V1().Ingresses()
+	ics := f.Networking().V1().IngressClasses()
 
 	infs := map[string]cache.SharedIndexInformer{
-		"pods":         pods.Informer(),
-		"pvcs":         pvcs.Informer(),
-		"services":     svcs.Informer(),
-		"nodes":        nodes.Informer(),
-		"events":       events.Informer(),
-		"deployments":  deploys.Informer(),
-		"statefulsets": sts.Informer(),
-		"daemonsets":   ds.Informer(),
-		"ingresses":    ings.Informer(),
+		"pods":           pods.Informer(),
+		"pvcs":           pvcs.Informer(),
+		"services":       svcs.Informer(),
+		"nodes":          nodes.Informer(),
+		"events":         events.Informer(),
+		"deployments":    deploys.Informer(),
+		"statefulsets":   sts.Informer(),
+		"daemonsets":     ds.Informer(),
+		"ingresses":      ings.Informer(),
+		"ingressclasses": ics.Informer(),
 	}
 	var mf metadatainformer.SharedInformerFactory
 	if mc, err := metadata.NewForConfig(c.cfg); err == nil {
@@ -350,6 +353,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	c.pods, c.pvcs, c.services, c.nodes, c.events = pods.Lister(), pvcs.Lister(), svcs.Lister(), nodes.Lister(), events.Lister()
 	c.deploys, c.sts, c.ds = deploys.Lister(), sts.Lister(), ds.Lister()
 	c.ingresses = ings.Lister()
+	c.ingressClasses = ics.Lister()
 	c.mu.Unlock()
 
 	f.Start(ctx.Done())
