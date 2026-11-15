@@ -77,12 +77,16 @@ func validName(s string) bool {
 	return s != "" && !strings.HasPrefix(s, "-") && !strings.ContainsAny(s, "/ \t\n\\")
 }
 
+// freePort returns preferred if it can be bound (an error if it's taken: the user picked it on
+// purpose), or any free port when preferred is 0.
 func freePort(preferred int) (int, error) {
 	if preferred > 0 {
-		if ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(preferred)); err == nil {
-			ln.Close()
-			return preferred, nil
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(preferred))
+		if err != nil {
+			return 0, fmt.Errorf("local port %d is already in use — pick another one or let k8s-buddy choose", preferred)
 		}
+		ln.Close()
+		return preferred, nil
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -99,6 +103,9 @@ func (f *forwarder) start(req forwardRequest) (Forward, error) {
 	}
 	if req.Cluster == "" || !validName(req.Namespace) || !validName(req.Name) {
 		return Forward{}, errors.New("invalid target")
+	}
+	if req.LocalPort < 0 || req.LocalPort > 65535 {
+		return Forward{}, errors.New("local port must be between 1 and 65535")
 	}
 	if req.Port < 1 || req.Port > 65535 {
 		return Forward{}, errors.New("pick a port between 1 and 65535")

@@ -53,8 +53,12 @@ export async function openForward(id, url) {
   try { await api(`/api/portforwards/${id}/open`, { method: 'POST' }); } catch { window.open(url, '_blank'); }
 }
 
+let lastSig = '';
 export async function refreshForwards() {
   try { list = await api('/api/portforwards'); } catch { return list; }
+  const sig = JSON.stringify(list.map((f) => [f.id, f.state, f.error, f.url]));
+  if (sig === lastSig) return list;
+  lastSig = sig;
   renderDock();
   document.dispatchEvent(new CustomEvent('buddy:forwards', { detail: list }));
   return list;
@@ -69,7 +73,8 @@ export function mountForwardsDock() {
   dock.className = 'pf-dock';
   dock.hidden = true;
   document.body.appendChild(dock);
-  document.addEventListener('click', (e) => { if (open && !dock.contains(e.target)) { open = false; renderDock(); } });
+  // composedPath, not dock.contains: clicking inside re-renders the dock and detaches the target.
+  document.addEventListener('click', (e) => { if (open && !e.composedPath().includes(dock)) { open = false; renderDock(); } });
   const tick = () => { if (!document.hidden) refreshForwards(); };
   tick();
   clearInterval(pollTimer);
@@ -117,14 +122,29 @@ export function menu(anchor, { title, items, custom }) {
   }
 }
 
-// pickForward starts a forward right away for a single port, otherwise asks which one.
+// pickForward asks which remote port (unless there's only one), then which local port.
 export function pickForward(anchor, target, ports) {
   const uniq = [...new Map(ports.map((p) => [p.port, p])).values()];
-  if (uniq.length === 1 && !anchor.dataset.always) return startForward({ ...target, port: uniq[0].port });
+  const next = (port) => pickLocalPort(anchor, target, port);
+  if (uniq.length === 1 && !anchor.dataset.always) return next(uniq[0].port);
   menu(anchor, {
     title: uniq.length ? 'Forward which port?' : 'No ports declared — which port?',
-    items: uniq.map((p) => ({ label: `:${p.port}`, sub: p.label || '', onPick: () => startForward({ ...target, port: p.port }) })),
-    custom: { placeholder: 'Other port…', onSubmit: (port) => startForward({ ...target, port }) },
+    items: uniq.map((p) => ({ label: `:${p.port}`, sub: p.label || '', onPick: () => next(p.port) })),
+    custom: { placeholder: 'Other port…', onSubmit: next },
+  });
+}
+
+// pickLocalPort lets you choose the port on this Mac; "Any free port" keeps it automatic.
+function pickLocalPort(anchor, target, port) {
+  const used = new Set(list.filter((f) => f.state !== 'failed').map((f) => f.localPort));
+  menu(anchor, {
+    title: `Forward :${port} to which local port?`,
+    items: [
+      { label: 'Any free port', sub: 'picked automatically', onPick: () => startForward({ ...target, port }) },
+      { label: `localhost:${port}`, sub: used.has(port) ? 'already used by another forward' : 'same as remote', disabled: used.has(port),
+        onPick: () => startForward({ ...target, port, localPort: port }) },
+    ],
+    custom: { placeholder: 'Local port, e.g. 8080', onSubmit: (localPort) => startForward({ ...target, port, localPort }) },
   });
 }
 
