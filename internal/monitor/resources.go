@@ -130,12 +130,12 @@ func Kinds() []KindInfo {
 }
 
 type ResourceQuery struct {
-	Kind      string
-	Cluster   string
-	Namespace string
-	Search    string
-	Problems  bool
-	Limit     int
+	Kind       string
+	Clusters   []string // empty means all
+	Namespaces []string // empty means all; cluster-scoped kinds ignore it
+	Search     string
+	Problems   bool
+	Limit      int
 }
 
 type ResourceList struct {
@@ -189,7 +189,7 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 	out := newResourceList(q.Kind, spec.columns, spec.namespaced)
 	var rows []Resource
 	for _, c := range m.connected() {
-		if q.Cluster != "" && c.name != q.Cluster {
+		if !inScope(q.Clusters, c.name) {
 			continue
 		}
 		if lazyKinds[q.Kind] {
@@ -218,6 +218,10 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 	return out, nil
 }
 
+func inScope(set []string, v string) bool {
+	return len(set) == 0 || slices.Contains(set, v)
+}
+
 func newResourceList(kind string, columns []string, namespaced bool) ResourceList {
 	return ResourceList{Kind: kind, Columns: columns, Namespaced: namespaced, Items: []Resource{}, Namespaces: []string{}, Unavailable: []Unavailable{}}
 }
@@ -230,7 +234,7 @@ func (out *ResourceList) apply(rows []Resource, q ResourceQuery) {
 		if r.Namespace != "" {
 			nsSet[r.Namespace] = true
 		}
-		if q.Namespace != "" && r.Namespace != q.Namespace {
+		if r.Namespace != "" && !inScope(q.Namespaces, r.Namespace) {
 			continue
 		}
 		bad := r.Health == HealthBad || r.Health == HealthWarn

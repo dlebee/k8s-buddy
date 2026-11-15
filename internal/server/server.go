@@ -77,9 +77,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		writeJSON(w, s.store.List(alert.Query{
-			Cluster: r.URL.Query().Get("cluster"),
-			Scope:   r.URL.Query().Get("scope"),
-			Limit:   limit,
+			Clusters: listParam(r, "cluster"),
+			Scope:    r.URL.Query().Get("scope"),
+			Limit:    limit,
 		}))
 	})
 	mux.HandleFunc("POST /api/alerts/{id}/ack", func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +87,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/alerts/ack-all", func(w http.ResponseWriter, r *http.Request) {
-		s.store.AckAll(r.URL.Query().Get("cluster"))
+		s.store.AckAll(listParam(r, "cluster"))
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /api/alerts/{id}/mute", func(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +111,7 @@ func (s *Server) Handler() http.Handler {
 			limit = 1500
 		}
 		list, err := s.mgr.Resources(monitor.ResourceQuery{
-			Kind: q.Get("kind"), Cluster: q.Get("cluster"), Namespace: q.Get("namespace"),
+			Kind: q.Get("kind"), Clusters: listParam(r, "cluster"), Namespaces: listParam(r, "namespace"),
 			Search: q.Get("q"), Problems: q.Get("problems") == "1", Limit: limit,
 		})
 		if err != nil {
@@ -286,6 +286,19 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+// listParam reads a multi-value query parameter given as repeats and/or comma-separated values.
+func listParam(r *http.Request, key string) []string {
+	var out []string
+	for _, v := range r.URL.Query()[key] {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

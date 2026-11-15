@@ -1,6 +1,7 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
+import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from '/static/scope.js';
 
 const view = document.getElementById('view');
 const VIEWS = ['overview', 'resources', 'alerts', 'history', 'doctor', 'settings'];
@@ -22,7 +23,15 @@ export function go(name, params = {}) {
 window.buddyShowTab = (tab) => go(VIEWS.includes(tab) ? tab : 'overview');
 
 async function render() {
-  const r = route();
+  let r = route();
+  if (r.params.has('cluster') || r.params.has('namespace')) {
+    if (r.params.get('cluster')) setScope('clusters', [r.params.get('cluster')], { notify: false });
+    if (r.params.get('namespace')) setScope('namespaces', [r.params.get('namespace')], { notify: false });
+    r.params.delete('cluster'); r.params.delete('namespace');
+    const qs = r.params.toString();
+    history.replaceState(null, '', `#${r.name}${qs ? '?' + qs : ''}`);
+    r = route();
+  }
   document.querySelectorAll('nav a[data-view]').forEach((a) => a.classList.toggle('on', a.dataset.view === r.name));
   subnav.hidden = r.name !== 'resources';
   current = r.name;
@@ -35,6 +44,16 @@ async function render() {
 }
 document.querySelectorAll('nav a[data-view]').forEach((a) => a.addEventListener('click', () => go(a.dataset.view)));
 window.addEventListener('hashchange', render);
+document.addEventListener('buddy:scope', () => { if (drawer.hidden) render(); });
+document.addEventListener('click', (e) => { if (e.target.closest('[data-scope-clear]')) setScope('clusters', []); });
+
+// mountPickers fills toolbar placeholders with the shared cluster/namespace pickers.
+function mountPickers(root, clusterNames, namespaceNames, { namespaced = true } = {}) {
+  root.querySelector('[data-pick=clusters]')?.replaceWith(picker('clusters', clusterNames.map((value) => ({ value }))));
+  root.querySelector('[data-pick=namespaces]')?.replaceWith(picker('namespaces', namespaceNames.map((value) => ({ value })),
+    { disabled: !namespaced, note: 'This kind is cluster-wide, so the namespace filter doesn\'t apply' }));
+}
+const PICKERS = '<span data-pick="clusters"></span><span data-pick="namespaces"></span>';
 
 // ---------- resizable sidebar ----------
 (() => {
@@ -80,17 +99,23 @@ function head(title, sub, right = '') {
 
 // ---------- overview ----------
 async function overview() {
-  const [ov, sum, latest] = await Promise.all([loadClusters(), api('/api/summary'), api('/api/alerts?scope=pending&limit=6')]);
+  const [ov, pending] = await Promise.all([loadClusters(), api('/api/alerts?' + new URLSearchParams({ scope: 'pending', limit: '3000', cluster: scopeParam('clusters') }))]);
   if (current !== 'overview') return;
-  const monitored = ov.clusters.filter((c) => c.status !== 'excluded');
+  pruneClusters(ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name));
+  const allMonitored = ov.clusters.filter((c) => c.status !== 'excluded');
+  const monitored = allMonitored.filter((c) => inScope('clusters', c.name));
+  const shown = ov.clusters.filter((c) => inScope('clusters', c.name));
+  const latest = pending.slice(0, 6);
+  const sum = { pending: pending.length, clusters: new Set(pending.map((a) => a.cluster)).size };
   const up = monitored.filter((c) => c.stats);
   const total = (k) => up.reduce((n, c) => n + (c.stats[k] || 0), 0);
   const unreachable = monitored.filter((c) => c.status === 'error').length;
   const signin = monitored.filter((c) => c.status === 'signin').length;
   const nodes = total('nodes'), nodesReady = total('nodesReady'), unhealthy = total('podsProblem');
   view.innerHTML = `
-    ${head('Overview', `${plural(monitored.length, 'cluster')} monitored${unreachable ? ` · <span style="color:var(--bad)">${unreachable} unreachable</span>` : ''}`,
-      `<button class="btn" id="toDoctor">✚ Run doctor</button>`)}
+    ${head('Overview', `${plural(allMonitored.length, 'cluster')} monitored${unreachable ? ` · <span style="color:var(--bad)">${unreachable} unreachable</span>` : ''}`,
+      `<span data-pick="clusters"></span><button class="btn" id="toDoctor">✚ Run doctor</button>`)}
+    ${scopeChip(allMonitored.length)}
     ${ov.kubeconfigError ? `<div class="card empty" style="color:var(--bad)">Kubeconfig error: ${esc(ov.kubeconfigError)}</div>` : ''}
     <div class="stats">
       <div class="card stat ${sum.pending ? 'warn' : ''}"><div class="label">Needs a look</div><div class="value">${sum.pending}</div><div class="foot">on ${plural(sum.clusters, 'cluster')}</div></div>
@@ -102,12 +127,15 @@ async function overview() {
     ${latest.length ? `<div class="section-title">Needs a look <small>most important first</small><span class="spacer" style="flex:1"></span><a style="font-weight:500;font-size:12.5px;cursor:pointer" id="allAlerts">See all →</a></div>
       <div class="card alerts">${latest.map(alertRow).join('')}</div>` : ''}
     <div class="section-title">Clusters <small>click one to browse its resources</small></div>
-    <div class="clusters">${ov.clusters.map(clusterCard).join('')}</div>`;
+    <div class="clusters">${shown.map(clusterCard).join('')}</div>`;
+  mountPickers(view, allMonitored.map((c) => c.name), []);
   view.querySelector('#toDoctor').onclick = () => go('doctor');
   view.querySelector('#allAlerts')?.addEventListener('click', () => go('alerts'));
   view.querySelectorAll('.cluster').forEach((el) => el.onclick = () => {
     if (el.dataset.status === 'signin') { main.scrollTo({ top: 0, behavior: 'smooth' }); return; }
-    if (el.dataset.status === 'excluded' || el.dataset.status === 'error') go('settings'); else go('resources', { kind: 'pods', cluster: el.dataset.name });
+    if (el.dataset.status === 'excluded' || el.dataset.status === 'error') { go('settings'); return; }
+    setScope('clusters', [el.dataset.name], { notify: false });
+    go('resources', { kind: 'pods' });
   });
   bindAlertRows(view, latest);
 }
@@ -190,7 +218,7 @@ function renderSubnav(active) {
   subnav.querySelectorAll('a[data-kind]').forEach((a) => a.onclick = () => {
     resState.sort = null;
     const p = route().params;
-    go('resources', { kind: a.dataset.kind, cluster: p.get('cluster') || '', problems: p.get('problems') || '' });
+    go('resources', { kind: a.dataset.kind, problems: p.get('problems') || '' });
   });
   const fi = subnav.querySelector('#crdFilter');
   if (fi) {
@@ -204,15 +232,14 @@ async function resources(params) {
   await loadKinds();
   const ov = clustersCache || await loadClusters();
   const kind = params.get('kind') || 'pods';
-  const f = { kind, cluster: params.get('cluster') || '', namespace: params.get('namespace') || '', q: params.get('q') || '', problems: params.get('problems') === '1' };
+  const f = { kind, q: params.get('q') || '', problems: params.get('problems') === '1' };
   const clusterNames = ov.clusters.filter((c) => c.stats).map((c) => c.name);
   renderSubnav(kind);
   const crd = crds.find((c) => crKind(c) === kind);
   view.innerHTML = `
     ${head(esc(kindLabel(kind)), crd ? `<code>${esc(crd.group)}/${esc(crd.version)}</code> · custom resource on ${plural(crd.clusters.length, 'cluster')}` : 'Across all your clusters.')}
     <div class="toolbar">
-      <select class="input" id="fCluster"><option value="">All clusters</option>${clusterNames.map((n) => `<option ${n === f.cluster ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-      <select class="input" id="fNs"><option value="">All namespaces</option></select>
+      <span id="fPickers">${PICKERS}</span>
       <input class="input search" id="fQ" placeholder="Search name, status, image, IP…" value="${esc(f.q)}" autocomplete="off" spellcheck="false">
       <label class="toggle"><input type="checkbox" id="fProblems" ${f.problems ? 'checked' : ''}> Only problems</label>
       <span class="spacer" style="flex:1"></span><span class="muted" id="resCount"></span>
@@ -220,21 +247,19 @@ async function resources(params) {
     <div class="card"><div class="table-wrap" id="resTable"><div class="empty">Loading…</div></div><div class="table-foot" id="resFoot" hidden></div></div>`;
 
   const update = (patch) => go('resources', { ...f, problems: f.problems ? '1' : '', ...patch });
-  view.querySelector('#fCluster').onchange = (e) => update({ cluster: e.target.value, namespace: '' });
-  view.querySelector('#fNs').onchange = (e) => update({ namespace: e.target.value });
   view.querySelector('#fProblems').onchange = (e) => update({ problems: e.target.checked ? '1' : '' });
   const q = view.querySelector('#fQ');
   q.oninput = debounce(() => { f.q = q.value; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); load(); }, 250);
   if (f.q) { q.focus(); q.setSelectionRange(f.q.length, f.q.length); }
 
   async function load() {
-    const qs = new URLSearchParams({ kind: f.kind, cluster: f.cluster, namespace: f.namespace, q: f.q, problems: f.problems ? '1' : '' });
+    const qs = new URLSearchParams({ kind: f.kind, cluster: scopeParam('clusters'), namespace: scopeParam('namespaces'), q: f.q, problems: f.problems ? '1' : '' });
     const list = await api('/api/resources?' + qs);
     if (current !== 'resources' || route().params.get('kind') && route().params.get('kind') !== f.kind) return;
     lastList = list;
-    const ns = view.querySelector('#fNs');
-    ns.disabled = !list.namespaced;
-    ns.innerHTML = `<option value="">All namespaces</option>` + list.namespaces.map((n) => `<option ${n === f.namespace ? 'selected' : ''}>${esc(n)}</option>`).join('');
+    const pick = view.querySelector('#fPickers');
+    pick.innerHTML = PICKERS;
+    mountPickers(pick, clusterNames, list.namespaces, { namespaced: list.namespaced });
     view.querySelector('#resCount').textContent = `${list.total.toLocaleString()} ${list.total === 1 ? 'item' : 'items'}${list.problems ? ` · ${list.problems} with problems` : ''}`;
     renderTable(list);
   }
@@ -583,31 +608,32 @@ function bindAlertRows(root, alerts, after = render) {
 
 async function alertsView(scope) {
   const p = route().params;
-  const f = { cluster: p.get('cluster') || '', sev: p.get('sev') || '', q: p.get('q') || '' };
+  const f = { sev: p.get('sev') || '', q: p.get('q') || '' };
   const ov = clustersCache || await loadClusters();
-  const all = await api(`/api/alerts?scope=${scope}&limit=3000${f.cluster ? '&cluster=' + encodeURIComponent(f.cluster) : ''}`);
+  const all = await api('/api/alerts?' + new URLSearchParams({ scope, limit: '3000', cluster: scopeParam('clusters') }));
   if (current !== (scope === 'all' ? 'history' : 'alerts')) return;
   const needle = f.q.toLowerCase();
-  const items = all.filter((a) => (!f.sev || RANK[a.severity] >= RANK[f.sev]) &&
+  const namespaces = [...new Set(all.map((a) => a.namespace).filter(Boolean))].sort();
+  const items = all.filter((a) => inScope('namespaces', a.namespace) && (!f.sev || RANK[a.severity] >= RANK[f.sev]) &&
     (!needle || [a.cluster, a.namespace, a.title, a.detail, a.category].join(' ').toLowerCase().includes(needle)));
   const name = scope === 'all' ? 'history' : 'alerts';
   view.innerHTML = `
     ${head(scope === 'all' ? 'History' : 'Alerts', scope === 'all' ? 'Everything k8s-buddy has seen, including resolved and snoozed.' : 'Open problems, including snoozed ones.',
       scope === 'all' ? '' : `<button class="btn" id="ackAll">Snooze all</button>`)}
     <div class="toolbar">
-      <select class="input" id="aCluster"><option value="">All clusters</option>${ov.clusters.filter((c) => c.status !== 'excluded').map((c) => `<option ${c.name === f.cluster ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      ${PICKERS}
       <div class="seg" id="aSev">${[['', 'All'], ['notice', 'Notice+'], ['warning', 'Warning+'], ['critical', 'Critical']].map(([v, l]) => `<button data-v="${v}" class="${f.sev === v ? 'on' : ''}">${l}</button>`).join('')}</div>
       <input class="input search" id="aQ" placeholder="Search alerts…" value="${esc(f.q)}">
       <span class="spacer" style="flex:1"></span><span class="muted">${plural(items.length, 'alert')}</span>
     </div>
     <div class="card alerts">${items.length ? items.map(alertRow).join('') : `<div class="empty"><span class="big">${scope === 'all' ? '🗂️' : '😌'}</span>${scope === 'all' ? 'No history yet.' : 'Nothing needs your attention.'}</div>`}</div>`;
   const upd = (patch) => go(name, { ...f, ...patch });
-  view.querySelector('#aCluster').onchange = (e) => upd({ cluster: e.target.value });
+  mountPickers(view, ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name), namespaces);
   view.querySelectorAll('#aSev button').forEach((b) => b.onclick = () => upd({ sev: b.dataset.v }));
   const q = view.querySelector('#aQ');
   q.oninput = debounce(() => upd({ q: q.value }), 300);
   if (f.q) { q.focus(); q.setSelectionRange(f.q.length, f.q.length); }
-  view.querySelector('#ackAll')?.addEventListener('click', async () => { await post('/api/alerts/ack-all' + (f.cluster ? '?cluster=' + encodeURIComponent(f.cluster) : '')); toast('Snoozed'); render(); });
+  view.querySelector('#ackAll')?.addEventListener('click', async () => { await post('/api/alerts/ack-all?' + new URLSearchParams({ cluster: scopeParam('clusters') })); toast('Snoozed'); render(); });
   bindAlertRows(view, items);
 }
 
@@ -616,9 +642,7 @@ let doctorPoll;
 async function doctor() {
   const rep = await api('/api/doctor');
   if (current !== 'doctor') return;
-  const p = route().params;
-  const fc = p.get('cluster') || '';
-  const findings = rep.findings.filter((x) => !fc || x.cluster === fc);
+  const findings = rep.findings.filter((x) => inScope('clusters', x.cluster) && inScope('namespaces', x.namespace));
   const byCheck = Object.fromEntries(rep.checks.map((c) => [c.id, []]));
   findings.forEach((x) => (byCheck[x.check] ||= []).push(x));
   const ran = !!rep.finishedAt;
@@ -634,7 +658,7 @@ async function doctor() {
       <div class="spacer"></div>
       <button class="btn primary" id="runDoctor" ${rep.running ? 'disabled' : ''}>${rep.running ? '<span class="spinner"></span>Running…' : ran ? 'Run again' : 'Run checkup'}</button>
     </div>
-    ${ran && clusters.length ? `<div class="toolbar" style="margin-top:16px"><select class="input" id="dCluster"><option value="">All clusters</option>${clusters.map((c) => `<option ${c === fc ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>` : ''}
+    ${ran && clusters.length ? `<div class="toolbar" style="margin-top:16px">${PICKERS}${findings.length !== rep.findings.length ? `<span class="muted">${findings.length} of ${rep.findings.length} findings in scope</span>` : ''}</div>` : ''}
     ${Object.keys(rep.errors || {}).length ? `<p class="muted" style="margin-top:12px">Some checks were skipped: ${Object.entries(rep.errors).map(([c, e]) => `<b>${esc(c)}</b> (${esc(e)})`).join(', ')}</p>` : ''}
     ${ran ? rep.checks.map((c) => {
       const list = byCheck[c.id] || [];
@@ -648,7 +672,7 @@ async function doctor() {
       </details>`;
     }).join('') : ''}`;
   view.querySelector('#runDoctor').onclick = async () => { await post('/api/doctor'); doctor(); };
-  view.querySelector('#dCluster')?.addEventListener('change', (e) => go('doctor', { cluster: e.target.value }));
+  mountPickers(view, clusters, [...new Set(rep.findings.map((x) => x.namespace).filter(Boolean))].sort());
   view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
   view.querySelectorAll('[data-finding]').forEach((b) => b.onclick = () => {
     const x = rep.findings[+b.dataset.finding];

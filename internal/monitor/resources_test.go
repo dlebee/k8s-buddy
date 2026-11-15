@@ -81,3 +81,27 @@ func TestEventAlerts(t *testing.T) {
 		t.Fatalf("repeated probe failures should alert: %+v", l)
 	}
 }
+
+func TestApplyScopesClustersAndNamespaces(t *testing.T) {
+	rows := []Resource{
+		{Cluster: "a", Namespace: "web", Name: "p1"},
+		{Cluster: "a", Namespace: "db", Name: "p2"},
+		{Cluster: "b", Namespace: "web", Name: "p3"},
+		{Cluster: "a", Name: "node-1"}, // cluster-scoped rows ignore the namespace filter
+	}
+	out := newResourceList("pods", nil, true)
+	out.apply(rows, ResourceQuery{Namespaces: []string{"web", "kube-system"}})
+	var names []string
+	for _, r := range out.Items {
+		names = append(names, r.Name)
+	}
+	if strings.Join(names, ",") != "node-1,p1,p3" {
+		t.Fatalf("got %v", names)
+	}
+	if strings.Join(out.Namespaces, ",") != "db,web" {
+		t.Fatalf("namespace options should ignore the namespace filter, got %v", out.Namespaces)
+	}
+	if !inScope(nil, "x") || inScope([]string{"a"}, "b") || !inScope([]string{"a", "b"}, "b") {
+		t.Fatal("inScope")
+	}
+}

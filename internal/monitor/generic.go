@@ -372,7 +372,7 @@ func (m *Manager) genericResources(q ResourceQuery, g genericKind) ResourceList 
 	var results []result
 	var wg sync.WaitGroup
 	for _, c := range m.connected() {
-		if (q.Cluster != "" && c.name != q.Cluster) || !c.synced("pods") {
+		if !inScope(q.Clusters, c.name) || !c.synced("pods") {
 			continue
 		}
 		res, ok := c.findResource(g.res.Group, g.res.Resource)

@@ -259,8 +259,9 @@ func (s *Store) Ack(id string) bool {
 	return s.ackWhere(func(a *Alert) bool { return a.ID == id })
 }
 
-func (s *Store) AckAll(cluster string) bool {
-	return s.ackWhere(func(a *Alert) bool { return cluster == "" || a.Cluster == cluster })
+// AckAll snoozes every pending alert, or only those on the given clusters.
+func (s *Store) AckAll(clusters []string) bool {
+	return s.ackWhere(func(a *Alert) bool { return len(clusters) == 0 || slices.Contains(clusters, a.Cluster) })
 }
 
 func (s *Store) ackWhere(match func(*Alert) bool) bool {
@@ -295,7 +296,7 @@ func (s *Store) Get(id string) (Alert, bool) {
 }
 
 type Query struct {
-	Cluster string
+	Clusters []string // empty means all
 	// Scope: "pending" (default), "active" (unresolved incl. snoozed) or "all" (history).
 	Scope string
 	Limit int
@@ -306,7 +307,7 @@ func (s *Store) List(q Query) []Alert {
 	now := s.now()
 	out := make([]Alert, 0, 64)
 	for _, a := range s.history {
-		if q.Cluster != "" && a.Cluster != q.Cluster {
+		if len(q.Clusters) > 0 && !slices.Contains(q.Clusters, a.Cluster) {
 			continue
 		}
 		switch q.Scope {

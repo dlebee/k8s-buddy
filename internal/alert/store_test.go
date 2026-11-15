@@ -75,3 +75,17 @@ func TestRetainClustersDropsUnknown(t *testing.T) {
 		t.Fatalf("got %+v", h)
 	}
 }
+
+func TestListAndAckAllByClusters(t *testing.T) {
+	s := NewStore()
+	for _, c := range []string{"a", "b", "c"} {
+		s.Observe(Alert{Key: "k", Cluster: c, Severity: Warning})
+	}
+	if n := len(s.List(Query{Clusters: []string{"a", "c"}})); n != 2 {
+		t.Fatalf("list by clusters: %d", n)
+	}
+	s.AckAll([]string{"a", "b"})
+	if l := s.List(Query{}); len(l) != 1 || l[0].Cluster != "c" {
+		t.Fatalf("ack-all by clusters: %+v", l)
+	}
+}
