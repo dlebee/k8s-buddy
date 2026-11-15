@@ -1,0 +1,185 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>k8s-buddy</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; user-select: none; -webkit-user-select: none; }
+  /* The native window is 280x200; the character lives in the bottom-right 120x140 hit area. */
+  #buddy { position: absolute; right: 0; bottom: 0; width: 120px; height: 140px; }
+  #float { position: absolute; inset: 0; animation: float 3.2s ease-in-out infinite; }
+  #buddy.bounce #float { animation: bounce .9s cubic-bezier(.3,1.6,.5,1) 2; }
+  #buddy.critical #float { animation: float 3.2s ease-in-out infinite, shake .5s ease-in-out 3; }
+  svg { position: absolute; left: 10px; bottom: 14px; width: 100px; height: 116px; overflow: visible; }
+  #shadow { position: absolute; left: 32px; bottom: 6px; width: 56px; height: 9px; border-radius: 50%;
+    background: rgba(0,0,0,.22); filter: blur(2px); animation: shadow 3.2s ease-in-out infinite; }
+
+  .body { transition: fill .6s; }
+  #buddy.critical .body { fill: url(#gCrit); }
+  #buddy.idle .body { fill: url(#gIdle); }
+  .eye { transform-origin: center; transform-box: fill-box; animation: blink 5s infinite; }
+  .pupil { transition: r .3s; }
+  #buddy.alert .pupil, #buddy.critical .pupil { r: 4.2; }
+  .happy-eye { display: none; }
+  #buddy.happy .eye { display: none; }
+  #buddy.happy .happy-eye { display: inline; }
+  #bang { opacity: 0; transition: opacity .3s; }
+  #buddy.alert #bang, #buddy.critical #bang { opacity: 1; animation: pop 1.6s ease-in-out infinite; }
+  #wheel { transform-origin: 50px 76px; animation: spin 14s linear infinite; }
+  #buddy.critical #wheel { animation-duration: 3s; }
+
+  #badge { position: absolute; right: 10px; top: 14px; min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box;
+    border-radius: 11px; background: #ff3b30; color: #fff; font-weight: 700; font-size: 12px; line-height: 22px; text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #fff; transform: scale(0); transition: transform .25s cubic-bezier(.3,1.8,.5,1); }
+  #badge.on { transform: scale(1); }
+  #badge.warn { background: #ff9f0a; }
+  #badge.calm { background: #0a84ff; }
+
+  #bubble { position: absolute; right: 112px; bottom: 58px; max-width: 160px; padding: 8px 10px; border-radius: 12px;
+    background: #fff; color: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.22); opacity: 0; transform: translateX(8px) scale(.96);
+    transition: opacity .25s, transform .25s; pointer-events: none; }
+  #bubble.on { opacity: 1; transform: none; }
+  #bubble::after { content: ""; position: absolute; right: -6px; bottom: 16px; border: 7px solid transparent; border-right: 0; border-left-color: #fff; }
+  #bubble b { display: block; font-size: 11px; color: #6e6e73; font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #bubble span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  @media (prefers-color-scheme: dark) {
+    #bubble { background: #2c2c2e; color: #f2f2f7; }
+    #bubble::after { border-left-color: #2c2c2e; }
+    #bubble b { color: #aeaeb2; }
+  }
+
+  @keyframes float { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-6px) } }
+  @keyframes shadow { 0%,100% { transform: scaleX(1); opacity: 1 } 50% { transform: scaleX(.82); opacity: .7 } }
+  @keyframes bounce { 0% { transform: translateY(0) } 30% { transform: translateY(-22px) scaleY(1.05) } 55% { transform: translateY(0) scaleY(.92) } 75% { transform: translateY(-6px) } 100% { transform: translateY(0) } }
+  @keyframes shake { 0%,100% { translate: 0 } 25% { translate: -3px } 75% { translate: 3px } }
+  @keyframes blink { 0%,94%,100% { transform: scaleY(1) } 97% { transform: scaleY(.1) } }
+  @keyframes pop { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-3px) } }
+  @keyframes spin { to { transform: rotate(360deg) } }
+</style>
+</head>
+<body>
+<div id="bubble"><b id="bubbleTitle"></b><span id="bubbleText"></span></div>
+<div id="buddy" class="idle">
+  <div id="shadow"></div>
+  <div id="float">
+    <svg viewBox="0 0 100 116" aria-label="k8s buddy">
+      <defs>
+        <linearGradient id="gBody" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b8cff"/><stop offset="1" stop-color="#2459d6"/></linearGradient>
+        <linearGradient id="gIdle" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8ea2c9"/><stop offset="1" stop-color="#5b6b8c"/></linearGradient>
+        <linearGradient id="gCrit" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff7a6b"/><stop offset="1" stop-color="#d92d20"/></linearGradient>
+      </defs>
+      <!-- antenna -->
+      <line x1="50" y1="14" x2="50" y2="4" stroke="#2459d6" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="50" cy="4" r="4" fill="#ffd60a"/>
+      <!-- body: a friendly ghost-ish blob -->
+      <path class="body" fill="url(#gBody)" d="M50 12 C78 12 92 32 92 58 L92 98 Q85 92 78 98 Q71 104 64 98 Q57 92 50 98 Q43 104 36 98 Q29 92 22 98 Q15 104 8 98 L8 58 C8 32 22 12 50 12 Z"/>
+      <ellipse cx="36" cy="26" rx="12" ry="6" fill="#fff" opacity=".18"/>
+      <!-- eyes -->
+      <g class="eye"><ellipse cx="36" cy="46" rx="8" ry="9" fill="#fff"/><circle class="pupil" cx="37" cy="47" r="3.4" fill="#1c1c1e"/></g>
+      <g class="eye"><ellipse cx="64" cy="46" rx="8" ry="9" fill="#fff"/><circle class="pupil" cx="63" cy="47" r="3.4" fill="#1c1c1e"/></g>
+      <path class="happy-eye" d="M29 48 Q36 40 43 48" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <path class="happy-eye" d="M57 48 Q64 40 71 48" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <ellipse cx="26" cy="58" rx="5" ry="3" fill="#ff8fa3" opacity=".55"/>
+      <ellipse cx="74" cy="58" rx="5" ry="3" fill="#ff8fa3" opacity=".55"/>
+      <!-- helm on the belly -->
+      <g id="wheel" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none" opacity=".95">
+        <circle cx="50" cy="76" r="9"/>
+        <circle cx="50" cy="76" r="2.4" fill="#fff"/>
+        <path d="M50 64 V88 M39.6 70 L60.4 82 M39.6 82 L60.4 70"/>
+      </g>
+      <!-- exclamation when something needs a look -->
+      <g id="bang"><circle cx="88" cy="16" r="10" fill="#ffd60a"/><path d="M88 9 V18" stroke="#1c1c1e" stroke-width="3" stroke-linecap="round"/><circle cx="88" cy="22.5" r="1.7" fill="#1c1c1e"/></g>
+    </svg>
+  </div>
+  <div id="badge"></div>
+</div>
+<script type="module">
+import { api, stream, RANK } from '/static/common.js';
+
+const buddy = document.getElementById('buddy');
+const badge = document.getElementById('badge');
+const bubble = document.getElementById('bubble');
+const startedAt = Date.now();
+const WARMUP_MS = 45000;
+let cfg = { nudgeLevel: 'notice', showBubble: true };
+let queue = [];
+let warmupAnnounced = false;
+let bubbleTimer, queueTimer;
+let last = null;
+
+function mood(s) {
+  buddy.classList.remove('idle', 'happy', 'alert', 'critical');
+  const sev = s.bySeverity || {};
+  if (sev.critical) buddy.classList.add('critical');
+  else if (s.nudgeable > 0) buddy.classList.add('alert');
+  else buddy.classList.add('happy');
+}
+
+function setBadge(s) {
+  const n = s.nudgeable;
+  badge.textContent = n > 99 ? '99+' : String(n);
+  badge.classList.toggle('on', n > 0);
+  const sev = s.bySeverity || {};
+  badge.classList.toggle('warn', !sev.critical && !!sev.warning);
+  badge.classList.toggle('calm', !sev.critical && !sev.warning);
+}
+
+function bounce() {
+  buddy.classList.remove('bounce');
+  void buddy.offsetWidth;
+  buddy.classList.add('bounce');
+}
+
+function say(title, text, ms = 7000) {
+  if (!cfg.showBubble) return;
+  document.getElementById('bubbleTitle').textContent = title;
+  document.getElementById('bubbleText').textContent = text;
+  bubble.classList.add('on');
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(() => bubble.classList.remove('on'), ms);
+}
+
+function flush() {
+  const items = queue; queue = [];
+  if (!items.length) return;
+  bounce();
+  if (items.length === 1) {
+    say(items[0].cluster, items[0].title);
+  } else {
+    const clusters = new Set(items.map((a) => a.cluster));
+    say(`${items.length} new things to look at`, `across ${clusters.size} cluster${clusters.size > 1 ? 's' : ''} · click me`);
+  }
+}
+
+function onSummary(s) {
+  cfg = { nudgeLevel: s.nudgeLevel, showBubble: s.showBubble };
+  last = s;
+  setBadge(s);
+  mood(s);
+}
+
+function onAlert(a) {
+  if (RANK[a.severity] < RANK[cfg.nudgeLevel]) return;
+  if (Date.now() - startedAt < WARMUP_MS) return;
+  queue.push(a);
+  clearTimeout(queueTimer);
+  queueTimer = setTimeout(flush, 1500);
+}
+
+setTimeout(() => {
+  if (warmupAnnounced || !last) return;
+  warmupAnnounced = true;
+  if (last.nudgeable > 0) {
+    bounce();
+    say('Hi! I checked your clusters', `${last.nudgeable} thing${last.nudgeable > 1 ? 's' : ''} across ${last.clusters} cluster${last.clusters > 1 ? 's' : ''} could use a look · click me`, 10000);
+  } else {
+    say('Hi! All quiet so far', "I'll nudge you if something breaks.", 5000);
+  }
+}, WARMUP_MS);
+
+api('/api/summary').then(onSummary).catch(() => {});
+stream({ summary: onSummary, alert: onAlert });
+</script>
+</body>
+</html>

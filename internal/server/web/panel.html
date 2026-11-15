@@ -1,0 +1,131 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>k8s-buddy alerts</title>
+<style>
+  :root { --bg: rgba(250,250,252,.97); --fg: #1c1c1e; --muted: #6e6e73; --line: rgba(0,0,0,.08); --hover: rgba(0,0,0,.04);
+    --chip: #e9eefb; --chip-fg: #2459d6; --btn: rgba(0,0,0,.06); --code: #f2f2f7;
+    --critical: #ff3b30; --warning: #ff9f0a; --notice: #0a84ff; --info: #8e8e93; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: rgba(30,30,32,.97); --fg: #f2f2f7; --muted: #98989d; --line: rgba(255,255,255,.08); --hover: rgba(255,255,255,.05);
+      --chip: #1f2a44; --chip-fg: #8fb0ff; --btn: rgba(255,255,255,.08); --code: #111113; }
+  }
+  html, body { margin: 0; height: 100%; background: transparent; font: 12.5px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--fg); }
+  .card { position: absolute; inset: 10px; display: flex; flex-direction: column; background: var(--bg); border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.28), 0 0 0 .5px rgba(0,0,0,.2); overflow: hidden; }
+  header { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+  header h1 { font-size: 14px; margin: 0; flex: 1; }
+  header .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 4px; }
+  button { font: inherit; border: 0; background: var(--btn); color: inherit; border-radius: 7px; padding: 3px 9px; cursor: pointer; }
+  button:hover { filter: brightness(.95); }
+  button.icon { padding: 3px 7px; }
+  .tabs { display: flex; gap: 4px; padding: 0 14px 8px; border-bottom: 1px solid var(--line); }
+  .tabs button { background: transparent; color: var(--muted); }
+  .tabs button.on { background: var(--btn); color: var(--fg); font-weight: 600; }
+  .tabs .grow { flex: 1; }
+  #list { flex: 1; overflow-y: auto; }
+  .item { display: grid; grid-template-columns: 4px 1fr; gap: 0 10px; padding: 9px 14px 9px 10px; border-bottom: 1px solid var(--line); cursor: default; }
+  .item:hover { background: var(--hover); }
+  .bar { border-radius: 2px; grid-row: span 3; }
+  .sev-critical .bar { background: var(--critical); } .sev-warning .bar { background: var(--warning); }
+  .sev-notice .bar { background: var(--notice); } .sev-info .bar { background: var(--info); }
+  .item.resolved { opacity: .55; }
+  .meta { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
+  .chip { background: var(--chip); color: var(--chip-fg); border-radius: 5px; padding: 0 5px; font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title { font-weight: 600; margin: 2px 0 1px; word-break: break-word; }
+  .detail { color: var(--muted); word-break: break-word; }
+  .more { display: none; margin-top: 6px; }
+  .item.open .more { display: block; }
+  pre { margin: 0 0 6px; padding: 6px 8px; background: var(--code); border-radius: 6px; font: 11px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+  .actions { display: flex; gap: 6px; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  .empty .big { font-size: 34px; display: block; margin-bottom: 6px; }
+  footer { display: flex; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); }
+  footer .grow { flex: 1; }
+</style>
+</head>
+<body>
+<div class="card">
+  <header>
+    <h1>k8s-buddy<span class="sub" id="sub"></span></h1>
+    <button class="icon" id="openOverview" title="Multi-cluster overview">⎈ Overview</button>
+    <button class="icon" id="close" title="Close">✕</button>
+  </header>
+  <div class="tabs">
+    <button data-scope="pending" class="on">Needs a look</button>
+    <button data-scope="active">All open</button>
+    <button data-scope="all">History</button>
+  </div>
+  <div id="list"></div>
+  <footer>
+    <button id="ackAll">Snooze all</button>
+    <span class="grow"></span>
+    <button id="settings">Settings</button>
+  </footer>
+</div>
+<script type="module">
+import { api, post, stream, esc, ago, copy, debounce } from '/static/common.js';
+
+let scope = 'pending';
+const open = new Set();
+const list = document.getElementById('list');
+
+async function render() {
+  const [alerts, sum] = await Promise.all([api(`/api/alerts?scope=${scope}&limit=300`), api('/api/summary')]);
+  document.getElementById('sub').textContent = sum.pending ? `· ${sum.pending} open on ${sum.clusters} cluster${sum.clusters > 1 ? 's' : ''}` : '· all quiet';
+  if (!alerts.length) {
+    list.innerHTML = `<div class="empty"><span class="big">${scope === 'pending' ? '😌' : '🗂️'}</span>${scope === 'pending' ? 'Nothing needs your attention.' : 'No alerts yet.'}</div>`;
+    return;
+  }
+  list.innerHTML = alerts.map((a) => `
+    <div class="item sev-${a.severity} ${a.resolved ? 'resolved' : ''} ${open.has(a.id) ? 'open' : ''}" data-id="${a.id}">
+      <div class="bar"></div>
+      <div class="meta"><span class="chip" title="${esc(a.cluster)}">${esc(a.cluster)}</span>
+        ${a.namespace ? `<span>${esc(a.namespace)}</span>` : ''}
+        <span>${a.resolved ? 'resolved ' + ago(a.resolvedAt) + ' ago' : ago(a.lastSeen) + ' ago'}</span>
+        ${a.count > 1 ? `<span>×${a.count}</span>` : ''}</div>
+      <div class="title">${esc(a.title)}</div>
+      <div>
+        ${a.detail ? `<div class="detail">${esc(a.detail)}</div>` : ''}
+        <div class="more">
+          ${a.hint ? `<pre>${esc(a.hint)}</pre>` : ''}
+          <div class="actions">
+            ${a.hint ? `<button data-act="copy">Copy commands</button>` : ''}
+            ${!a.resolved ? `<button data-act="ack">Snooze</button>` : ''}
+            <button data-act="mute" title="Never show this exact alert again">Mute</button>
+          </div>
+        </div>
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('.item').forEach((el) => {
+    const a = alerts.find((x) => x.id === el.dataset.id);
+    el.addEventListener('click', async (e) => {
+      const act = e.target.dataset?.act;
+      if (act === 'copy') { await copy(a.hint.split('\n').filter((l) => l.startsWith('kubectl')).join('\n') || a.hint); e.target.textContent = 'Copied!'; return; }
+      if (act === 'ack') { await post(`/api/alerts/${a.id}/ack`); return render(); }
+      if (act === 'mute') { await post(`/api/alerts/${a.id}/mute`); return render(); }
+      open.has(a.id) ? open.delete(a.id) : open.add(a.id);
+      el.classList.toggle('open');
+    });
+  });
+}
+
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  scope = b.dataset.scope;
+  render();
+}));
+document.getElementById('close').onclick = () => post('/api/action/hide-panel');
+document.getElementById('openOverview').onclick = () => post('/api/action/overview');
+document.getElementById('settings').onclick = () => post('/api/action/overview?tab=settings');
+document.getElementById('ackAll').onclick = async () => { await post('/api/alerts/ack-all'); render(); };
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') post('/api/action/hide-panel'); });
+
+const refresh = debounce(render, 300);
+stream({ summary: refresh });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+render();
+</script>
+</body>
+</html>

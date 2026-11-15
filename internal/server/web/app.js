@@ -1,0 +1,441 @@
+import { api, post, stream, esc, ago, copy, debounce, RANK } from '/static/common.js';
+
+const view = document.getElementById('view');
+const VIEWS = ['overview', 'resources', 'alerts', 'history', 'doctor', 'settings'];
+const HEALTH_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
+const SEV_PILL = { critical: 'bad', warning: 'warn', notice: 'notice', info: '' };
+let current = null;
+let kinds = [];
+let clustersCache = null;
+
+// ---------- routing ----------
+function route() {
+  const [name, qs] = location.hash.slice(1).split('?');
+  return { name: VIEWS.includes(name) ? name : 'overview', params: new URLSearchParams(qs || '') };
+}
+export function go(name, params = {}) {
+  const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== '' && v != null && v !== false)).toString();
+  location.hash = name + (qs ? '?' + qs : '');
+}
+window.buddyShowTab = (tab) => go(VIEWS.includes(tab) ? tab : 'overview');
+
+async function render() {
+  const r = route();
+  document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === r.name));
+  current = r.name;
+  closeDrawer();
+  try {
+    await ({ overview, resources, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings })[r.name](r.params);
+  } catch (e) {
+    view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
+  }
+}
+document.querySelectorAll('nav a').forEach((a) => a.addEventListener('click', () => go(a.dataset.view)));
+window.addEventListener('hashchange', render);
+
+// ---------- helpers ----------
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('on');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 1400);
+}
+async function copyCmd(text) { await copy(text); toast('Copied to clipboard'); }
+const healthPill = (h, text) => `<span class="pill ${h === 'ok' ? 'ok' : h === 'bad' ? 'bad' : h === 'warn' ? 'warn' : ''}">${esc(text)}</span>`;
+const clusterHealth = (c) => c.status === 'excluded' ? 'neutral' : c.status === 'error' ? 'bad'
+  : (c.stats && (c.stats.nodesReady < c.stats.nodes || c.stats.podsProblem || c.stats.pvcPending || c.stats.lbPending)) || c.alerts ? 'warn' : 'ok';
+const statusLabel = { connected: 'Connected', syncing: 'Syncing', connecting: 'Connecting', error: 'Unreachable', excluded: 'Not monitored' };
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+async function loadClusters() { clustersCache = await api('/api/clusters'); return clustersCache; }
+
+function head(title, sub, right = '') {
+  return `<div class="page-head"><div><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div><div class="spacer"></div>${right}</div>`;
+}
+
+// ---------- overview ----------
+async function overview() {
+  const [ov, sum, latest] = await Promise.all([loadClusters(), api('/api/summary'), api('/api/alerts?scope=pending&limit=6')]);
+  if (current !== 'overview') return;
+  const monitored = ov.clusters.filter((c) => c.status !== 'excluded');
+  const up = monitored.filter((c) => c.stats);
+  const total = (k) => up.reduce((n, c) => n + (c.stats[k] || 0), 0);
+  const unreachable = monitored.filter((c) => c.status === 'error').length;
+  const nodes = total('nodes'), nodesReady = total('nodesReady'), unhealthy = total('podsProblem');
+  view.innerHTML = `
+    ${head('Overview', `${plural(monitored.length, 'cluster')} monitored${unreachable ? ` · <span style="color:var(--bad)">${unreachable} unreachable</span>` : ''}`,
+      `<button class="btn" id="toDoctor">✚ Run doctor</button>`)}
+    ${ov.kubeconfigError ? `<div class="card empty" style="color:var(--bad)">Kubeconfig error: ${esc(ov.kubeconfigError)}</div>` : ''}
+    <div class="stats">
+      <div class="card stat ${sum.pending ? 'warn' : ''}"><div class="label">Needs a look</div><div class="value">${sum.pending}</div><div class="foot">on ${plural(sum.clusters, 'cluster')}</div></div>
+      <div class="card stat"><div class="label">Clusters online</div><div class="value">${up.length}<small> / ${monitored.length}</small></div><div class="foot">${unreachable ? plural(unreachable, 'unreachable') : 'all reachable'}</div></div>
+      <div class="card stat ${nodesReady < nodes ? 'bad' : ''}"><div class="label">Nodes ready</div><div class="value">${nodesReady}<small> / ${nodes}</small></div><div class="foot">across all clusters</div></div>
+      <div class="card stat"><div class="label">Pods running</div><div class="value">${total('podsRunning')}<small> / ${total('pods') - total('podsDone')}</small></div><div class="foot">+ ${total('podsDone')} completed · ${total('warnings1h')} warnings/1h</div></div>
+      <div class="card stat ${unhealthy ? 'bad' : ''}"><div class="label">Unhealthy pods</div><div class="value">${unhealthy}</div><div class="foot">${total('pvcPending')} PVC · ${total('lbPending')} LB pending</div></div>
+    </div>
+    ${latest.length ? `<div class="section-title">Needs a look <small>most important first</small><span class="spacer" style="flex:1"></span><a style="font-weight:500;font-size:12.5px;cursor:pointer" id="allAlerts">See all →</a></div>
+      <div class="card alerts">${latest.map(alertRow).join('')}</div>` : ''}
+    <div class="section-title">Clusters <small>click one to browse its resources</small></div>
+    <div class="clusters">${ov.clusters.map(clusterCard).join('')}</div>`;
+  view.querySelector('#toDoctor').onclick = () => go('doctor');
+  view.querySelector('#allAlerts')?.addEventListener('click', () => go('alerts'));
+  view.querySelectorAll('.cluster').forEach((el) => el.onclick = () => {
+    if (el.dataset.status === 'excluded' || el.dataset.status === 'error') go('settings'); else go('resources', { kind: 'pods', cluster: el.dataset.name });
+  });
+  bindAlertRows(view, latest);
+}
+
+function clusterCard(c) {
+  const h = clusterHealth(c), s = c.stats;
+  const flags = [];
+  if (s?.podsProblem) flags.push(`<span class="pill bad">${plural(s.podsProblem, 'unhealthy pod')}</span>`);
+  if (s?.pvcPending) flags.push(`<span class="pill warn">${s.pvcPending} PVC pending</span>`);
+  if (s?.lbPending) flags.push(`<span class="pill warn">${s.lbPending} LB pending</span>`);
+  if (c.alerts) flags.push(`<span class="pill accent">${plural(c.alerts, 'alert')}</span>`);
+  if (c.resourceErrors) flags.push(`<span class="pill warn" title="${esc(JSON.stringify(c.resourceErrors))}">limited access</span>`);
+  const active = s ? s.pods - s.podsDone : 0;
+  const podPct = active ? (s.podsRunning / active) * 100 : 0, badPct = active ? (s.podsProblem / active) * 100 : 0;
+  return `<div class="card cluster h-${h}" data-name="${esc(c.name)}" data-status="${c.status}">
+    <div class="top"><span class="dot ${c.status === 'connected' ? h : c.status}"></span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span><span class="ver">${esc(c.version || '')}</span></div>
+    ${s ? `<div class="metrics">
+        <div><b class="${s.nodesReady < s.nodes ? 'bad' : ''}">${s.nodesReady}/${s.nodes}</b>nodes</div>
+        <div title="${s.podsDone} completed job pods not counted"><b>${s.podsRunning}/${s.pods - s.podsDone}</b>pods${s.podsDone ? ` · ${s.podsDone} done` : ''}</div>
+        <div><b>${s.warnings1h}</b>warnings/1h</div></div>
+      <div class="bar"><span style="width:${podPct - badPct}%;background:var(--ok)"></span><span style="width:${badPct}%;background:var(--bad)"></span></div>
+      <div class="flags">${flags.join('') || '<span class="muted" style="font-size:12px">All good</span>'}</div>`
+    : `<div class="muted" style="margin-top:8px;font-size:12.5px">${statusLabel[c.status] || c.status}</div>${c.error ? `<div class="err">${esc(c.error)}</div>` : ''}`}
+  </div>`;
+}
+
+// ---------- resources ----------
+const resState = { sort: null, asc: true };
+async function resources(params) {
+  if (!kinds.length) kinds = await api('/api/kinds');
+  const ov = clustersCache || await loadClusters();
+  const kind = params.get('kind') || 'pods';
+  const f = { kind, cluster: params.get('cluster') || '', namespace: params.get('namespace') || '', q: params.get('q') || '', problems: params.get('problems') === '1' };
+  const clusterNames = ov.clusters.filter((c) => c.stats).map((c) => c.name);
+  view.innerHTML = `
+    ${head('Resources', 'Everything across your clusters, live from the watch cache.')}
+    <div class="toolbar"><div class="seg" id="kinds">${kinds.map((k) => `<button data-k="${k.id}" class="${k.id === kind ? 'on' : ''}">${esc(k.label)}</button>`).join('')}</div></div>
+    <div class="toolbar">
+      <select class="input" id="fCluster"><option value="">All clusters</option>${clusterNames.map((n) => `<option ${n === f.cluster ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <select class="input" id="fNs"><option value="">All namespaces</option></select>
+      <input class="input search" id="fQ" placeholder="Search name, status, image, IP…" value="${esc(f.q)}" autocomplete="off" spellcheck="false">
+      <label class="toggle"><input type="checkbox" id="fProblems" ${f.problems ? 'checked' : ''}> Only problems</label>
+      <span class="spacer" style="flex:1"></span><span class="muted" id="resCount"></span>
+    </div>
+    <div class="card"><div class="table-wrap" id="resTable"><div class="empty">Loading…</div></div><div class="table-foot" id="resFoot" hidden></div></div>`;
+
+  const update = (patch) => go('resources', { ...f, problems: f.problems ? '1' : '', ...patch });
+  view.querySelectorAll('#kinds button').forEach((b) => b.onclick = () => { resState.sort = null; update({ kind: b.dataset.k, namespace: '' }); });
+  view.querySelector('#fCluster').onchange = (e) => update({ cluster: e.target.value, namespace: '' });
+  view.querySelector('#fNs').onchange = (e) => update({ namespace: e.target.value });
+  view.querySelector('#fProblems').onchange = (e) => update({ problems: e.target.checked ? '1' : '' });
+  const q = view.querySelector('#fQ');
+  q.oninput = debounce(() => { f.q = q.value; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); load(); }, 250);
+  if (f.q) { q.focus(); q.setSelectionRange(f.q.length, f.q.length); }
+
+  async function load() {
+    const qs = new URLSearchParams({ kind: f.kind, cluster: f.cluster, namespace: f.namespace, q: f.q, problems: f.problems ? '1' : '' });
+    const list = await api('/api/resources?' + qs);
+    if (current !== 'resources') return;
+    const ns = view.querySelector('#fNs');
+    ns.disabled = !list.namespaced;
+    ns.innerHTML = `<option value="">All namespaces</option>` + list.namespaces.map((n) => `<option ${n === f.namespace ? 'selected' : ''}>${esc(n)}</option>`).join('');
+    view.querySelector('#resCount').textContent = `${list.total.toLocaleString()} ${list.total === 1 ? 'item' : 'items'}${list.problems ? ` · ${list.problems} with problems` : ''}`;
+    renderTable(list);
+  }
+
+  function renderTable(list) {
+    const cols = ['', 'Name', ...(list.namespaced ? ['Namespace'] : []), 'Cluster', 'Status', ...list.columns, 'Age'];
+    const key = (r, i) => {
+      const off = list.namespaced ? 1 : 0;
+      if (i === 0) return HEALTH_ORDER[r.health];
+      if (i === 1) return r.name;
+      if (list.namespaced && i === 2) return r.namespace;
+      if (i === 2 + off) return r.cluster;
+      if (i === 3 + off) return r.status;
+      if (i === cols.length - 1) return -new Date(r.created).getTime();
+      const v = r.cols[i - 4 - off]; const n = parseFloat(v);
+      return isNaN(n) || String(n) !== String(v).split('/')[0] ? v : n;
+    };
+    const items = [...list.items];
+    if (resState.sort != null) {
+      items.sort((a, b) => { const x = key(a, resState.sort), y = key(b, resState.sort); return (x < y ? -1 : x > y ? 1 : 0) * (resState.asc ? 1 : -1); });
+    }
+    const wrap = view.querySelector('#resTable');
+    if (!items.length) {
+      wrap.innerHTML = `<div class="empty"><span class="big">${f.problems ? '✨' : '🔍'}</span>${f.problems ? 'No problems here.' : 'Nothing matches.'}</div>`;
+    } else {
+      wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th data-i="${i}" class="${resState.sort === i ? 'sorted' + (resState.asc ? ' asc' : '') : ''}">${esc(c)}</th>`).join('')}</tr></thead><tbody>
+        ${items.map((r, idx) => `<tr data-idx="${idx}">
+          <td style="width:18px"><span class="dot ${r.health}"></span></td>
+          <td class="name" title="${esc(r.name)}">${esc(r.name)}</td>
+          ${list.namespaced ? `<td>${esc(r.namespace)}</td>` : ''}
+          <td class="muted">${esc(r.cluster)}</td>
+          <td>${healthPill(r.health, r.status)}</td>
+          ${r.cols.map((c) => `<td title="${esc(c)}">${esc(c)}</td>`).join('')}
+          <td class="muted">${ago(r.created)}</td></tr>`).join('')}
+      </tbody></table>`;
+      wrap.querySelectorAll('th').forEach((th) => th.onclick = () => {
+        const i = +th.dataset.i;
+        resState.asc = resState.sort === i ? !resState.asc : true;
+        resState.sort = i;
+        renderTable(list);
+      });
+      wrap.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => {
+        const r = items[+tr.dataset.idx];
+        if (f.kind === 'events') eventDrawer(r); else resourceDrawer(f.kind, r);
+      });
+    }
+    const foot = view.querySelector('#resFoot');
+    const notes = [];
+    if (list.total > list.items.length) notes.push(`Showing first ${list.items.length.toLocaleString()} of ${list.total.toLocaleString()} — narrow it down with filters.`);
+    if (list.unavailable.length) notes.push(`Still syncing or no access: ${list.unavailable.join(', ')}`);
+    foot.hidden = !notes.length; foot.textContent = notes.join(' · ');
+  }
+  await load();
+  resources.refresh = load;
+}
+
+// ---------- drawer ----------
+const drawer = document.getElementById('drawer');
+function openDrawer({ eyebrow, title, tabs }) {
+  document.getElementById('dEyebrow').innerHTML = eyebrow;
+  document.getElementById('dTitle').textContent = title;
+  const tabsEl = document.getElementById('dTabs');
+  const body = document.getElementById('dBody');
+  tabsEl.innerHTML = tabs.map((t, i) => `<button data-i="${i}" class="${i === 0 ? 'on' : ''}">${esc(t.label)}</button>`).join('');
+  const show = (i) => {
+    tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
+    body.innerHTML = tabs[i].html;
+    body.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+    body.scrollTop = 0;
+  };
+  tabsEl.querySelectorAll('button').forEach((b) => b.onclick = () => show(+b.dataset.i));
+  show(0);
+  drawer.hidden = false;
+}
+function closeDrawer() { drawer.hidden = true; }
+drawer.querySelectorAll('[data-close]').forEach((el) => el.onclick = closeDrawer);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !drawer.hidden) closeDrawer();
+  if (e.key === '/' && current === 'resources' && document.activeElement?.tagName !== 'INPUT') { e.preventDefault(); view.querySelector('#fQ')?.focus(); }
+});
+
+const cmdBlock = (cmds) => cmds.map((c) => `<div class="cmd"><pre class="code">${esc(c)}</pre><button class="btn sm" data-copy="${esc(c)}">Copy</button></div>`).join('');
+
+async function resourceDrawer(kind, r) {
+  const d = await api('/api/resource?' + new URLSearchParams({ cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }));
+  const kindInfo = kinds.find((k) => k.id === kind);
+  const kv = [['Status', healthPill(r.health, r.status)], ['Cluster', esc(r.cluster)], ...(r.namespace ? [['Namespace', esc(r.namespace)]] : []),
+    ...kindInfo.columns.map((c, i) => [esc(c), esc(r.cols[i] || '–')]), ['Created', `${new Date(r.created).toLocaleString()} (${ago(r.created)} ago)`]];
+  openDrawer({
+    eyebrow: `<span class="pill accent">${esc(kindInfo.label.replace(/s$/, ''))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
+    title: r.name,
+    tabs: [
+      { label: 'Summary', html: `<dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+          <div class="section-title" style="margin-top:6px">Recent warnings</div>
+          ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
+            : '<p class="muted">No warning events for this object.</p>'}` },
+      { label: 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy YAML</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },
+      { label: 'Commands', html: cmdBlock(d.commands) },
+    ],
+  });
+}
+
+function eventDrawer(r) {
+  openDrawer({
+    eyebrow: `<span class="pill warn">Warning event</span>${esc(r.cluster)} · ${esc(r.namespace)}`,
+    title: r.status + ' · ' + r.cols[0],
+    tabs: [{ label: 'Summary', html: `<dl class="kv"><dt>Object</dt><dd>${esc(r.cols[0])}</dd><dt>Count</dt><dd>${esc(r.cols[2])}</dd><dt>Last seen</dt><dd>${esc(r.cols[3])} ago</dd></dl><pre class="code">${esc(r.cols[1])}</pre>
+      <div class="section-title">Commands</div>${cmdBlock([`kubectl --context ${r.cluster} -n ${r.namespace} describe ${r.cols[0]}`])}` }],
+  });
+}
+
+// ---------- alerts ----------
+function alertRow(a) {
+  return `<div class="alert ${a.severity} ${a.resolved ? 'resolved' : ''}" data-id="${a.id}">
+    <div class="stripe"></div>
+    <div>
+      <div class="meta"><span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span><b style="color:var(--text)">${esc(a.cluster)}</b>${a.namespace ? `<span>${esc(a.namespace)}</span>` : ''}
+        <span>${a.resolved ? 'resolved ' + ago(a.resolvedAt) + ' ago' : 'seen ' + ago(a.lastSeen) + ' ago'}</span>${a.count > 1 ? `<span>×${a.count}</span>` : ''}${a.ackedAt && !a.resolved ? '<span class="pill">snoozed</span>' : ''}</div>
+      <div class="title">${esc(a.title)}</div>
+      ${a.detail ? `<div class="detail">${esc(a.detail)}</div>` : ''}
+    </div>
+    <div class="actions">
+      ${a.hint ? `<button class="btn sm" data-act="cmd">Commands</button>` : ''}
+      ${!a.resolved ? `<button class="btn sm" data-act="ack">Snooze</button>` : ''}
+      <button class="btn sm" data-act="mute" title="Never show this exact alert again">Mute</button>
+    </div></div>`;
+}
+
+function bindAlertRows(root, alerts, after = render) {
+  root.querySelectorAll('.alert[data-id]').forEach((el) => {
+    const a = alerts.find((x) => x.id === el.dataset.id);
+    el.querySelectorAll('[data-act]').forEach((b) => b.onclick = async (e) => {
+      e.stopPropagation();
+      const act = b.dataset.act;
+      if (act === 'cmd') {
+        openDrawer({ eyebrow: `<span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span>${esc(a.cluster)}`, title: a.title,
+          tabs: [{ label: 'What to run', html: `${a.detail ? `<p>${esc(a.detail)}</p>` : ''}${cmdBlock(a.hint.split('\n'))}<p class="muted mono" style="margin-top:14px">key: ${esc(a.key)}</p>` }] });
+        return;
+      }
+      await post(`/api/alerts/${a.id}/${act}`);
+      toast(act === 'ack' ? 'Snoozed' : 'Muted — undo in Settings');
+      after();
+    });
+  });
+}
+
+async function alertsView(scope) {
+  const p = route().params;
+  const f = { cluster: p.get('cluster') || '', sev: p.get('sev') || '', q: p.get('q') || '' };
+  const ov = clustersCache || await loadClusters();
+  const all = await api(`/api/alerts?scope=${scope}&limit=3000${f.cluster ? '&cluster=' + encodeURIComponent(f.cluster) : ''}`);
+  if (current !== (scope === 'all' ? 'history' : 'alerts')) return;
+  const needle = f.q.toLowerCase();
+  const items = all.filter((a) => (!f.sev || RANK[a.severity] >= RANK[f.sev]) &&
+    (!needle || [a.cluster, a.namespace, a.title, a.detail, a.category].join(' ').toLowerCase().includes(needle)));
+  const name = scope === 'all' ? 'history' : 'alerts';
+  view.innerHTML = `
+    ${head(scope === 'all' ? 'History' : 'Alerts', scope === 'all' ? 'Everything k8s-buddy has seen, including resolved and snoozed.' : 'Open problems, including snoozed ones.',
+      scope === 'all' ? '' : `<button class="btn" id="ackAll">Snooze all</button>`)}
+    <div class="toolbar">
+      <select class="input" id="aCluster"><option value="">All clusters</option>${ov.clusters.filter((c) => c.status !== 'excluded').map((c) => `<option ${c.name === f.cluster ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <div class="seg" id="aSev">${[['', 'All'], ['notice', 'Notice+'], ['warning', 'Warning+'], ['critical', 'Critical']].map(([v, l]) => `<button data-v="${v}" class="${f.sev === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <input class="input search" id="aQ" placeholder="Search alerts…" value="${esc(f.q)}">
+      <span class="spacer" style="flex:1"></span><span class="muted">${plural(items.length, 'alert')}</span>
+    </div>
+    <div class="card alerts">${items.length ? items.map(alertRow).join('') : `<div class="empty"><span class="big">${scope === 'all' ? '🗂️' : '😌'}</span>${scope === 'all' ? 'No history yet.' : 'Nothing needs your attention.'}</div>`}</div>`;
+  const upd = (patch) => go(name, { ...f, ...patch });
+  view.querySelector('#aCluster').onchange = (e) => upd({ cluster: e.target.value });
+  view.querySelectorAll('#aSev button').forEach((b) => b.onclick = () => upd({ sev: b.dataset.v }));
+  const q = view.querySelector('#aQ');
+  q.oninput = debounce(() => upd({ q: q.value }), 300);
+  if (f.q) { q.focus(); q.setSelectionRange(f.q.length, f.q.length); }
+  view.querySelector('#ackAll')?.addEventListener('click', async () => { await post('/api/alerts/ack-all' + (f.cluster ? '?cluster=' + encodeURIComponent(f.cluster) : '')); toast('Snoozed'); render(); });
+  bindAlertRows(view, items);
+}
+
+// ---------- doctor ----------
+let doctorPoll;
+async function doctor() {
+  const rep = await api('/api/doctor');
+  if (current !== 'doctor') return;
+  const p = route().params;
+  const fc = p.get('cluster') || '';
+  const findings = rep.findings.filter((x) => !fc || x.cluster === fc);
+  const byCheck = Object.fromEntries(rep.checks.map((c) => [c.id, []]));
+  findings.forEach((x) => (byCheck[x.check] ||= []).push(x));
+  const ran = !!rep.finishedAt;
+  const clusters = [...new Set(rep.findings.map((x) => x.cluster))].sort();
+  document.getElementById('navDoctor').textContent = ran ? String(rep.findings.length) : '';
+  view.innerHTML = `
+    ${head('Doctor', 'An on-demand checkup for things that are quietly wrong.')}
+    <div class="card hero">
+      <div><h2>${rep.running ? 'Examining your clusters…' : ran ? `${plural(rep.findings.length, 'finding')} across ${plural(rep.clusters.length, 'cluster')}` : 'Give your clusters a checkup'}</h2>
+        <p>${rep.running ? 'Looking for dangling services, broken ingresses, blocking PDBs, orphaned volumes and more.'
+          : ran ? `Last run ${ago(rep.finishedAt)} ago, took ${Math.max(1, Math.round((new Date(rep.finishedAt) - new Date(rep.startedAt)) / 1000))}s.`
+          : 'Looks for dangling services and ingresses, PDBs that will block upgrades, orphaned disks, unused claims and leftover pods. Read-only.'}</p></div>
+      <div class="spacer"></div>
+      <button class="btn primary" id="runDoctor" ${rep.running ? 'disabled' : ''}>${rep.running ? '<span class="spinner"></span>Running…' : ran ? 'Run again' : 'Run checkup'}</button>
+    </div>
+    ${ran && clusters.length ? `<div class="toolbar" style="margin-top:16px"><select class="input" id="dCluster"><option value="">All clusters</option>${clusters.map((c) => `<option ${c === fc ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>` : ''}
+    ${Object.keys(rep.errors || {}).length ? `<p class="muted" style="margin-top:12px">Some checks were skipped: ${Object.entries(rep.errors).map(([c, e]) => `<b>${esc(c)}</b> (${esc(e)})`).join(', ')}</p>` : ''}
+    ${ran ? rep.checks.map((c) => {
+      const list = byCheck[c.id] || [];
+      const worst = list.reduce((m, x) => Math.max(m, RANK[x.severity]), -1);
+      return `<details class="card check" ${list.length && worst >= 2 ? 'open' : ''}>
+        <summary><span class="pill ${!list.length ? 'ok' : worst >= 2 ? 'warn' : worst === 1 ? 'notice' : ''}">${list.length || '✓'}</span>
+          <div><div class="t">${esc(c.title)}</div><div class="d">${esc(c.description)}</div></div><span class="chev">›</span></summary>
+        ${list.map((x) => `<div class="finding"><div class="what">${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}</span></div>
+          <div class="msg">${esc(x.message)}</div>
+          ${x.hint ? `<div class="act"><button class="btn sm" data-copy="${esc(x.hint)}">Copy kubectl</button></div>` : ''}</div>`).join('')}
+      </details>`;
+    }).join('') : ''}`;
+  view.querySelector('#runDoctor').onclick = async () => { await post('/api/doctor'); doctor(); };
+  view.querySelector('#dCluster')?.addEventListener('change', (e) => go('doctor', { cluster: e.target.value }));
+  view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+  clearTimeout(doctorPoll);
+  if (rep.running) doctorPoll = setTimeout(() => current === 'doctor' && doctor(), 1500);
+}
+
+// ---------- settings ----------
+async function settings() {
+  const [s, ov] = await Promise.all([api('/api/settings'), loadClusters()]);
+  if (current !== 'settings') return;
+  view.innerHTML = `
+    ${head('Settings', 'Saved to your user config directory.')}
+    <div class="card form">
+      <div class="row"><div class="lbl"><b>Clusters to watch</b><span>Uncheck contexts you don't care about. Contexts you delete from your kubeconfig disappear here automatically.</span></div>
+        <div>
+          <div class="toolbar"><button class="btn sm" id="selNone">Uncheck all</button><button class="btn sm" id="selAll">Check all</button><button class="btn sm danger" id="selBad">Uncheck unreachable</button></div>
+          <div class="ctx-list">${ov.clusters.map((c) => `<label><input type="checkbox" data-ctx="${esc(c.name)}" ${s.excludedContexts.includes(c.name) ? '' : 'checked'}>
+            <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span><span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span></label>`).join('')}</div>
+        </div></div>
+      <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config.</span></div>
+        <input class="input" id="kubeconfig" style="width:100%" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"></div>
+      <div class="row"><div class="lbl"><b>Nudge me for</b><span>The buddy bounces and the menu bar count goes up at this level and above.</span></div>
+        <div class="seg" id="nudge" style="width:max-content">${['info', 'notice', 'warning', 'critical'].map((l) => `<button data-v="${l}" class="${l === s.nudgeLevel ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}+</button>`).join('')}</div></div>
+      <div class="row"><div class="lbl"><b>Buddy</b><span>The floating character on your screen.</span></div>
+        <div><label class="toggle" style="color:var(--text)"><input type="checkbox" id="showCharacter" ${s.showCharacter ? 'checked' : ''}> Show the buddy</label><br>
+          <label class="toggle" style="color:var(--text);margin-top:6px"><input type="checkbox" id="showBubble" ${s.showBubble ? 'checked' : ''}> Show a speech bubble when nudging</label></div></div>
+      <div class="row"><div class="lbl"><b>Snooze & history</b><span>How long "Snooze" hides an alert, and how many alerts to remember.</span></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+          <label class="toggle" style="color:var(--text)">Snooze for <input class="input" type="number" id="snoozeHours" min="1" max="168" value="${s.snoozeHours}" style="width:80px"> hours</label>
+          <label class="toggle" style="color:var(--text)">Keep <input class="input" type="number" id="historySize" min="50" max="20000" value="${s.historySize}" style="width:100px"> alerts</label></div></div>
+      <div class="row"><div class="lbl"><b>Ignored namespaces</b><span>One per line. Globs work, e.g. <code>preview-*</code>.</span></div>
+        <textarea class="input" id="ignoredNamespaces" placeholder="kube-system">${esc(s.ignoredNamespaces.join('\n'))}</textarea></div>
+      <div class="row"><div class="lbl"><b>Muted alerts</b><span>Alerts you chose to never see again.</span></div>
+        <div id="muted">${s.mutedKeys.length ? s.mutedKeys.map((k) => `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><code style="flex:1;word-break:break-all">${esc(k)}</code><button class="btn sm" data-unmute="${esc(k)}">Unmute</button></div>`).join('') : '<span class="muted">None</span>'}</div></div>
+    </div>
+    <div class="save-bar"><span class="muted" id="dirty"></span><button class="btn primary" id="save">Save changes</button></div>`;
+  const boxes = () => [...view.querySelectorAll('[data-ctx]')];
+  const byName = Object.fromEntries(ov.clusters.map((c) => [c.name, c]));
+  const dirty = () => (view.querySelector('#dirty').textContent = 'Unsaved changes');
+  view.querySelector('.form').addEventListener('input', dirty);
+  view.querySelector('#selAll').onclick = () => { boxes().forEach((b) => (b.checked = true)); dirty(); };
+  view.querySelector('#selNone').onclick = () => { boxes().forEach((b) => (b.checked = false)); dirty(); };
+  view.querySelector('#selBad').onclick = () => { boxes().forEach((b) => { if (byName[b.dataset.ctx]?.status === 'error') b.checked = false; }); dirty(); };
+  let nudgeLevel = s.nudgeLevel;
+  view.querySelectorAll('#nudge button').forEach((b) => b.onclick = () => { nudgeLevel = b.dataset.v; view.querySelectorAll('#nudge button').forEach((x) => x.classList.toggle('on', x === b)); dirty(); });
+  let muted = [...s.mutedKeys];
+  view.querySelectorAll('[data-unmute]').forEach((b) => b.onclick = () => { muted = muted.filter((k) => k !== b.dataset.unmute); b.parentElement.remove(); dirty(); });
+  view.querySelector('#save').onclick = async () => {
+    const next = {
+      ...s, nudgeLevel, mutedKeys: muted,
+      excludedContexts: boxes().filter((b) => !b.checked).map((b) => b.dataset.ctx),
+      kubeconfig: view.querySelector('#kubeconfig').value.trim(),
+      showBubble: view.querySelector('#showBubble').checked,
+      showCharacter: view.querySelector('#showCharacter').checked,
+      snoozeHours: +view.querySelector('#snoozeHours').value,
+      historySize: +view.querySelector('#historySize').value,
+      ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
+    };
+    await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
+    toast('Settings saved');
+    view.querySelector('#dirty').textContent = '';
+    setTimeout(loadClusters, 1500);
+  };
+}
+
+// ---------- live updates ----------
+async function refreshBadges() {
+  const sum = await api('/api/summary');
+  document.getElementById('navAlerts').textContent = sum.pending ? String(sum.pending) : '';
+  document.getElementById('brandSub').textContent = sum.pending ? `${plural(sum.pending, 'thing')} to look at` : 'all quiet';
+}
+const onChange = debounce(() => {
+  refreshBadges();
+  if (current === 'alerts' || current === 'history') render();
+}, 600);
+stream({ summary: onChange });
+setInterval(() => {
+  if (document.hidden || !drawer.hidden) return;
+  if (current === 'overview') overview();
+  else if (current === 'resources') resources.refresh?.();
+}, 8000);
+
+refreshBadges();
+render();
