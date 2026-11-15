@@ -8,7 +8,7 @@ const KLABEL = { cluster: 'Cluster', controller: 'Ingress controller', lb: 'Load
 const DEPTHS = [['Entry', 1], ['Ingress', 2], ['Service', 3], ['Workload', 4], ['Pods', 5]];
 const GCOL = { cluster: '#dfe6ff', controller: '#5b93ff', lb: '#b08cff', nodeport: '#ffa94d', ingress: '#2dd4bf', service: '#8fa3bf', workload: '#34d399', pod: '#34d399' };
 const HCOL = { ok: '#34d399', warn: '#fbbf24', bad: '#f87171', neutral: '#94a3b8' };
-const RING = [0, 80, 150, 215, 280, 335];
+const RING = [0, 190, 280, 365, 445, 515];
 const WORKLOAD_IDS = { Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Job: 'jobs', Pod: 'pods' };
 const REFRESH_MS = 30000;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -101,14 +101,18 @@ function layoutGalaxy(clusters) {
   for (const c of clusters) {
     const leaves = (n) => { n.tkids = n.children.filter((k) => k.parents[0] === n); n.leaves = n.tkids.length ? n.tkids.reduce((s, k) => s + leaves(k), 0) : 1; return n.leaves; };
     leaves(c.root);
-    c.f = Math.max(1, Math.sqrt(c.root.leaves / 40));
+    // Grow a busy galaxy so neighbours on its inner ring and its outer leaves keep some room.
+    const entries = c.root.tkids.length, arc = (r, n, gap) => n * gap / (2 * Math.PI * r);
+    c.f = Math.max(1, Math.sqrt(c.root.leaves / 40), arc(RING[1], entries, 34), arc(RING[5], c.root.leaves, 26));
     c.R = RING[5] * c.f + 40;
     const place = (n, a0, a1) => {
       n.ang = (a0 + a1) / 2; n.span = a1 - a0;
       const r = RING[LAYER[n.kind]] * c.f;
       n.lx = Math.cos(n.ang) * r; n.ly = Math.sin(n.ang) * r;
+      // At the top, damp big subtrees so a fan of single-service entry points isn't squeezed into a sliver.
+      const w = (k) => n.kind === 'cluster' ? Math.pow(k.leaves, .75) : k.leaves, tot = n.tkids.reduce((t, k) => t + w(k), 0);
       let a = a0;
-      for (const k of n.tkids) { const s = (a1 - a0) * k.leaves / n.leaves; place(k, a, a + s); a += s; }
+      for (const k of n.tkids) { const s = (a1 - a0) * w(k) / tot; place(k, a, a + s); a += s; }
     };
     place(c.root, -Math.PI / 2, Math.PI * 1.5);
   }
