@@ -14,10 +14,15 @@
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="k8s-buddy">
-        <Component Id="AppFiles">
+        <!-- One file per component: the Go exe has no version resource, so WiX can't group them. -->
+        <Component Id="AppExe">
           <File Id="AppExe" Source="$(var.BinDir)\k8s-buddy.exe" KeyPath="yes" />
-          <File Id="License" Source="$(var.BinDir)\LICENSE" Name="LICENSE.txt" />
-          <File Id="Notice" Source="$(var.BinDir)\NOTICE" Name="NOTICE.txt" />
+        </Component>
+        <Component Id="LicenseFile">
+          <File Id="License" Source="$(var.BinDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="NoticeFile">
+          <File Id="Notice" Source="$(var.BinDir)\NOTICE" Name="NOTICE.txt" KeyPath="yes" />
         </Component>
         <Component Id="StartAtLogin">
           <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="k8s-buddy"
@@ -35,7 +40,9 @@
     </StandardDirectory>
 
     <Feature Id="Main" Title="k8s-buddy" Description="The k8s-buddy app and its Start menu shortcut." Level="1" AllowAbsent="no">
-      <ComponentRef Id="AppFiles" />
+      <ComponentRef Id="AppExe" />
+      <ComponentRef Id="LicenseFile" />
+      <ComponentRef Id="NoticeFile" />
       <ComponentRef Id="StartMenuShortcut" />
     </Feature>
     <Feature Id="Autostart" Title="Start at login" Level="1"
