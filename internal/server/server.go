@@ -127,6 +127,15 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, d)
 	})
 	mux.HandleFunc("POST /api/exec", s.handleExec)
+	mux.HandleFunc("GET /api/ingress-routes", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		hosts, err := s.mgr.IngressRoutes(q.Get("cluster"), q.Get("namespace"), q.Get("name"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, hosts)
+	})
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
 	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

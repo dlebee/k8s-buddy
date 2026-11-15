@@ -34,6 +34,28 @@ async function render() {
 document.querySelectorAll('nav a[data-view]').forEach((a) => a.addEventListener('click', () => go(a.dataset.view)));
 window.addEventListener('hashchange', render);
 
+// ---------- resizable sidebar ----------
+(() => {
+  const root = document.documentElement;
+  const handle = document.getElementById('sbResize');
+  const set = (w) => root.style.setProperty('--sidebar-w', `${Math.max(180, Math.min(520, w))}px`);
+  try { const w = +localStorage.getItem('sidebarWidth'); if (w) set(w); } catch { /* storage unavailable */ }
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    const move = (ev) => set(ev.clientX);
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      document.body.classList.remove('resizing');
+      try { localStorage.setItem('sidebarWidth', parseInt(getComputedStyle(root).getPropertyValue('--sidebar-w'), 10)); } catch { /* ignore */ }
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once: true });
+  });
+  handle.addEventListener('dblclick', () => { root.style.removeProperty('--sidebar-w'); try { localStorage.removeItem('sidebarWidth'); } catch { /* ignore */ } });
+})();
+
 // ---------- helpers ----------
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -385,10 +407,49 @@ function describeTab(kindId, target) {
   } };
 }
 
+// routingTab draws every ingress that shares a host with the given one: which is served, which is
+// ignored, and where an ignored ingress's paths really end up.
+function routingTab(cluster, namespace, name) {
+  return { label: 'Routing', load: async () => {
+    const hosts = await api('/api/ingress-routes?' + new URLSearchParams({ cluster, namespace, name }));
+    if (!hosts.length) return '<p class="muted">This ingress has no host rules.</p>';
+    const me = `${namespace}/${name}`;
+    return hosts.map((h) => `
+      <div class="rm">
+        <div class="rm-host"><span class="rm-globe">🌐</span><b>${esc(h.host)}</b><span class="muted">class ${esc(h.class || '—')}${h.controller ? ' · ' + esc(h.controller) : ''}</span></div>
+        <div class="rm-list">
+        ${h.ingresses.map((ri) => {
+          const id = `${ri.namespace}/${ri.name}`;
+          const ok = ri.served && !ri.reason;
+          return `<div class="rm-ing ${ok ? 'ok' : 'bad'} ${id === me ? 'me' : ''}">
+            <div class="rm-ing-head">
+              <span class="dot ${ok ? 'ok' : 'bad'}"></span><b title="${esc(id)}">${esc(ri.name)}</b>
+              <span class="pill">${esc(ri.type)}</span>${ri.tls ? '<span class="pill">TLS</span>' : ''}
+              <span class="rm-state">${ok ? `served · ${esc(ri.address)}` : 'ignored'}</span>
+            </div>
+            ${ri.namespace !== namespace ? `<div class="muted" style="font-size:12px">namespace ${esc(ri.namespace)}</div>` : ''}
+            ${ri.paths.length ? ri.paths.map((p) => `
+              <div class="rm-path">
+                <code>${esc(p.path)}</code><span class="rm-arrow ${ok ? '' : 'dead'}">${ok ? '──▶' : '─ ─▶'}</span>
+                <span class="rm-svc ${ok ? '' : 'dead'}">${esc(p.service || '—')}${p.port ? ':' + esc(p.port) : ''}</span>
+              </div>
+              ${p.fallsTo ? `<div class="rm-fall">↳ actually answered by <b>${esc(p.fallsTo.ingress.split('/')[1])}</b> <code>${esc(p.fallsTo.path)}</code> ──▶ <span class="rm-svc">${esc(p.fallsTo.service)}</span></div>`
+                : (!ok ? '<div class="rm-fall bad">↳ no served route matches: requests get a 404</div>' : '')}`).join('')
+            : `<div class="muted" style="font-size:12.5px">${ri.type === 'master' ? 'master: holds TLS and server settings, paths come from minions' : 'no paths'}</div>`}
+            ${ri.ignoredAnnotations?.length ? `<div class="rm-ignored">not applied by this controller: ${ri.ignoredAnnotations.map((a) => `<span class="pill warn">${esc(a)}</span>`).join(' ')}</div>` : ''}
+            ${ri.reason ? `<div class="rm-reason">${esc(ri.reason)}</div>` : ''}
+          </div>`;
+        }).join('')}
+        </div>
+      </div>`).join('');
+  } };
+}
+
 // objectDrawer opens describe + details + console for something that points at a Kubernetes object.
 function objectDrawer({ eyebrow, title, details, cluster, namespace, kind, name, commands }) {
   const kindId = KIND_IDS[kind];
   const tabs = [];
+  if (kind === 'Ingress' && name) tabs.push(routingTab(cluster, namespace, name));
   if (kindId && name) tabs.push(describeTab(kindId, { cluster, namespace, name }));
   tabs.push({ label: 'Details', html: details });
   tabs.push(consoleTab(commands, cluster, namespace));

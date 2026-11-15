@@ -93,9 +93,14 @@ func TestNginxIncSameHostPlainIngresses(t *testing.T) {
 	}})
 	front := withAddress(ing("asc", "frontend", "", "explorer.example.com", time.Hour, 1, true))
 	metrics := ing("asc", "frontend-metrics", "", "explorer.example.com", time.Hour, 1, true)
+	metrics.Annotations["nginx.ingress.kubernetes.io/whitelist-source-range"] = "10.0.0.0/8"
+	metrics.Annotations["meta.helm.sh/release-name"] = "blockscout"
 	got := nginxMergeIssues([]*networkingv1.Ingress{front, metrics}, ci)
-	if g := got["asc/frontend-metrics"]; !strings.Contains(g.Message, "already served by asc/frontend") {
-		t.Fatalf("got %+v", got)
+	g := got["asc/frontend-metrics"]
+	for _, want := range []string{"already served by asc/frontend", "/ is answered by frontend's / route", "its settings don't apply (whitelist-source-range)"} {
+		if !strings.Contains(g.Message, want) {
+			t.Errorf("message %q missing %q", g.Message, want)
+		}
 	}
 	if _, ok := got["asc/frontend"]; ok {
 		t.Fatal("served ingress must not be flagged")
@@ -121,5 +126,18 @@ func TestForeignAnnotations(t *testing.T) {
 	}
 	if keys, _ := foreignAnnotations(i, "traefik.io/ingress-controller"); len(keys) != 0 {
 		t.Fatalf("other controllers: %v", keys)
+	}
+}
+
+func TestFallthroughLongestPrefix(t *testing.T) {
+	served := []RouteIngress{{Namespace: "a", Name: "web", Paths: []RoutePath{{Path: "/", Service: "front"}, {Path: "/api", Service: "api"}}}}
+	cases := map[string]string{"/node-api/metrics": "/", "/api/v1": "/api", "/api": "/api", "/apix": "/"}
+	for in, want := range cases {
+		if hop := fallthroughFor(in, served); hop == nil || hop.Path != want {
+			t.Errorf("%s: got %+v want %s", in, hop, want)
+		}
+	}
+	if hop := fallthroughFor("/x", []RouteIngress{{Paths: []RoutePath{{Path: "/api"}}}}); hop != nil {
+		t.Errorf("no match expected, got %+v", hop)
 	}
 }
