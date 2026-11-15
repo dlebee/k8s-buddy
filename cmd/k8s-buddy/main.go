@@ -98,6 +98,7 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 	go func() { _ = httpSrv.Serve(ln) }()
 
 	quit := func() {
+		srv.StopForwards()
 		cancel()
 		if err := store.Save(historyPath); err != nil {
 			log.Warn("save history", "err", err)
