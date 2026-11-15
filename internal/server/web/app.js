@@ -387,6 +387,28 @@ function openDrawer({ eyebrow, title, tabs }) {
   drawer.hidden = false;
 }
 function closeDrawer() { runDrawerCleanup(); drawer.hidden = true; }
+
+// The drawer's width follows the grip on its left edge and is remembered between sessions.
+(() => {
+  const grip = drawer.querySelector('.drawer-grip');
+  const set = (w) => { drawer.style.setProperty('--drawer-w', `${Math.round(w)}px`); };
+  try { const w = +localStorage.getItem('buddy.drawer.w'); if (w >= 360) set(w); } catch { /* storage unavailable */ }
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    drawer.classList.add('resizing');
+    const move = (ev) => set(Math.min(Math.max(window.innerWidth - ev.clientX, 360), window.innerWidth * 0.96));
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      drawer.classList.remove('resizing');
+      const w = parseInt(drawer.style.getPropertyValue('--drawer-w'), 10);
+      try { if (w) localStorage.setItem('buddy.drawer.w', String(w)); } catch { /* ignore */ }
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up, { once: true });
+  });
+  grip.addEventListener('dblclick', () => { drawer.style.removeProperty('--drawer-w'); try { localStorage.removeItem('buddy.drawer.w'); } catch { /* ignore */ } });
+})();
 drawer.querySelectorAll('[data-close]').forEach((el) => el.onclick = closeDrawer);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !drawer.hidden) closeDrawer();
