@@ -1,6 +1,9 @@
 package monitor
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -12,25 +15,28 @@ import (
 	"github.com/dlebee/k8s-buddy/internal/alert"
 )
 
-func TestRedactSecretDropsValuesKeepsKeys(t *testing.T) {
-	s := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "db", Annotations: map[string]string{
-			corev1.LastAppliedConfigAnnotation: `{"data":{"password":"aHVudGVyMg=="}}`,
-			"keep":                             "me",
-		}},
-		Data:       map[string][]byte{"password": []byte("hunter2"), "user": []byte("admin")},
-		StringData: map[string]string{"token": "abc"},
+func TestSecretsNeverDownloadValues(t *testing.T) {
+	g, ok := genericFor("secrets")
+	if !ok || includeObjectFor(g.res) != "Metadata" {
+		t.Fatalf("secrets must be listed as metadata-only tables: %+v %v", g, ok)
 	}
-	out, _ := redactSecret(s)
-	got := out.(*corev1.Secret)
-	if len(got.Data) != 2 || got.Data["password"] != nil || got.Data["user"] != nil {
-		t.Fatalf("values not redacted: %v", got.Data)
+	if includeObjectFor(APIResource{Group: "apps", Resource: "deployments"}) != "Object" {
+		t.Fatal("other kinds keep full objects for health")
 	}
-	if got.StringData["token"] != "" {
-		t.Fatal("stringData not redacted")
+	obj := map[string]any{"kind": "Secret", "metadata": map[string]any{"name": "db", "annotations": map[string]any{
+		"kubectl.kubernetes.io/last-applied-configuration": `{"data":{"password":"aHVudGVyMg=="}}`, "keep": "me"}},
+		"data": map[string]any{"password": "aHVudGVyMg==", "user": "YWRtaW4="}, "stringData": map[string]any{"token": "abc"}}
+	redactObject(obj)
+	if _, ok := obj["data"]; ok {
+		t.Fatal("data not removed")
 	}
-	if _, ok := got.Annotations[corev1.LastAppliedConfigAnnotation]; ok || got.Annotations["keep"] != "me" {
-		t.Fatalf("annotations: %v", got.Annotations)
+	hidden := obj["stringData"].(map[string]any)
+	if len(hidden) != 3 || hidden["password"] != "<hidden by k8s-buddy>" || hidden["token"] != "<hidden by k8s-buddy>" {
+		t.Fatalf("keys/values: %v", hidden)
+	}
+	ann := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if _, ok := ann["kubectl.kubernetes.io/last-applied-configuration"]; ok || ann["keep"] != "me" {
+		t.Fatalf("annotations: %v", ann)
 	}
 }
 
@@ -151,5 +157,29 @@ func TestEventHintRejectsInjectedNames(t *testing.T) {
 	good := corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "web-0.x"}
 	if h := eventHint("c", good, "pod/web-0.x"); h != "kubectl --context c -n ns describe pod/web-0.x" {
 		t.Errorf("good name: %q", h)
+	}
+}
+
+func TestSecretSizes(t *testing.T) {
+	got := secretSizes(map[string]any{"data": map[string]any{"password": "aHVudGVyMg==", "empty": ""}, "stringData": map[string]any{"token": "abc"}})
+	if got["password"] != 7 || got["empty"] != 0 || got["token"] != 3 {
+		t.Fatalf("sizes: %v", got)
+	}
+}
+
+func TestDecodeHelmRelease(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(`{"name":"web","config":{"replicas":3},"manifest":"kind: Secret","chart":{"metadata":{"name":"web","version":"1.2.0"}}}`))
+	_ = zw.Close()
+	rel, err := decodeHelmRelease([]byte(base64.StdEncoding.EncodeToString(buf.Bytes())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dig(rel, "config", "replicas") != float64(3) || str(dig(rel, "chart", "metadata", "version")) != "1.2.0" {
+		t.Fatalf("decoded: %v", rel)
+	}
+	if _, err := decodeHelmRelease([]byte("not base64!")); err == nil {
+		t.Fatal("garbage accepted")
 	}
 }

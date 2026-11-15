@@ -4,15 +4,18 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
 	"net"
 	"net/http"
 	"os"
+	"sigs.k8s.io/yaml"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dlebee/k8s-buddy/internal/alert"
 	"github.com/dlebee/k8s-buddy/internal/config"
@@ -195,6 +198,49 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/portforwards/{id}/open", s.handleForwardOpen)
 	mux.HandleFunc("POST /api/shell", s.handleShell)
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
+	// Reveals one key of one Secret on an explicit click; POST so it is never a link or a cached GET.
+	mux.HandleFunc("POST /api/secret/reveal", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Cluster, Namespace, Name, Key string }
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		v, err := s.mgr.RevealSecretKey(req.Cluster, req.Namespace, req.Name, req.Key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		out := map[string]any{"key": req.Key, "size": len(v)}
+		if utf8.Valid(v) {
+			out["text"] = string(v)
+		} else {
+			out["base64"] = base64.StdEncoding.EncodeToString(v)
+		}
+		writeJSON(w, out)
+	})
+	// Reads a Helm release's user-supplied values on an explicit click (never in the background).
+	mux.HandleFunc("POST /api/helm/values", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Cluster, Namespace, Name string
+			Revision                 int
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		hv, err := s.mgr.HelmReleaseValues(req.Cluster, req.Namespace, req.Name, req.Revision)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		y, err := yaml.Marshal(hv.Values)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"revision": hv.Revision, "status": hv.Status, "chart": hv.Chart, "chartVersion": hv.ChartVersion,
+			"appVersion": hv.AppVersion, "empty": len(hv.Values) == 0, "yaml": string(y)})
+	})
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

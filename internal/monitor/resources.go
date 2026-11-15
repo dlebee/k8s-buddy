@@ -44,7 +44,7 @@ type kindSpec struct {
 }
 
 // Columns roughly follow `kubectl get` / k9s for each kind.
-var lazyKinds = map[string]bool{"configmaps": true, "secrets": true}
+var lazyKinds = map[string]bool{"configmaps": true}
 
 var kinds = map[string]kindSpec{
 	"pods": {"pods", "Pods", true, []string{"Ready", "Restarts", "Node", "IP"}, listPods,
@@ -86,11 +86,6 @@ var kinds = map[string]kindSpec{
 		func(c *cluster, ns, n string) (runtime.Object, string, error) {
 			o, err := c.configmaps.ConfigMaps(ns).Get(n)
 			return o, "ConfigMap", err
-		}},
-	"secrets": {"secrets", "Secrets", true, []string{"Type", "Keys"}, listSecrets,
-		func(c *cluster, ns, n string) (runtime.Object, string, error) {
-			o, err := c.secrets.Secrets(ns).Get(n)
-			return o, "Secret", err
 		}},
 	"helm":   {"helm", "Helm releases", true, []string{"Revision", "Updated"}, listHelm, nil},
 	"events": {"events", "Warning events", true, []string{"Object", "Message", "Count", "Last seen"}, listEvents, nil},
@@ -305,15 +300,6 @@ func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, 
 		apiVersion = "apps/v1"
 	}
 	obj.GetObjectKind().SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, k8sKind))
-	var secretKeys []string
-	if sec, ok := obj.(*corev1.Secret); ok {
-		secretKeys = slices.Sorted(maps.Keys(sec.Data))
-		hidden := make(map[string]string, len(sec.Data))
-		for _, k := range secretKeys {
-			hidden[k] = "<hidden by k8s-buddy>"
-		}
-		sec.Data, sec.StringData = nil, hidden
-	}
 	b, err := yaml.Marshal(obj)
 	if err != nil {
 		return ResourceDetail{}, err
@@ -332,10 +318,6 @@ func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, 
 	d.Commands = []string{kubectl(clusterName, ns, "describe "+ref), kubectl(clusterName, ns, "get "+ref+" -o yaml")}
 	if kind == "pods" {
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "logs "+name+" --all-containers --tail=200"))
-	} else if kind == "secrets" {
-		for _, k := range secretKeys[:min(len(secretKeys), 5)] {
-			d.Commands = append(d.Commands, kubectl(clusterName, ns, fmt.Sprintf("get secret %s -o go-template='{{index .data %q | base64decode}}'", name, k)))
-		}
 	} else if kind == "deployments" || kind == "statefulsets" || kind == "daemonsets" {
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "rollout status "+ref), kubectl(clusterName, ns, "rollout restart "+ref))
 	}
@@ -355,16 +337,6 @@ func listConfigMaps(c *cluster) []Resource {
 		keys = append(keys, slices.Collect(maps.Keys(cm.BinaryData))...)
 		out = append(out, Resource{Namespace: cm.Namespace, Name: cm.Name, Status: "Active", Health: HealthNeutral,
 			Created: cm.CreationTimestamp.Time, Cols: []string{keyList(keys)}})
-	}
-	return out
-}
-
-func listSecrets(c *cluster) []Resource {
-	secs, _ := c.secrets.List(labels.Everything())
-	out := make([]Resource, 0, len(secs))
-	for _, s := range secs {
-		out = append(out, Resource{Namespace: s.Namespace, Name: s.Name, Status: "Active", Health: HealthNeutral,
-			Created: s.CreationTimestamp.Time, Cols: []string{string(s.Type), keyList(slices.Collect(maps.Keys(s.Data)))}})
 	}
 	return out
 }

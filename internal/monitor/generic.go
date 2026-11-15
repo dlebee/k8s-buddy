@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -65,6 +67,18 @@ var genericBuiltins = map[string]genericKind{
 	"pvs":             {"Persistent volumes", APIResource{Version: "v1", Resource: "persistentvolumes", Kind: "PersistentVolume"}},
 	"storageclasses":  {"Storage classes", APIResource{Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses", Kind: "StorageClass"}},
 	"namespaces":      {"Namespaces", APIResource{Version: "v1", Resource: "namespaces", Kind: "Namespace"}},
+	// Secrets are listed as a table with metadata only (no values ever leave the API server) and
+	// fetched one at a time, redacted, when someone opens one.
+	"secrets": {"Secrets", APIResource{Version: "v1", Resource: "secrets", Kind: "Secret", Namespaced: true}},
+}
+
+// includeObjectFor is what a table listing asks the API server to embed in each row: the full object
+// (for health from status), or only metadata for Secrets so their values are never downloaded.
+func includeObjectFor(r APIResource) string {
+	if r.Group == "" && r.Resource == "secrets" {
+		return "Metadata"
+	}
+	return "Object"
 }
 
 // genericFor resolves built-in generic kinds and custom resources ("cr:<group>/<resource>").
@@ -201,7 +215,7 @@ func (c *cluster) table(ctx context.Context, r APIResource) ([]string, []Resourc
 	c.tables.mu.Unlock()
 
 	raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath(key).
-		Param("includeObject", "Object").
+		Param("includeObject", includeObjectFor(r)).
 		SetHeader("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io,application/json").
 		DoRaw(ctx)
 	var cols []string
@@ -397,7 +411,7 @@ func (m *Manager) genericResources(q ResourceQuery, g genericKind) ResourceList 
 		out.Namespaced = r.res.Namespaced
 		if r.err != nil {
 			reason := "error"
-			if strings.Contains(strings.ToLower(r.err.Error()), "forbidden") {
+			if apierrors.IsForbidden(r.err) || strings.Contains(strings.ToLower(r.err.Error()), "forbidden") {
 				reason = "no access"
 			}
 			out.Unavailable = append(out.Unavailable, Unavailable{Cluster: r.c.name, Reason: reason, Detail: truncate(r.err.Error(), 300)})
@@ -478,6 +492,13 @@ func (m *Manager) genericDetail(clusterName, kind string, g genericKind, ns, nam
 	}
 	ref += "/" + name
 	d.Commands = []string{kubectl(clusterName, ns, "describe "+ref), kubectl(clusterName, ns, "get "+ref+" -o yaml")}
+	if res.Group == "" && res.Resource == "secrets" {
+		// redactObject left only the key names; offer to read one, which the console confirms first.
+		hidden, _ := obj["stringData"].(map[string]any)
+		for _, k := range slices.Sorted(maps.Keys(hidden))[:min(len(hidden), 5)] {
+			d.Commands = append(d.Commands, kubectl(clusterName, ns, fmt.Sprintf("get secret %s -o go-template='{{index .data %q | base64decode}}'", name, k)))
+		}
+	}
 	if res.Group == "cert-manager.io" && res.Resource == "certificates" {
 		d.Commands = append(d.Commands, "cmctl status certificate "+name+" -n "+shellQuote(ns)+" --context "+shellQuote(clusterName))
 	}

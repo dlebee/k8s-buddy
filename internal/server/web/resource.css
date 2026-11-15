@@ -260,3 +260,12 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .cr-runs td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .cr-runs th .muted { font-weight: 400; }
 .cr-runs th { text-transform: none; letter-spacing: 0; }
+
+/* secret keys */
+.sv-keys { display: flex; flex-direction: column; gap: 6px; }
+.sv-key { border: 1px solid var(--border); border-radius: 9px; padding: 6px 10px; }
+.sv-head { display: flex; align-items: center; gap: 10px; min-height: 28px; }
+.sv-head code { font-weight: 600; word-break: break-all; }
+.sv-val { margin-top: 6px; }
+.sv-pre { margin: 0; max-height: 260px; overflow: auto; padding: 8px 10px; border-radius: 7px; background: var(--surface-2); font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
+.sv-act { display: flex; align-items: center; gap: 8px; margin-top: 6px; }

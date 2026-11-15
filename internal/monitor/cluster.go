@@ -115,7 +115,6 @@ type cluster struct {
 	disc           discoveryCache
 	tables         tableCache
 	configmaps     corelisters.ConfigMapLister
-	secrets        corelisters.SecretLister
 	nodesSynced    atomic.Bool
 }
 
@@ -454,10 +453,6 @@ func (c *cluster) ensureLazy(resource string) {
 		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(stripManagedFields))
 		cm := f.Core().V1().ConfigMaps()
 		inf, c.configmaps = cm.Informer(), cm.Lister()
-	case "secrets":
-		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(redactSecret))
-		sec := f.Core().V1().Secrets()
-		inf, c.secrets = sec.Informer(), sec.Lister()
 	default:
 		c.mu.Unlock()
 		return
@@ -467,21 +462,6 @@ func (c *cluster) ensureLazy(resource string) {
 	ctx := c.runCtx
 	c.mu.Unlock()
 	f.Start(ctx.Done())
-}
-
-// redactSecret keeps secret metadata and key names but never retains values in memory.
-func redactSecret(obj any) (any, error) {
-	if s, ok := obj.(*corev1.Secret); ok {
-		s.ManagedFields = nil
-		delete(s.Annotations, corev1.LastAppliedConfigAnnotation)
-		for k := range s.Data {
-			s.Data[k] = nil
-		}
-		for k := range s.StringData {
-			s.StringData[k] = ""
-		}
-	}
-	return obj, nil
 }
 
 func (c *cluster) resourceError(resource string) string {

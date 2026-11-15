@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"maps"
 	"slices"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/metadata"
 )
 
 // ObjectDetail is a resource as JSON plus the related objects the drawer summaries need
@@ -29,7 +31,9 @@ type ObjectDetail struct {
 	Services map[string][]int32 `json:"services,omitempty"`
 	// BackendPods are the pods each of an ingress's services selects (absent: no selector).
 	BackendPods map[string][]PodBrief `json:"backendPods,omitempty"`
-	History     []HelmRevision        `json:"history,omitempty"`
+	// SecretSizes is the decoded size in bytes of each key of a Secret (values themselves are removed).
+	SecretSizes map[string]int `json:"secretSizes,omitempty"`
+	History     []HelmRevision `json:"history,omitempty"`
 	// PodCount is the number of pods scheduled on a node.
 	PodCount *int `json:"podCount,omitempty"`
 }
@@ -158,6 +162,9 @@ func (m *Manager) Object(clusterName, kind, ns, name string) (ObjectDetail, erro
 		}
 		if err := json.Unmarshal(raw, &d.Object); err != nil {
 			return d, err
+		}
+		if res.Group == "" && res.Resource == "secrets" {
+			d.SecretSizes = secretSizes(d.Object)
 		}
 		redactObject(d.Object)
 		if res.Group == "networking.k8s.io" && res.Resource == "ingresses" {
@@ -304,16 +311,28 @@ func asMap(v any) map[string]any {
 	return m
 }
 
+// helmHistory asks the API server for this release's storage secrets when the release is opened —
+// metadata only (labels carry revision, status and time), never the release payload itself.
 func (c *cluster) helmHistory(d ObjectDetail) (ObjectDetail, error) {
-	if c.helm == nil {
-		return d, fmt.Errorf("helm releases are not available on %s", c.name)
+	if !validHelmName(d.Name) || !validObjectName(d.Namespace) {
+		return d, fmt.Errorf("invalid release name")
 	}
-	objs, _ := c.helm.List(labels.Everything())
-	for _, o := range objs {
-		m, ok := o.(*metav1.PartialObjectMetadata)
-		if !ok || m.Namespace != d.Namespace || m.Labels["name"] != d.Name {
-			continue
-		}
+	mc, err := metadata.NewForConfig(c.cfg)
+	if err != nil {
+		return d, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	list, err := mc.Resource(corev1.SchemeGroupVersion.WithResource("secrets")).Namespace(d.Namespace).
+		List(ctx, metav1.ListOptions{LabelSelector: "owner=helm,name=" + d.Name})
+	if apierrors.IsForbidden(err) {
+		return d, fmt.Errorf("no access to Helm's release records (listing secrets in %s is not allowed), so revision history is unavailable", d.Namespace)
+	}
+	if err != nil {
+		return d, err
+	}
+	for i := range list.Items {
+		m := &list.Items[i]
 		rev, _ := strconv.Atoi(m.Labels["version"])
 		r := HelmRevision{Revision: rev, Status: m.Labels["status"], Updated: m.CreationTimestamp.Time}
 		if ts, err := strconv.ParseInt(m.Labels["modifiedAt"], 10, 64); err == nil {

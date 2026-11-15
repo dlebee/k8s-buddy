@@ -485,6 +485,36 @@ function routeSummary(o, ctx) {
     ${trafficPath(kind, md.name, hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*', routes, ctx)}`;
 }
 
+// ---------- Secret ----------
+const SECRET_TYPES = { Opaque: 'generic', 'kubernetes.io/tls': 'TLS certificate', 'kubernetes.io/dockerconfigjson': 'registry credentials', 'kubernetes.io/service-account-token': 'service account token', 'kubernetes.io/basic-auth': 'basic auth', 'kubernetes.io/ssh-auth': 'SSH key', 'helm.sh/release.v1': 'Helm release record' };
+function secretSummary(o, ctx) {
+  const md = obj(o.metadata);
+  const keys = Object.keys(obj(o.stringData)).sort();
+  const sizes = ctx.secretSizes || {};
+  return `
+    ${facts([
+      ['Type', esc(o.type || 'Opaque'), esc(SECRET_TYPES[o.type || 'Opaque'] || '')],
+      ['Keys', String(keys.length)],
+      ['Immutable', o.immutable ? 'yes' : 'no'],
+      ['Age', esc(ago(md.creationTimestamp)), new Date(md.creationTimestamp).toLocaleString()],
+    ])}
+    ${section('Data', keys.length ? `<p class="muted rv-small">Values aren't loaded. Reveal reads one key from the cluster when you click it and hides it again after 60s.</p>
+      <div class="sv-keys">${keys.map((k) => `<div class="sv-key" data-key="${esc(k)}">
+        <div class="sv-head"><code>${esc(k)}</code><span class="muted rv-small">${sizes[k] != null ? bytes(sizes[k]) : ''}</span><span class="spacer"></span>
+          <button class="btn sm" data-reveal="${esc(k)}">Reveal</button></div>
+        <div class="sv-val" hidden></div></div>`).join('')}</div>` : '<p class="muted">This secret has no keys.</p>')}
+    ${warnings(ctx.events)}
+    ${metadata(md)}`;
+}
+
+function revealHTML(r) {
+  let text = r.text, note = '';
+  if (text == null) { text = r.base64; note = `binary · ${bytes(r.size)} · shown as base64`; }
+  else if (/^\s*[{[]/.test(text)) { try { text = JSON.stringify(JSON.parse(text), null, 2); note = 'JSON'; } catch { /* not JSON */ } }
+  return `<pre class="sv-pre">${esc(text)}</pre><div class="sv-act">${note ? `<span class="muted rv-small">${esc(note)}</span>` : ''}<span class="spacer"></span>
+    <span class="muted rv-small" data-countdown></span><button class="btn sm" data-sv-copy>Copy</button><button class="btn sm" data-sv-hide>Hide</button></div>`;
+}
+
 // ---------- CronJob ----------
 function cronSummary(o, ctx) {
   const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
@@ -650,25 +680,31 @@ function certSummary(o, ctx) {
 
 // ---------- Helm ----------
 function helmSummary(_, ctx) {
-  const h = ctx.history || [];
+  const all = ctx.history || [];
+  const h = all.slice(0, 10); // newest first; older revisions rarely matter and can number in the hundreds
   const cur = h[0] || {};
   const tone = (s) => (s === 'deployed' ? 'ok' : s === 'failed' ? 'bad' : /^pending/.test(s) ? 'warn' : '');
+  const older = all.length - h.length;
   return `
     ${facts([
       ['Status', pill(cur.status || '?', tone(cur.status))],
-      ['Revision', String(cur.revision ?? '–'), plural(h.length, 'stored revision')],
+      ['Revision', String(cur.revision ?? '–'), plural(all.length, 'stored revision')],
       ['Updated', esc(ago(cur.updated)), cur.updated ? new Date(cur.updated).toLocaleString() : ''],
     ])}
-    ${section('History', `<ol class="rv-timeline">${h.map((r, i) => `<li class="${tone(r.status)} ${i === 0 ? 'current' : ''}">
+    ${section('Values', h.length ? `<div class="sv-act" style="justify-content:flex-start"><select class="lg-sel" data-hv-rev>${h.map((r, i) => `<option value="${r.revision}">revision ${r.revision}${i === 0 ? ' (current)' : ''} · ${esc(r.status)}</option>`).join('')}</select>
+        <button class="btn sm" data-hv-show>Show values</button></div>
+      <p class="muted rv-small">Not loaded until you click: reads the user-supplied values of one revision (like <code>helm get values</code>); manifests are never read.</p>
+      <div data-hv-out></div>` : '<p class="muted">No revisions found.</p>')}
+    ${section(`History <span class="muted">${older ? `latest ${h.length} of ${all.length}` : h.length}</span>`, `<ol class="rv-timeline">${h.map((r, i) => `<li class="${tone(r.status)} ${i === 0 ? 'current' : ''}">
       <span class="node"></span><div class="rv-tl-main"><b>Revision ${r.revision}</b>${pill(r.status, tone(r.status))}${i === 0 ? '<span class="muted">current</span>' : ''}</div>
-      <div class="muted rv-small">${new Date(r.updated).toLocaleString()} · ${ago(r.updated)} ago</div></li>`).join('')}</ol>`)}
-    <p class="muted rv-small">Only release metadata is read; values and manifests stay in their secrets. Use the Console tab for <code>helm get values</code>.</p>`;
+      <div class="muted rv-small">${new Date(r.updated).toLocaleString()} · ${ago(r.updated)} ago</div></li>`).join('')}</ol>
+      ${older ? `<p class="muted rv-small">${plural(older, 'older revision')} not shown — see <code>helm history</code> in the Console tab.</p>` : ''}`)}`;
 }
 
 const RENDERERS = {
   pods: podSummary, deployments: workloadSummary('deployments'), statefulsets: workloadSummary('statefulsets'), daemonsets: workloadSummary('daemonsets'),
   services: serviceSummary, ingresses: ingressSummary, pvcs: pvcSummary, pvs: pvSummary, nodes: nodeSummary,
-  'cr:cert-manager.io/certificates': certSummary, helm: helmSummary, cronjobs: cronSummary,
+  'cr:cert-manager.io/certificates': certSummary, helm: helmSummary, cronjobs: cronSummary, secrets: secretSummary,
   'cr:gateway.networking.k8s.io/gateways': gatewaySummary,
   'cr:gateway.networking.k8s.io/httproutes': routeSummary, 'cr:gateway.networking.k8s.io/grpcroutes': routeSummary,
 };
@@ -677,7 +713,7 @@ export const hasRichSummary = (kind) => kind in RENDERERS;
 
 // renderSummary returns { html, bind } for the drawer. d is the /api/object response, events the warning events.
 export function renderSummary(kind, d, { row, events, open, fallback }) {
-  const ctx = { row, events, pods: d.pods, services: d.services, backendPods: d.backendPods, history: d.history, podCount: d.podCount, base: { cluster: d.cluster, namespace: d.namespace || '' } };
+  const ctx = { row, events, pods: d.pods, services: d.services, backendPods: d.backendPods, secretSizes: d.secretSizes, history: d.history, podCount: d.podCount, base: { cluster: d.cluster, namespace: d.namespace || '' } };
   const fn = RENDERERS[kind];
   const html = fn ? `<div class="rv">${fn(d.object || {}, ctx)}</div>` : fallback;
   return {
@@ -697,6 +733,35 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
           try {
             await api('/api/ingress-open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cluster: d.cluster, namespace: d.namespace, name: d.name, host: b.dataset.visitHost, path: b.dataset.visitPath }) });
           } catch (e) { b.title = e.message; b.classList.add('err'); }
+        });
+        root.querySelectorAll('[data-reveal]').forEach((b) => b.onclick = async () => {
+          const box = b.closest('.sv-key').querySelector('.sv-val');
+          const hide = () => { clearInterval(box._t); box.innerHTML = ''; box.hidden = true; b.hidden = false; };
+          b.disabled = true; b.textContent = 'Reading…';
+          try {
+            const r = await api('/api/secret/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cluster: d.cluster, namespace: d.namespace, name: d.name, key: b.dataset.reveal }) });
+            box.innerHTML = revealHTML(r); box.hidden = false; b.hidden = true;
+            const value = r.text ?? r.base64;
+            box.querySelector('[data-sv-copy]').onclick = (e) => { navigator.clipboard?.writeText(value); e.target.textContent = 'Copied'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1200); };
+            box.querySelector('[data-sv-hide]').onclick = hide;
+            let left = 60; const cd = box.querySelector('[data-countdown]');
+            box._t = setInterval(() => { if (!document.contains(box) || --left <= 0) return hide(); cd.textContent = `hides in ${left}s`; }, 1000);
+            cd.textContent = `hides in ${left}s`;
+          } catch (e) { box.hidden = false; box.innerHTML = `<p class="rv-warnline">⚠ ${esc(e.message.replace(/^\d+ /, ''))}</p>`; }
+          b.disabled = false; b.textContent = 'Reveal';
+        });
+        root.querySelectorAll('[data-hv-show]').forEach((b) => b.onclick = async () => {
+          const out = root.querySelector('[data-hv-out]'), rev = +root.querySelector('[data-hv-rev]').value;
+          b.disabled = true; b.textContent = 'Reading…';
+          try {
+            const r = await api('/api/helm/values', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cluster: d.cluster, namespace: d.namespace, name: d.name, revision: rev }) });
+            out.innerHTML = `<div class="sv-act"><span class="muted rv-small">${esc(r.chart)} ${esc(r.chartVersion)}${r.appVersion ? ' · app ' + esc(r.appVersion) : ''} · revision ${r.revision} · ${esc(r.status)}</span><span class="spacer"></span>
+              <button class="btn sm" data-hv-copy>Copy</button><button class="btn sm" data-hv-hide>Hide</button></div>
+              ${r.empty ? '<p class="muted">No user-supplied values: this revision uses the chart defaults.</p>' : `<pre class="code yaml sv-pre" style="max-height:420px">${esc(r.yaml)}</pre>`}`;
+            out.querySelector('[data-hv-copy]').onclick = (e) => { navigator.clipboard?.writeText(r.yaml); e.target.textContent = 'Copied'; setTimeout(() => { e.target.textContent = 'Copy'; }, 1200); };
+            out.querySelector('[data-hv-hide]').onclick = () => { out.innerHTML = ''; };
+          } catch (e) { out.innerHTML = `<p class="rv-warnline">⚠ ${esc(e.message.replace(/^\d+ /, ''))}</p>`; }
+          b.disabled = false; b.textContent = 'Show values';
         });
         root.querySelectorAll('[data-act="shell"]').forEach((b) => b.onclick = () => pickShell(b, ctx.base, ctx.shell));
       };
