@@ -92,16 +92,20 @@ type cluster struct {
 	stats       *Stats
 	statsAt     time.Time
 
-	informers      map[string]cache.SharedIndexInformer
-	pods           corelisters.PodLister
-	pvcs           corelisters.PersistentVolumeClaimLister
-	services       corelisters.ServiceLister
-	nodes          corelisters.NodeLister
-	events         corelisters.EventLister
-	deploys        appslisters.DeploymentLister
-	sts            appslisters.StatefulSetLister
-	ds             appslisters.DaemonSetLister
-	cs             kubernetes.Interface
+	informers map[string]cache.SharedIndexInformer
+	pods      corelisters.PodLister
+	pvcs      corelisters.PersistentVolumeClaimLister
+	services  corelisters.ServiceLister
+	nodes     corelisters.NodeLister
+	events    corelisters.EventLister
+	deploys   appslisters.DeploymentLister
+	sts       appslisters.StatefulSetLister
+	ds        appslisters.DaemonSetLister
+	cs        kubernetes.Interface
+	retry     chan struct{}
+	azureCLI  bool
+	// onAzureFailure reports whether an expired Azure CLI session explains a credential error.
+	onAzureFailure func(*cluster) bool
 	runCtx         context.Context
 	ingresses      networkinglisters.IngressLister
 	ingressClasses networkinglisters.IngressClassLister
@@ -123,6 +127,7 @@ func newCluster(name, server string, cfg *rest.Config, store *alert.Store) *clus
 		store:     store,
 		startedAt: time.Now(),
 		status:    StatusConnecting,
+		retry:     make(chan struct{}, 1),
 		resErrs:   map[string]resourceErr{},
 		pools:     map[string]map[string]map[string]bool{},
 	}
@@ -144,6 +149,8 @@ func (c *cluster) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
+		case <-c.retry:
+			backoff = 15 * time.Second
 		}
 		backoff = min(backoff*2, 5*time.Minute)
 	}
@@ -165,17 +172,22 @@ func (c *cluster) run(ctx context.Context) {
 		case <-sweep.C:
 			c.sweep()
 		case <-ver.C:
-			v, err := c.serverVersion()
-			if ctx.Err() != nil {
-				return
-			}
-			if err != nil {
-				c.onFailure(err)
-			} else {
-				c.onVersion(v)
-				c.ensureCRDWatchers()
-			}
+			c.pollVersion(ctx)
+		case <-c.retry:
+			c.pollVersion(ctx)
 		}
+	}
+}
+
+func (c *cluster) pollVersion(ctx context.Context) {
+	v, err := c.serverVersion()
+	switch {
+	case ctx.Err() != nil:
+	case err != nil:
+		c.onFailure(err)
+	default:
+		c.onVersion(v)
+		c.ensureCRDWatchers()
 	}
 }
 
@@ -203,7 +215,7 @@ func (c *cluster) onVersion(v string) {
 		c.everUp = true
 		c.connectedAt = time.Now()
 	}
-	if c.status == StatusConnecting || c.status == StatusError {
+	if c.status == StatusConnecting || c.status == StatusError || c.status == StatusSignIn {
 		if c.informers == nil {
 			c.status = StatusSyncing
 		} else {
@@ -226,6 +238,13 @@ func (c *cluster) onVersion(v string) {
 }
 
 func (c *cluster) onFailure(err error) {
+	if c.azureCLI && c.onAzureFailure != nil && isCredentialError(err) && c.onAzureFailure(c) {
+		c.mu.Lock()
+		c.failures++
+		c.lastErr = "waiting for Azure sign-in"
+		c.mu.Unlock()
+		return
+	}
 	c.mu.Lock()
 	c.failures++
 	c.lastErr = truncate(err.Error(), 400)

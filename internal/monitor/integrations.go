@@ -44,7 +44,7 @@ type helmRelease struct {
 	namespace, name, status string
 	revision                int
 	updated                 time.Time
-	chart                   string        // from helm.sh/chart label (fallback only)
+	chart                   string         // from helm.sh/chart label (fallback only)
 	workloads               []helmOwnedRes // populated when derived from labels, not secrets
 }
 

@@ -41,6 +41,11 @@
   .actions { display: flex; gap: 6px; }
   .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
   .empty .big { font-size: 34px; display: block; margin-bottom: 6px; }
+  .azure { display: flex; gap: 10px; align-items: center; margin: 10px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,159,10,.14); }
+  .azure[hidden] { display: none; }
+  .azure div { flex: 1; font-size: 12px; } .azure b { display: block; font-size: 12.5px; }
+  .azure button { background: #0a84ff; color: #fff; font-weight: 600; white-space: nowrap; }
+  .azure button:disabled { opacity: .6; }
   footer { display: flex; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); }
   footer .grow { flex: 1; }
 </style>
@@ -57,6 +62,7 @@
     <button data-scope="active">All open</button>
     <button data-scope="all">History</button>
   </div>
+  <div id="azure" class="azure" hidden></div>
   <div id="list"></div>
   <footer>
     <button id="ackAll">Snooze all</button>
@@ -71,7 +77,19 @@ let scope = 'pending';
 const open = new Set();
 const list = document.getElementById('list');
 
+async function renderAzure() {
+  const az = await api('/api/azure').catch(() => null);
+  const el = document.getElementById('azure');
+  el.hidden = !az || (!az.needed && !az.login.running);
+  if (el.hidden) return;
+  el.innerHTML = `<span>🔑</span><div><b>Azure sign-in expired</b>${az.clusters.length} cluster${az.clusters.length === 1 ? '' : 's'} waiting${az.login.error ? ` · <span style="color:#ff453a">${esc(az.login.error)}</span>` : ''}</div>
+    <button ${az.login.running ? 'disabled' : ''}>${az.login.running ? 'Check your browser…' : 'Sign in'}</button>`;
+  el.querySelector('button').onclick = async () => { await post('/api/azure/login'); renderAzure(); };
+  if (az.login.running) setTimeout(renderAzure, 2000);
+}
+
 async function render() {
+  renderAzure();
   const [alerts, sum] = await Promise.all([api(`/api/alerts?scope=${scope}&limit=300`), api('/api/summary')]);
   document.getElementById('sub').textContent = sum.pending ? `· ${sum.pending} open on ${sum.clusters} cluster${sum.clusters > 1 ? 's' : ''}` : '· all quiet';
   if (!alerts.length) {

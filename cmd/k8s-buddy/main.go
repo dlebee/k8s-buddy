@@ -128,7 +128,7 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 
 	go mgr.Run(ctx)
 	go store.Maintain(ctx, historyPath, func(err error) { log.Warn("save history", "err", err) })
-	go updateTray(ctx, store, driver)
+	go updateTray(ctx, store, mgr, driver)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -142,7 +142,7 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 	return nil
 }
 
-func updateTray(ctx context.Context, store *alert.Store, d ui.Driver) {
+func updateTray(ctx context.Context, store *alert.Store, mgr *monitor.Manager, d ui.Driver) {
 	ch, unsub := store.Subscribe()
 	defer unsub()
 	last := ""
@@ -153,6 +153,10 @@ func updateTray(ctx context.Context, store *alert.Store, d ui.Driver) {
 			title = fmt.Sprintf("⎈ %d", s.Nudgeable)
 		}
 		tip := fmt.Sprintf("k8s-buddy · %d open alert(s) on %d cluster(s)", s.Pending, s.Clusters)
+		if az := mgr.AzureStatus(); az.Needed {
+			title = "⎈ sign in"
+			tip = fmt.Sprintf("k8s-buddy · Azure sign-in expired, %d cluster(s) waiting", len(az.Clusters))
+		}
 		if title+tip != last {
 			last = title + tip
 			d.SetTray(title, tip)

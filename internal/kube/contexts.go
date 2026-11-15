@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -12,11 +13,30 @@ import (
 )
 
 type Context struct {
-	Name        string `json:"name"`
-	Cluster     string `json:"cluster"`
-	Server      string `json:"server"`
-	User        string `json:"user"`
+	Name    string `json:"name"`
+	Cluster string `json:"cluster"`
+	Server  string `json:"server"`
+	User    string `json:"user"`
+	// AzureCLI is set when credentials come from kubelogin backed by the Azure CLI session,
+	// so an expired `az login` breaks this context.
+	AzureCLI    bool   `json:"azureCLI,omitempty"`
 	Fingerprint string `json:"-"`
+}
+
+func usesAzureCLI(ai *clientcmdapi.AuthInfo) bool {
+	if ai == nil || ai.Exec == nil || !strings.Contains(ai.Exec.Command, "kubelogin") {
+		return false
+	}
+	args := ai.Exec.Args
+	for i, a := range args {
+		if a == "--login=azurecli" || a == "-l=azurecli" {
+			return true
+		}
+		if (a == "--login" || a == "-l") && i+1 < len(args) && args[i+1] == "azurecli" {
+			return true
+		}
+	}
+	return false
 }
 
 type Kubeconfig struct {
@@ -42,6 +62,7 @@ func Load(explicit string) (*Kubeconfig, []Context, error) {
 			ctx.Server = cl.Server
 		}
 		ctx.Fingerprint = fingerprint(c, cl, raw.AuthInfos[c.AuthInfo])
+		ctx.AzureCLI = usesAzureCLI(raw.AuthInfos[c.AuthInfo])
 		out = append(out, ctx)
 	}
 	slices.SortFunc(out, func(a, b Context) int {

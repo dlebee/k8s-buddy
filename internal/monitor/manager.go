@@ -34,6 +34,7 @@ type Manager struct {
 	running  map[string]*running
 	kick     chan struct{}
 	doc      doctor
+	az       azureState
 }
 
 func NewManager(settings *config.Store, store *alert.Store, log *slog.Logger) *Manager {
@@ -94,6 +95,9 @@ func (m *Manager) reconcile() {
 			r.cancel()
 			delete(m.running, name)
 			m.store.ResolveCluster(name)
+			m.az.mu.Lock()
+			delete(m.az.waiting, name)
+			m.az.mu.Unlock()
 			m.log.Info("stopped monitoring", "context", name)
 		}
 	}
@@ -103,6 +107,7 @@ func (m *Manager) reconcile() {
 		}
 		cfg, err := kc.RESTConfig(name)
 		cl := newCluster(name, kctx.Server, cfg, m.store)
+		cl.azureCLI, cl.onAzureFailure = kctx.AzureCLI, m.onAzureCredentialFailure
 		cctx, cancel := context.WithCancel(m.ctx)
 		m.running[name] = &running{c: cl, cancel: cancel, fingerprint: kctx.Fingerprint}
 		if err != nil {
@@ -122,7 +127,7 @@ func (m *Manager) forgetRemovedContexts(s config.Settings, contexts []kube.Conte
 		known[c.Name] = true
 		names[i] = c.Name
 	}
-	m.store.RetainClusters(names)
+	m.store.RetainClusters(append(names, AzureCluster))
 	gone := func(cluster string) bool { return !known[cluster] }
 	stale := slices.ContainsFunc(s.ExcludedContexts, gone) ||
 		slices.ContainsFunc(s.MutedKeys, func(k string) bool { return gone(strings.SplitN(k, "|", 2)[0]) })

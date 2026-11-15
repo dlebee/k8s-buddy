@@ -64,9 +64,9 @@ function toast(msg) {
 }
 async function copyCmd(text) { await copy(text); toast('Copied to clipboard'); }
 const healthPill = (h, text) => `<span class="pill ${h === 'ok' ? 'ok' : h === 'bad' ? 'bad' : h === 'warn' ? 'warn' : ''}">${esc(text)}</span>`;
-const clusterHealth = (c) => c.status === 'excluded' ? 'neutral' : c.status === 'error' ? 'bad'
+const clusterHealth = (c) => c.status === 'excluded' ? 'neutral' : c.status === 'error' ? 'bad' : c.status === 'signin' ? 'warn'
   : (c.stats && (c.stats.nodesReady < c.stats.nodes || c.stats.podsProblem || c.stats.pvcPending || c.stats.lbPending)) || c.alerts ? 'warn' : 'ok';
-const statusLabel = { connected: 'Connected', syncing: 'Syncing', connecting: 'Connecting', error: 'Unreachable', excluded: 'Not monitored' };
+const statusLabel = { connected: 'Connected', syncing: 'Syncing', connecting: 'Connecting', error: 'Unreachable', excluded: 'Not monitored', signin: 'Needs Azure sign-in' };
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 async function loadClusters() { clustersCache = await api('/api/clusters'); return clustersCache; }
@@ -83,6 +83,7 @@ async function overview() {
   const up = monitored.filter((c) => c.stats);
   const total = (k) => up.reduce((n, c) => n + (c.stats[k] || 0), 0);
   const unreachable = monitored.filter((c) => c.status === 'error').length;
+  const signin = monitored.filter((c) => c.status === 'signin').length;
   const nodes = total('nodes'), nodesReady = total('nodesReady'), unhealthy = total('podsProblem');
   view.innerHTML = `
     ${head('Overview', `${plural(monitored.length, 'cluster')} monitored${unreachable ? ` · <span style="color:var(--bad)">${unreachable} unreachable</span>` : ''}`,
@@ -90,7 +91,7 @@ async function overview() {
     ${ov.kubeconfigError ? `<div class="card empty" style="color:var(--bad)">Kubeconfig error: ${esc(ov.kubeconfigError)}</div>` : ''}
     <div class="stats">
       <div class="card stat ${sum.pending ? 'warn' : ''}"><div class="label">Needs a look</div><div class="value">${sum.pending}</div><div class="foot">on ${plural(sum.clusters, 'cluster')}</div></div>
-      <div class="card stat"><div class="label">Clusters online</div><div class="value">${up.length}<small> / ${monitored.length}</small></div><div class="foot">${unreachable ? plural(unreachable, 'unreachable') : 'all reachable'}</div></div>
+      <div class="card stat"><div class="label">Clusters online</div><div class="value">${up.length}<small> / ${monitored.length}</small></div><div class="foot">${[unreachable && plural(unreachable, 'unreachable'), signin && `${signin} waiting for Azure sign-in`].filter(Boolean).join(' · ') || 'all reachable'}</div></div>
       <div class="card stat ${nodesReady < nodes ? 'bad' : ''}"><div class="label">Nodes ready</div><div class="value">${nodesReady}<small> / ${nodes}</small></div><div class="foot">across all clusters</div></div>
       <div class="card stat"><div class="label">Pods running</div><div class="value">${total('podsRunning')}<small> / ${total('pods') - total('podsDone')}</small></div><div class="foot">+ ${total('podsDone')} completed · ${total('warnings1h')} warnings/1h</div></div>
       <div class="card stat ${unhealthy ? 'bad' : ''}"><div class="label">Unhealthy pods</div><div class="value">${unhealthy}</div><div class="foot">${total('pvcPending')} PVC · ${total('lbPending')} LB pending</div></div>
@@ -102,6 +103,7 @@ async function overview() {
   view.querySelector('#toDoctor').onclick = () => go('doctor');
   view.querySelector('#allAlerts')?.addEventListener('click', () => go('alerts'));
   view.querySelectorAll('.cluster').forEach((el) => el.onclick = () => {
+    if (el.dataset.status === 'signin') { main.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (el.dataset.status === 'excluded' || el.dataset.status === 'error') go('settings'); else go('resources', { kind: 'pods', cluster: el.dataset.name });
   });
   bindAlertRows(view, latest);
@@ -303,7 +305,10 @@ function openDrawer({ eyebrow, title, tabs }) {
   const tabsEl = document.getElementById('dTabs');
   const body = document.getElementById('dBody');
   tabsEl.innerHTML = tabs.map((t, i) => `<button data-i="${i}" class="${i === 0 ? 'on' : ''}">${esc(t.label)}</button>`).join('');
-  const bind = () => body.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+  const bind = () => {
+    body.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+    body.querySelectorAll('[data-azure-login]').forEach((b) => b.onclick = () => { startAzureLogin(); closeDrawer(); });
+  };
   const show = async (i) => {
     tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
     const t = tabs[i];
@@ -514,6 +519,7 @@ function alertDrawer(a) {
       <dt>State</dt><dd>${a.resolved ? 'resolved ' + ago(a.resolvedAt) + ' ago' : a.ackedAt ? 'snoozed' : 'open'}</dd>
     </dl>
     ${a.detail ? `<pre class="code">${esc(a.detail)}</pre>` : ''}
+    ${a.source === 'azure' && !a.resolved ? '<p><button class="btn primary" data-azure-login>Sign in to Azure</button></p>' : ''}
     <p class="muted mono" style="margin-top:14px">key: ${esc(a.key)}</p>`;
   objectDrawer({
     eyebrow: `<span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span>${esc(a.cluster)}${a.namespace ? ' · ' + esc(a.namespace) : ''}`,
@@ -681,6 +687,38 @@ async function settings() {
 }
 
 // ---------- live updates ----------
+// ---------- Azure sign-in ----------
+const main = document.querySelector('main');
+const azureBanner = document.getElementById('azureBanner');
+let azurePoll;
+
+async function refreshAzure() {
+  const az = await api('/api/azure').catch(() => null);
+  if (!az) return;
+  clearTimeout(azurePoll);
+  if (az.login.running) azurePoll = setTimeout(refreshAzure, 2000);
+  azureBanner.hidden = !az.needed && !az.login.running && !az.login.error;
+  if (azureBanner.hidden) return;
+  if (!az.needed && !az.login.running) {
+    azureBanner.innerHTML = `<span class="banner-ico">⚠️</span><div><b>Azure sign-in didn't finish</b><small>${esc(az.login.error)}</small></div>
+      <button class="btn primary" data-azure-login>Try again</button>`;
+  } else {
+    azureBanner.innerHTML = `<span class="banner-ico">🔑</span>
+      <div><b>Azure sign-in expired · ${plural(az.clusters.length, 'cluster')} waiting</b>
+        <small>${az.login.running ? 'Finish signing in in the browser window that just opened. Clusters reconnect as soon as you are done.'
+          : esc(az.reason || 'kubelogin uses your Azure CLI session, which needs a fresh sign-in.')}
+          ${az.login.error ? `<br><span style="color:var(--bad)">Last attempt: ${esc(az.login.error)}</span>` : ''}</small></div>
+      <button class="btn primary" data-azure-login ${az.login.running ? 'disabled' : ''}>${az.login.running ? '<span class="spinner"></span>Waiting for browser…' : 'Sign in to Azure'}</button>`;
+  }
+  azureBanner.querySelector('[data-azure-login]')?.addEventListener('click', startAzureLogin);
+}
+
+async function startAzureLogin() {
+  await post('/api/azure/login');
+  toast('Opening Azure sign-in in your browser…');
+  refreshAzure();
+}
+
 async function refreshBadges() {
   const sum = await api('/api/summary');
   document.getElementById('navAlerts').textContent = sum.pending ? String(sum.pending) : '';
@@ -688,6 +726,7 @@ async function refreshBadges() {
 }
 const onChange = debounce(() => {
   refreshBadges();
+  refreshAzure();
   if ((current === 'alerts' || current === 'history') && drawer.hidden) render();
 }, 600);
 stream({ summary: onChange });
@@ -698,4 +737,5 @@ setInterval(() => {
 }, 8000);
 
 refreshBadges();
+refreshAzure();
 render();

@@ -136,6 +136,8 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, hosts)
 	})
+	mux.HandleFunc("GET /api/azure", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.AzureStatus()) })
+	mux.HandleFunc("POST /api/azure/login", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.StartAzureLogin()) })
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
 	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

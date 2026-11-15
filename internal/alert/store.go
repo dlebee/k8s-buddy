@@ -252,6 +252,9 @@ func (s *Store) PurgeClusters(names []string) {
 	}
 }
 
+// Touch tells subscribers something outside the alert list changed (e.g. a sign-in finished).
+func (s *Store) Touch() { s.publish(Event{Type: EventChanged}) }
+
 func (s *Store) Ack(id string) bool {
 	return s.ackWhere(func(a *Alert) bool { return a.ID == id })
 }
