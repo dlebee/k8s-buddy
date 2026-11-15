@@ -2,10 +2,12 @@ package monitor
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -313,6 +315,7 @@ func ingressClassOf(annotations map[string]string, className *string) string {
 
 func (c *cluster) detectIngresses() []alert.Alert {
 	ings, _ := c.ingresses.List(labels.Everything())
+	merge := nginxMergeIssues(ings)
 	var out []alert.Alert
 	for _, ing := range ings {
 		if len(ing.Status.LoadBalancer.Ingress) > 0 || ing.DeletionTimestamp != nil || time.Since(ing.CreationTimestamp.Time) < ingressNoAddressFor {
@@ -323,13 +326,132 @@ func (c *cluster) detectIngresses() []alert.Alert {
 		if class != "" {
 			detail = fmt.Sprintf("class %q — is that controller running?", class)
 		}
+		title := "Ingress has no address · ingress/" + ing.Name
+		if mi, ok := merge[ingressKey(ing)]; ok {
+			title, detail = "Ingress ignored by NGINX · ingress/"+ing.Name, mi.Message
+		}
 		out = append(out, alert.Alert{
 			Key: "ingress-no-address/" + ing.Namespace + "/" + ing.Name, Severity: alert.Warning, Category: "network",
 			Kind: "Ingress", Namespace: ing.Namespace, Name: ing.Name,
-			Title:  "Ingress has no address · ingress/" + ing.Name,
+			Title:  title,
 			Detail: detail + " · " + ago(ing.CreationTimestamp.Time) + " old",
 			Hint:   kubectl(c.name, ing.Namespace, "describe ingress "+ing.Name) + "\n" + kubectl(c.name, "", "get ingressclass"),
 		})
+	}
+	return out
+}
+
+// ---------- NGINX (F5 nginx.org) mergeable ingresses ----------
+
+const mergeableAnnotation = "nginx.org/mergeable-ingress-type"
+
+type mergeIssue struct {
+	Severity alert.Severity
+	Message  string
+}
+
+func ingressKey(ing *networkingv1.Ingress) string { return ing.Namespace + "/" + ing.Name }
+
+func ingressPaths(ing *networkingv1.Ingress) int {
+	n := 0
+	for _, r := range ing.Spec.Rules {
+		if r.HTTP != nil {
+			n += len(r.HTTP.Paths)
+		}
+	}
+	return n
+}
+
+// nginxMergeIssues finds mergeable ingresses NGINX will ignore: minions without a master, masters
+// without minions, masters with paths, and hosts claimed by more than one master/plain ingress
+// (NGINX keeps the oldest). Results are keyed by namespace/name.
+func nginxMergeIssues(ings []*networkingv1.Ingress) map[string]mergeIssue {
+	type member struct {
+		ing *networkingv1.Ingress
+		typ string
+	}
+	groups := map[string][]member{}
+	var hosts []string
+	for _, ing := range ings {
+		if ing.DeletionTimestamp != nil {
+			continue
+		}
+		class := ingressClassOf(ing.Annotations, ing.Spec.IngressClassName)
+		seen := map[string]bool{}
+		for _, r := range ing.Spec.Rules {
+			if r.Host == "" || seen[r.Host] {
+				continue
+			}
+			seen[r.Host] = true
+			g := class + "|" + r.Host
+			if groups[g] == nil {
+				hosts = append(hosts, g)
+			}
+			groups[g] = append(groups[g], member{ing, ing.Annotations[mergeableAnnotation]})
+		}
+	}
+	out := map[string]mergeIssue{}
+	set := func(ing *networkingv1.Ingress, sev alert.Severity, msg string) {
+		if cur, ok := out[ingressKey(ing)]; !ok || sev.Rank() > cur.Severity.Rank() {
+			out[ingressKey(ing)] = mergeIssue{sev, msg}
+		}
+	}
+	slices.Sort(hosts)
+	for _, g := range hosts {
+		host := g[strings.Index(g, "|")+1:]
+		var contenders, minions []member
+		mergeable := false
+		for _, m := range groups[g] {
+			switch m.typ {
+			case "master":
+				mergeable = true
+				contenders = append(contenders, m)
+				if ingressPaths(m.ing) > 0 {
+					set(m.ing, alert.Warning, "master ingresses can't define paths — NGINX rejects this master (move the paths into minions)")
+				}
+			case "minion":
+				mergeable = true
+				minions = append(minions, m)
+			default:
+				contenders = append(contenders, m)
+			}
+		}
+		if !mergeable {
+			continue
+		}
+		slices.SortStableFunc(contenders, func(a, b member) int {
+			if c := a.ing.CreationTimestamp.Compare(b.ing.CreationTimestamp.Time); c != 0 {
+				return c
+			}
+			return strings.Compare(ingressKey(a.ing), ingressKey(b.ing))
+		})
+		if len(contenders) == 0 {
+			for _, m := range minions {
+				set(m.ing, alert.Warning, fmt.Sprintf("minion for %s has no master — NGINX ignores minions without one", host))
+			}
+			continue
+		}
+		winner := contenders[0]
+		for _, l := range contenders[1:] {
+			msg := fmt.Sprintf("%s is also claimed by %s (older) — NGINX keeps the oldest, so this one is ignored", host, ingressKey(winner.ing))
+			if l.typ == "master" {
+				msg += "; its server-level config (TLS, snippets, annotations) is not applied"
+			}
+			set(l.ing, alert.Warning, msg)
+		}
+		switch {
+		case winner.typ == "master" && len(minions) == 0:
+			set(winner.ing, alert.Notice, fmt.Sprintf("master for %s has no minions, so it serves no paths", host))
+		case winner.typ != "master":
+			for _, m := range minions {
+				set(m.ing, alert.Warning, fmt.Sprintf("%s is served by plain ingress %s, not a master — this minion is ignored", host, ingressKey(winner.ing)))
+			}
+		}
+		for _, m := range minions {
+			if len(m.ing.Spec.TLS) > 0 {
+				set(m.ing, alert.Notice, "TLS on a minion is ignored — configure TLS on the master")
+			}
+		}
 	}
 	return out
 }

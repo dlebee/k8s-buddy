@@ -28,13 +28,13 @@ Monitoring is read-only: it only lists and watches. The console runs `kubectl`, 
 | Repeated readiness / liveness probe failures | `Unhealthy` events (3+ failures) |
 | cert-manager: certificate **not renewing on time**, expired, not ready; issuer not ready | Certificate / Issuer / ClusterIssuer status |
 | Helm release failed or stuck in `pending-*` | Helm release secrets' labels (payload never read) |
-| Ingress never got an address | ingress status (wrong class, controller down) |
+| Ingress never got an address | ingress status (wrong class, controller down, or ignored by NGINX — with the reason) |
 
 Alerts are deduplicated, state-based ones resolve on their own when the condition clears, and you can **snooze** (default 4h) or **mute** any alert.
 
 ## Doctor checks
 
-Services with no pods · ingresses pointing at missing services/ports or empty services · ingresses using a missing IngressClass · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
+Services with no pods · ingresses pointing at missing services/ports or empty services · ingresses using a missing IngressClass · NGINX mergeable ingresses that are silently ignored (minions without a master, empty masters, hosts claimed twice — this also catches cert-manager HTTP-01 solvers that can never succeed) · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
 
 ## Install / run (macOS)
 

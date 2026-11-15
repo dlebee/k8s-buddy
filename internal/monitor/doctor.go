@@ -26,6 +26,7 @@ var doctorChecks = []DoctorCheck{
 	{"dangling-service", "Services with no pods", "Selector matches no running pods, so traffic goes nowhere."},
 	{"ingress-backend", "Broken ingress backends", "Ingress points at a missing service, a missing port, or a service with no pods."},
 	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
+	{"nginx-mergeable", "NGINX mergeable ingresses", "Masters and minions NGINX ignores: minions without a master, masters without minions, and hosts claimed twice."},
 	{"pdb-blocking", "PDBs blocking drains", "PodDisruptionBudgets that currently allow zero disruptions will stall node drains and upgrades."},
 	{"hpa-target", "HPAs with missing targets", "Autoscaler targets a workload that does not exist."},
 	{"orphaned-pv", "Released / failed volumes", "PersistentVolumes no claim uses anymore; their disks usually still cost money."},
@@ -189,6 +190,16 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 			}
 		} else {
 			problems = append(problems, "ingressclasses: "+truncate(err.Error(), 120))
+		}
+		ptrs := make([]*networkingv1.Ingress, len(ings.Items))
+		for i := range ings.Items {
+			ptrs[i] = &ings.Items[i]
+		}
+		merge := nginxMergeIssues(ptrs)
+		for _, ing := range ptrs {
+			if mi, ok := merge[ingressKey(ing)]; ok {
+				add("nginx-mergeable", mi.Severity, "Ingress", ing.Namespace, ing.Name, mi.Message, kubectl(c.name, ing.Namespace, "describe ingress "+ing.Name))
+			}
 		}
 		for _, ing := range ings.Items {
 			var backends []*networkingv1.IngressServiceBackend
