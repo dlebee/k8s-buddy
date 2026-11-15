@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -162,6 +163,9 @@ func (m *Manager) Object(clusterName, kind, ns, name string) (ObjectDetail, erro
 		if res.Group == "networking.k8s.io" && res.Resource == "ingresses" {
 			c.ingressBackends(&d)
 		}
+		if res.Group == gatewayGroup && strings.HasSuffix(res.Resource, "routes") {
+			c.routeBackends(&d)
+		}
 	} else {
 		return d, fmt.Errorf("unknown kind %q", kind)
 	}
@@ -256,6 +260,41 @@ func (c *cluster) ingressBackends(d *ObjectDetail) {
 		d.Services[n] = ports
 		if len(svc.Spec.Selector) > 0 {
 			d.BackendPods[n] = c.podsMatching(d.Namespace, labels.SelectorFromSet(svc.Spec.Selector))
+		}
+	}
+}
+
+// routeBackends fills Services/BackendPods for a Gateway API route. Keys are the service name, or
+// "namespace/name" for a backend in another namespace.
+func (c *cluster) routeBackends(d *ObjectDetail) {
+	r := parseRoute("", d.Object)
+	d.Services = map[string][]int32{}
+	d.BackendPods = map[string][]PodBrief{}
+	if !c.synced("services") {
+		return
+	}
+	for _, rule := range r.Rules {
+		for _, b := range rule.Backends {
+			if b.Kind != "Service" || b.Name == "" {
+				continue
+			}
+			key := b.Name
+			if b.Namespace != d.Namespace {
+				key = b.Namespace + "/" + b.Name
+			}
+			svc, err := c.services.Services(b.Namespace).Get(b.Name)
+			if err != nil {
+				d.Services[key] = nil
+				continue
+			}
+			ports := []int32{}
+			for _, p := range svc.Spec.Ports {
+				ports = append(ports, p.Port)
+			}
+			d.Services[key] = ports
+			if len(svc.Spec.Selector) > 0 {
+				d.BackendPods[key] = c.podsMatching(b.Namespace, labels.SelectorFromSet(svc.Spec.Selector))
+			}
 		}
 	}
 }

@@ -3,12 +3,15 @@
 // "flow" of a single cluster (SVG). Layers: entry point → ingress → service → workload → pod.
 import { api, esc } from '/static/common.js';
 
-const LAYER = { cluster: 0, controller: 1, lb: 1, nodeport: 1, ingress: 2, service: 3, workload: 4, pod: 5 };
-const KLABEL = { cluster: 'Cluster', controller: 'Ingress controller', lb: 'LoadBalancer service', nodeport: 'NodePort service', ingress: 'Ingress', service: 'Service', workload: 'Workload', pod: 'Pod', source: 'Traffic source' };
+const LAYER = { cluster: 0, controller: 1, gateway: 1, lb: 1, nodeport: 1, ingress: 2, service: 3, workload: 4, pod: 5 };
+const KLABEL = { cluster: 'Cluster', controller: 'Ingress controller', gateway: 'Gateway', lb: 'LoadBalancer service', nodeport: 'NodePort service', ingress: 'Ingress', service: 'Service', workload: 'Workload', pod: 'Pod', source: 'Traffic source' };
 const DEPTHS = [['Entry', 1], ['Ingress', 2], ['Service', 3], ['Workload', 4], ['Pods', 5]];
-const GCOL = { cluster: '#dfe6ff', controller: '#5b93ff', lb: '#b08cff', nodeport: '#ffa94d', ingress: '#2dd4bf', service: '#8fa3bf', workload: '#34d399', pod: '#34d399' };
+const GCOL = { cluster: '#dfe6ff', controller: '#5b93ff', gateway: '#f472b6', lb: '#b08cff', nodeport: '#ffa94d', ingress: '#2dd4bf', service: '#8fa3bf', workload: '#34d399', pod: '#34d399' };
 const HCOL = { ok: '#34d399', warn: '#fbbf24', bad: '#f87171', neutral: '#94a3b8' };
 const RING = [0, 190, 280, 365, 445, 515];
+// Kind labels: an "ingress" node is an Ingress or a Gateway API route.
+const kindLabel = (n) => n.kind === 'ingress' && n.rkind && n.rkind !== 'Ingress' ? n.rkind : n.pseudo && n.type === 'Gateway' ? 'Gateway (missing)' : KLABEL[n.kind];
+const ROUTE_RES = { HTTPRoute: 'httproutes', GRPCRoute: 'grpcroutes', TLSRoute: 'tlsroutes', TCPRoute: 'tcproutes', UDPRoute: 'udproutes' };
 const WORKLOAD_IDS = { Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', Job: 'jobs', Pod: 'pods' };
 const REFRESH_MS = 30000;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -23,7 +26,7 @@ const cssColor = (n) => (n.kind === 'workload' || n.kind === 'pod') ? HCOL[healt
 const label = (n) => n.kind === 'ingress' && n.hosts.length ? n.hosts[0] + (n.hosts.length > 1 ? ` +${n.hosts.length - 1}` : '') : n.name;
 
 // routesOf lists an ingress's host/path rules with the service each lands on.
-const routesOf = (ing) => ing.children.flatMap((s) => (s.routes || []).filter((r) => r.ing === ing.name).map((r) => ({ r: r.r, svc: s.name })));
+const routesOf = (ing) => ing.children.flatMap((s) => (s.routes || []).filter((r) => r.ing === ing.key).map((r) => ({ r: r.r, svc: s.name })));
 const routeCount = (ing) => routesOf(ing).length;
 const nk = (n) => n.ci + '|' + n.key; // node keys repeat across clusters
 
@@ -65,20 +68,24 @@ function buildCluster(c, ci) {
   for (const e of c.entries) {
     const pseudo = e.kind === 'class';
     const en = add(`e:${e.kind}:${e.namespace}/${e.name}`, {
-      kind: pseudo ? 'controller' : e.kind, pseudo, name: pseudo ? `class ${e.name}` : e.name, ns: e.namespace, type: e.type,
+      kind: pseudo ? 'controller' : e.kind, pseudo, name: pseudo && e.type !== 'Gateway' ? `class ${e.name}` : e.name, ns: e.namespace, type: e.type,
       ports: e.ports, ip: e.addresses, internal: e.internal, ctrl: e.controller, total: sum(e.workloads, 'total'), ready: sum(e.workloads, 'ready'),
     });
-    if (pseudo) en.note = 'Controller not exposed by a LoadBalancer or NodePort service in this cluster';
+    if (e.problem) en.issue = e.problem;
+    if (pseudo) { if (e.type !== 'Gateway') en.note = 'Controller not exposed by a LoadBalancer or NodePort service in this cluster'; }
+    else if (e.kind === 'gateway') { if (!e.workloads.length && !en.issue) en.note = 'No data-plane pods found for this Gateway (its Service carries no known gateway label)'; }
     else if (!e.workloads.length) { en.issue = 'No pods behind this service'; en.dangling = true; }
     else if (e.type === 'LoadBalancer' && !e.addresses.length) en.issue = 'LoadBalancer has no external address yet';
     link(root, en);
     for (const w of e.workloads) link(en, wl(e.namespace, w, en));
     for (const i of e.ingresses) {
-      const ig = add(`i:${i.namespace}/${i.name}`, { kind: 'ingress', name: i.name, ns: i.namespace, cls: i.class, tls: i.tls, hosts: i.hosts });
+      const rkind = i.kind || 'Ingress';
+      const ig = add(`i:${rkind}:${i.namespace}/${i.name}`, { kind: 'ingress', rkind, name: i.name, ns: i.namespace, cls: i.class, tls: i.tls, hosts: i.hosts });
+      if (i.problem) ig.issue = i.problem;
       link(en, ig);
       for (const s of i.services) {
         const sv = add(`s:${s.namespace}/${s.name}`, { kind: 'service', name: s.name, ns: s.namespace, type: s.type, ports: s.ports, routes: [] });
-        sv.routes.push(...s.routes.map((r) => ({ r, ing: i.name })));
+        sv.routes.push(...s.routes.map((r) => ({ r, ing: ig.key, ingName: i.name })));
         if (s.missing) { sv.issue = 'Backend service not found'; sv.dangling = true; }
         else if (!s.workloads.length) { sv.issue = 'No pods match this service selector'; sv.dangling = true; }
         link(ig, sv);
@@ -90,7 +97,7 @@ function buildCluster(c, ci) {
   const count = (k) => list.filter((n) => n.kind === k).length;
   const stats = {
     entries: list.filter((n) => LAYER[n.kind] === 1).length, ctrl: list.filter((n) => n.kind === 'controller' && !n.pseudo).length,
-    lb: count('lb'), np: count('nodeport'), ing: count('ingress'), svc: count('service'), wl: count('workload'), pods: count('pod'),
+    gw: count('gateway'), lb: count('lb'), np: count('nodeport'), ing: count('ingress'), svc: count('service'), wl: count('workload'), pods: count('pod'),
     issues: list.filter((n) => n.kind !== 'pod' && n.kind !== 'cluster' && health(n) !== 'ok').length,
     hosts: new Set(list.filter((n) => n.kind === 'ingress').flatMap((n) => n.hosts)).size,
   };
@@ -482,11 +489,12 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
       case 'cluster': {
         const s = S.clusters[n.ci].stats;
         if (n.status !== 'ok') return n.status === 'error' ? `unreachable${n.error ? ': ' + esc(n.error.slice(0, 120)) : ''}` : 'still syncing';
-        return `${s.ctrl} controller · ${s.lb} LB · ${s.np} NodePort<br>${s.ing} ingresses · ${s.hosts} hosts · ${s.svc} services<br>${s.wl} workloads · ${s.pods} exposed pods`;
+        return `${s.ctrl} controller${s.gw ? ` · ${s.gw} gateway` : ''} · ${s.lb} LB · ${s.np} NodePort<br>${s.ing} ingresses · ${s.hosts} hosts · ${s.svc} services<br>${s.wl} workloads · ${s.pods} exposed pods`;
       }
       case 'controller': return n.pseudo ? `${esc(n.ctrl || 'unknown controller')}<br>${n.children.length} ingresses` : `${esc(n.ctrl)} · ${esc(n.ip.join(', ') || 'no address')}<br>${n.children.filter((k) => k.kind === 'ingress').length} ingresses · pods ${n.ready}/${n.total}`;
+      case 'gateway': return `${esc(n.ctrl)} · ${esc(n.ip.join(', ') || 'no address')}<br>${esc(n.ports.join(', '))}<br>${n.children.filter((k) => k.kind === 'ingress').length} routes · pods ${n.ready}/${n.total}`;
       case 'lb': case 'nodeport': return `${esc(n.ns)} · ${esc(n.ip.join(', ') || n.type)}${n.internal ? ' (internal)' : ''}<br>${esc(n.ports.join(', '))}`;
-      case 'ingress': { const rs = routesOf(n); return `${esc(n.ns)} · class ${esc(n.cls || 'default')}${n.tls ? ' · TLS' : ''}<br>${rs.slice(0, 8).map((r) => `${esc(r.r)} → ${esc(r.svc)}`).join('<br>')}${rs.length > 8 ? `<br>+${rs.length - 8} more` : ''}`; }
+      case 'ingress': { const rs = routesOf(n); return `${esc(n.ns)} · ${n.rkind !== 'Ingress' ? esc(n.rkind) : `class ${esc(n.cls || 'default')}`}${n.tls ? ' · TLS' : ''}<br>${rs.slice(0, 8).map((r) => `${esc(r.r)} → ${esc(r.svc)}`).join('<br>')}${rs.length > 8 ? `<br>+${rs.length - 8} more` : ''}`; }
       case 'service': return `${esc(n.ns)} · ${esc(n.type)} · ${esc(n.ports.join(', '))}`;
       case 'workload': return `${esc(n.wkind)} · ${esc(n.ns)}<br>pods ${n.ready}/${n.total} ready`;
       case 'pod': return `${esc(n.status)}${n.restarts ? ` · ${n.restarts} restarts` : ''}<br>${esc(n.node || '')} ${esc(n.ip || '')}`;
@@ -495,7 +503,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     return '';
   }
   function showTip(n, x, y) {
-    tip.innerHTML = `<b>${esc(n.name)}</b><span class="m">${KLABEL[n.kind]}</span><br>${summary(n)}${n.issue ? `<br><span style="color:#f87171">⚠ ${esc(n.issue)}</span>` : ''}`;
+    tip.innerHTML = `<b>${esc(n.name)}</b><span class="m">${kindLabel(n)}</span><br>${summary(n)}${n.issue ? `<br><span style="color:#f87171">⚠ ${esc(n.issue)}</span>` : ''}`;
     tip.style.display = 'block';
     const r = tip.getBoundingClientRect();
     tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + 'px';
@@ -517,7 +525,8 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     const c = S.clusters[n.ci].name;
     if (n.kind === 'pod') return ['pods', { cluster: c, namespace: n.ns, name: n.name }];
     if (n.kind === 'workload') return WORKLOAD_IDS[n.wkind] ? [WORKLOAD_IDS[n.wkind], { cluster: c, namespace: n.ns, name: n.name }] : null;
-    if (n.kind === 'ingress') return ['ingresses', { cluster: c, namespace: n.ns, name: n.name }];
+    if (n.kind === 'ingress') return n.rkind !== 'Ingress' ? (ROUTE_RES[n.rkind] ? [`cr:gateway.networking.k8s.io/${ROUTE_RES[n.rkind]}`, { cluster: c, namespace: n.ns, name: n.name }] : null) : ['ingresses', { cluster: c, namespace: n.ns, name: n.name }];
+    if (n.kind === 'gateway') return ['cr:gateway.networking.k8s.io/gateways', { cluster: c, namespace: n.ns, name: n.name }];
     if ((n.kind === 'service' && !n.issue?.includes('not found')) || n.kind === 'lb' || n.kind === 'nodeport' || (n.kind === 'controller' && !n.pseudo)) return ['services', { cluster: c, namespace: n.ns, name: n.name }];
     return null;
   }
@@ -532,18 +541,18 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
     if (n.ip?.length && n.kind !== 'pod') dl += `<dt>Address</dt><dd class="mono">${n.ip.map(esc).join('<br>')}</dd>`;
     if (n.ports?.length) dl += `<dt>Ports</dt><dd class="mono">${n.ports.map(esc).join('<br>')}</dd>`;
     if (n.ctrl) dl += `<dt>Controller</dt><dd>${esc(n.ctrl)}</dd>`;
-    if (n.kind === 'ingress') dl += `<dt>Class</dt><dd>${esc(n.cls || 'default')}</dd><dt>TLS</dt><dd>${n.tls ? 'yes' : 'no'}</dd>`;
+    if (n.kind === 'ingress') dl += `${n.rkind === 'Ingress' ? `<dt>Class</dt><dd>${esc(n.cls || 'default')}</dd>` : `<dt>Kind</dt><dd>${esc(n.rkind)}</dd>`}<dt>TLS</dt><dd>${n.tls ? 'yes' : 'no'}</dd>`;
     if (n.total != null && !n.pseudo) dl += `<dt>Pods</dt><dd>${n.ready}/${n.total} ready ${healthPill(n.total === 0 ? 'bad' : n.ready < n.total ? 'warn' : 'ok')}</dd>`;
     if (n.wkind) dl += `<dt>Kind</dt><dd>${esc(n.wkind)}</dd>`;
     if (n.kind === 'pod') dl += `<dt>Status</dt><dd>${esc(n.status)} ${healthPill(health(n))}</dd><dt>Restarts</dt><dd>${n.restarts}</dd>${n.node ? `<dt>Node</dt><dd>${esc(n.node)}</dd>` : ''}${n.ip ? `<dt>Pod IP</dt><dd class="mono">${esc(n.ip)}</dd>` : ''}`;
     if (n.kind === 'cluster') {
       const s = c.stats;
       dl += c.status === 'ok'
-        ? `<dt>Entry pts</dt><dd>${s.ctrl} controller · ${s.lb} LB · ${s.np} NodePort</dd><dt>Ingresses</dt><dd>${s.ing} (${s.hosts} hosts)</dd><dt>Workloads</dt><dd>${s.wl} · ${s.pods} exposed pods of ${n.pods}</dd>`
+        ? `<dt>Entry pts</dt><dd>${s.ctrl} controller${s.gw ? ` · ${s.gw} gateway` : ''} · ${s.lb} LB · ${s.np} NodePort</dd><dt>Ingresses</dt><dd>${s.ing} (${s.hosts} hosts)</dd><dt>Workloads</dt><dd>${s.wl} · ${s.pods} exposed pods of ${n.pods}</dd>`
         : `<dt>Status</dt><dd>${n.status === 'error' ? 'unreachable' : 'syncing'}${n.error ? `<br><small>${esc(n.error)}</small>` : ''}</dd>`;
     }
     const target = resourceTarget(n);
-    let html = `<button class="close" data-act="close" aria-label="Close">✕</button><div class="kind" style="color:${cssColor(n)}">${n.pseudo ? 'Ingress class' : KLABEL[n.kind]}</div><h2>${esc(n.name)}</h2>`;
+    let html = `<button class="close" data-act="close" aria-label="Close">✕</button><div class="kind" style="color:${cssColor(n)}">${n.pseudo && n.type !== 'Gateway' ? 'Ingress class' : kindLabel(n)}</div><h2>${esc(n.name)}</h2>`;
     if (n.issue) html += `<div class="pill bad" style="margin-top:6px">⚠ ${esc(n.issue)}</div>`;
     if (n.note) html += `<div class="muted" style="margin-top:6px;font-size:12px">${esc(n.note)}</div>`;
     html += `<dl>${dl}</dl><div class="actions">
@@ -552,14 +561,14 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
       ${n.kind === 'workload' && S.depth < 5 ? `<button class="btn" data-act="pods">${S.expanded.has(nk(n)) ? 'Hide pods' : 'Pin pods'}</button>` : ''}
     </div>`;
     if (n.kind === 'ingress') html += `<h3>Routes (${routeCount(n)})</h3>` + routesOf(n).map((r) => `<div class="xp-route">${n.tls ? 'https' : 'http'}://${esc(r.r)} <span style="opacity:.6">→ ${esc(r.svc)}</span></div>`).join('');
-    if (n.routes?.length) html += '<h3>Routes into this service</h3>' + n.routes.slice(0, 30).map((r) => `<div class="xp-route">${esc(r.r)} <span style="opacity:.6">← ${esc(r.ing)}</span></div>`).join('');
+    if (n.routes?.length) html += '<h3>Routes into this service</h3>' + n.routes.slice(0, 30).map((r) => `<div class="xp-route">${esc(r.r)} <span style="opacity:.6">← ${esc(r.ingName)}</span></div>`).join('');
     if (LAYER[n.kind] >= 2) {
       const ps = pathsTo(n);
       html += `<h3>How traffic reaches it (${ps.length})</h3>` + ps.map((ch) => `<div class="xp-route">${ch.map((x) => esc(label(x))).join(' → ')}</div>`).join('');
     }
     if (n.children.length) {
-      const head = { cluster: 'Entry points', controller: 'Ingresses', ingress: 'Backend services', workload: 'Pods' }[n.kind] || 'Workloads';
-      const extra = (k) => k.kind === 'workload' ? `${k.ready}/${k.total}` : k.kind === 'pod' ? esc(k.status) : k.kind === 'ingress' ? `${k.children.length} svc` : LAYER[k.kind] === 1 ? (k.pseudo ? 'class' : k.kind === 'controller' ? 'ingress' : k.kind === 'lb' ? 'LB' : 'NodePort') : '';
+      const head = { cluster: 'Entry points', controller: 'Ingresses', gateway: 'Routes', ingress: 'Backend services', workload: 'Pods' }[n.kind] || 'Workloads';
+      const extra = (k) => k.kind === 'workload' ? `${k.ready}/${k.total}` : k.kind === 'pod' ? esc(k.status) : k.kind === 'ingress' ? `${k.rkind !== 'Ingress' ? k.rkind + ' · ' : ''}${k.children.length} svc` : LAYER[k.kind] === 1 ? (k.pseudo ? 'class' : k.kind === 'controller' ? 'ingress' : k.kind === 'gateway' ? 'gateway' : k.kind === 'lb' ? 'LB' : 'NodePort') : '';
       html += `<h3>${head} (${n.children.length})</h3>` + n.children.slice(0, 100).map((k) => li(k, extra(k))).join('');
     }
     if (n.parents.length && n.parents[0].kind !== 'cluster') html += `<h3>${n.kind === 'pod' ? 'Workload' : 'Exposed by'} (${n.parents.length})</h3>` + n.parents.map((k) => li(k)).join('');
@@ -632,7 +641,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
       entries.forEach(lay);
       const src = [];
       const mk = (key, name, sub, test) => { const kids = entries.filter(test); if (kids.length) src.push({ key, ci, kind: 'source', name, sub, kids, children: [], parents: [] }); };
-      mk('src:pub', 'Internet', 'public LoadBalancer addresses', (n) => n.type === 'LoadBalancer' && !n.internal && !n.pseudo);
+      mk('src:pub', 'Internet', 'public LoadBalancer addresses', (n) => (n.type === 'LoadBalancer' || (n.kind === 'gateway' && n.ip.length)) && !n.internal && !n.pseudo);
       mk('src:int', 'Private network', 'internal LoadBalancer', (n) => n.type === 'LoadBalancer' && n.internal);
       mk('src:np', 'Node IPs', 'NodePort on every node', (n) => n.type === 'NodePort');
       for (const s of src) Y.set(s, s.kids.reduce((a, k) => a + Y.get(k), 0) / s.kids.length);
@@ -668,7 +677,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
       const p = el('path', { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, class: 'fedge' + (b.dangling ? ' dangling' : '') }, eg);
       p._a = a; p._b = b;
       if (a.kind === 'ingress' && b.kind === 'service') { // label the connector with the route(s) it carries
-        const rs = b.routes.filter((r) => r.ing === a.name).map((r) => r.r);
+        const rs = b.routes.filter((r) => r.ing === a.key).map((r) => r.r);
         if (!rs.length) return;
         // The card already names a single-host ingress, so show just the path; keep the path end when trimming.
         const short = (r) => a.hosts.length === 1 && r.startsWith(a.hosts[0]) && r.length > a.hosts[0].length ? r.slice(a.hosts[0].length) : r;
@@ -690,16 +699,16 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
       el('rect', { x: 0, y: 0, width: 4, height: NH, rx: 2, fill: col }, g);
       el('circle', { cx: 22, cy: NH / 2, r: 11, fill: col, 'fill-opacity': .16 }, g);
       el('text', { x: 22, y: NH / 2 + 4, 'text-anchor': 'middle', style: `fill:${col};font-size:10.5px;font-weight:700` }, g).textContent =
-        ({ source: '◎', controller: n.pseudo ? 'IC' : '⇄', lb: 'LB', nodeport: 'NP', ingress: '⌘', service: 'S', workload: '▣', pod: '●' })[n.kind];
+        ({ source: '◎', gateway: 'GW', controller: n.pseudo ? (n.type === 'Gateway' ? 'GW' : 'IC') : '⇄', lb: 'LB', nodeport: 'NP', ingress: '⌘', service: 'S', workload: '▣', pod: '●' })[n.kind];
       const title = label(n);
       const lines = wrap(title, n.kind === 'workload' ? 22 : 26, 2);
       lines.forEach((l, i) => { el('text', { x: 40, y: (lines.length > 1 ? 17 : 22) + i * 15 }, g).textContent = l; });
       if (lines.join('') !== title) el('title', {}, g).textContent = title;
       const sub = n.kind === 'source' ? n.sub
-        : n.pseudo ? `${n.ctrl || 'controller not exposed'}`
-          : n.kind === 'controller' ? `${n.ctrl} · ${n.ip[0] || 'no address'}`
+        : n.pseudo ? (n.type === 'Gateway' ? 'Gateway not found' : `${n.ctrl || 'controller not exposed'}`)
+          : n.kind === 'controller' || n.kind === 'gateway' ? `${n.kind === 'gateway' ? n.ctrl.replace(/\/gatewayclass-controller$|^gateway\./g, '') : n.ctrl} · ${n.ip[0] || 'no address'}`
             : LAYER[n.kind] === 1 ? `${n.ip[0] || (n.type === 'NodePort' ? 'node ports' : 'pending')} ${n.ports.map((p) => p.split('/')[0].split(':')[n.type === 'NodePort' ? 1 : 0] || p).join(',')}`
-              : n.kind === 'ingress' ? `${n.ns} · ${routeCount(n) ? `${routeCount(n)} route${routeCount(n) === 1 ? '' : 's'}` : 'no backends'}${n.tls ? ' · TLS' : ''}`
+              : n.kind === 'ingress' ? `${n.rkind !== 'Ingress' ? n.rkind + ' · ' : ''}${n.ns} · ${routeCount(n) ? `${routeCount(n)} route${routeCount(n) === 1 ? '' : 's'}` : 'no backends'}${n.tls ? ' · TLS' : ''}`
                 : n.kind === 'service' ? `${n.ns} · ${n.ports.map((p) => p.split('/')[0]).join(',')}`
                   : n.kind === 'pod' ? `${n.status}${n.restarts ? ` · ${n.restarts}↻` : ''} · ${n.node || ''}`
                     : `${n.wkind} · ${n.ns}`;
@@ -792,7 +801,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
 
   // ---------- controls ----------
   function renderLegends() {
-    const items = [['controller', 'Ingress controller'], ['lb', 'LoadBalancer'], ['nodeport', 'NodePort'], ['ingress', 'Ingress'], ['service', 'Service'], ['workload', 'Workload / pod']];
+    const items = [['controller', 'Ingress controller'], ['gateway', 'Gateway'], ['lb', 'LoadBalancer'], ['nodeport', 'NodePort'], ['ingress', 'Ingress'], ['service', 'Service'], ['workload', 'Workload / pod']];
     $('glegend').innerHTML = items.map(([k, l]) => `<span><i style="background:${GCOL[k]};box-shadow:0 0 6px ${GCOL[k]}"></i>${l}</span>`).join('') +
       `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down / issue</span><span><b style="color:${HCOL.bad}">- - ✕</b> dangling service</span><span style="opacity:.7">dashed = shared backend · click a workload for its pods</span>`;
     $('flegend').innerHTML = items.map(([k, l]) => `<span><i style="background:var(--k-${k})"></i>${l}</span>`).join('') +

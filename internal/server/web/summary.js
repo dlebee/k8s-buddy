@@ -329,8 +329,16 @@ function ingressTopology(md, rules, defaultBackend, tlsHosts, ctx) {
   const add = (b, r) => { const n = obj(obj(b).service).name; if (n) { if (!routes.has(n)) routes.set(n, []); routes.get(n).push(r); } };
   for (const r of rules) for (const p of arr(obj(r.http).paths)) add(p.backend, (r.host || '*') + (p.path || '/'));
   if (defaultBackend) add(defaultBackend, 'default backend');
-  if (!routes.size) return '';
   const hosts = rules.map((r) => r.host).filter(Boolean);
+  const lock = hosts.some((h) => tlsHosts.has(h)) ? '🔒 ' : '';
+  return trafficPath('Ingress', md.name, lock + (hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*'), routes, ctx);
+}
+
+// trafficPath draws <head> → services → pods. routes maps a service key ("name", or "ns/name" for
+// another namespace) to the host/paths that reach it.
+function trafficPath(head, title, sub, routes, ctx) {
+  if (!routes.size) return '';
+  const svcs = ctx.services || {}, bpods = ctx.backendPods || {};
   const MAXP = 8;
   // Pods share their workload's name; show just the distinguishing tail ("…-7d9f-abcde").
   const short = (pods, svc) => {
@@ -339,26 +347,92 @@ function ingressTopology(md, rules, defaultBackend, tlsHosts, ctx) {
     pre = pre.slice(0, pre.lastIndexOf('-') + 1);
     return (n) => pre.length > 6 && n.length > pre.length ? '…-' + n.slice(pre.length) : n;
   };
-  const rows = [...routes].map(([name, rs]) => {
-    const known = name in svcs, missing = known && svcs[name] == null, pods = bpods[name];
+  const rows = [...routes].map(([key, rs]) => {
+    const [ns, name] = key.includes('/') ? key.split('/') : [null, key];
+    const nsAttr = ns ? ` data-ns="${esc(ns)}"` : '';
+    const known = key in svcs, missing = known && svcs[key] == null, pods = bpods[key];
     const dangling = missing || (pods && !pods.length);
     const svcBox = missing
-      ? `<span class="rv-topo-box svc bad dashed" title="Service not found">${esc(name)}<small>missing</small></span>`
-      : `<a class="rv-topo-box svc ${dangling ? 'bad' : ''}" data-open="services" data-name="${esc(name)}" title="${esc(rs.join('\n'))}">${esc(name)}<small>${esc(rs.length === 1 ? rs[0] : plural(rs.length, 'route'))}</small></a>`;
+      ? `<span class="rv-topo-box svc bad dashed" title="Service not found">${esc(name)}<small>${ns ? esc(ns) + ' · ' : ''}missing</small></span>`
+      : `<a class="rv-topo-box svc ${dangling ? 'bad' : ''}" data-open="services" data-name="${esc(name)}"${nsAttr} title="${esc(rs.join('\n'))}">${esc(name)}<small>${esc(rs.length === 1 ? rs[0] : plural(rs.length, 'route'))}</small></a>`;
     const right = missing ? '<span class="rv-topo-x" title="Service not found">✕</span>'
       : !known ? '<span class="muted rv-small">syncing…</span>'
         : !pods ? '<span class="muted rv-small">no selector · manual endpoints</span>'
           : !pods.length ? '<span class="rv-topo-x" title="No pods match this service selector">✕</span><span class="rv-topo-why">no pods match</span>'
-            : `<div class="rv-topo-pods">${pods.slice(0, MAXP).map((p, _, __, sh = short(pods, name)) => `<button class="rv-topo-pod ${esc(p.health)}" data-open-pod="${esc(p.name)}" title="${esc(`${p.name}\n${p.status} · ${p.ready} ready${p.restarts ? ` · ${p.restarts} restarts` : ''}`)}"><i></i>${esc(sh(p.name))}</button>`).join('')}${pods.length > MAXP ? `<span class="muted rv-small">+${pods.length - MAXP} more</span>` : ''}</div>`;
+            : `<div class="rv-topo-pods">${pods.slice(0, MAXP).map((p, _, __, sh = short(pods, name)) => `<button class="rv-topo-pod ${esc(p.health)}" data-open-pod="${esc(p.name)}"${ns ? ` data-pod-ns="${esc(ns)}"` : ''} title="${esc(`${p.name}\n${p.status} · ${p.ready} ready${p.restarts ? ` · ${p.restarts} restarts` : ''}`)}"><i></i>${esc(sh(p.name))}</button>`).join('')}${pods.length > MAXP ? `<span class="muted rv-small">+${pods.length - MAXP} more</span>` : ''}</div>`;
     return `<div class="rv-topo-row ${dangling ? 'dangling' : ''}"><span class="rv-topo-wire"></span>${svcBox}<span class="rv-topo-wire ${dangling ? 'stub' : ''}"></span>${right}</div>`;
   }).join('');
-  const lock = hosts.some((h) => tlsHosts.has(h)) ? '🔒 ' : '';
   return section('Traffic path', `<div class="rv-topo">
-    <div class="rv-topo-head"><span>Ingress</span><span>Service</span><span>Pods</span></div>
+    <div class="rv-topo-head"><span>${esc(head)}</span><span>Service</span><span>Pods</span></div>
     <div class="rv-topo-body">
-      <div class="rv-topo-box ing">${esc(md.name)}<small>${lock}${esc(hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*')}</small></div>
+      <div class="rv-topo-box ing">${esc(title)}<small>${esc(sub)}</small></div>
       <div class="rv-topo-rows">${rows}</div>
     </div></div>`);
+}
+
+// ---------- Gateway API ----------
+const condTone = (c) => (c.status === 'True' ? 'ok' : c.status === 'False' ? 'bad' : 'warn');
+const condPills = (conds) => arr(conds).length
+  ? `<div class="rv-chips">${arr(conds).map((c) => `<span class="pill ${condTone(c)}" title="${esc([c.reason, c.message].filter(Boolean).join(': '))}">${esc(c.type)}</span>`).join('')}</div>`
+  : '<span class="muted">no status yet — no controller has picked this up</span>';
+
+function gatewaySummary(o, ctx) {
+  const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
+  const addrs = arr(status.addresses).map((a) => a.value).filter(Boolean);
+  const lstat = Object.fromEntries(arr(status.listeners).map((l) => [l.name, l]));
+  const programmed = arr(status.conditions).find((c) => c.type === 'Programmed');
+  return `
+    ${facts([
+      ['Class', `<a data-open="cr:gateway.networking.k8s.io/gatewayclasses" data-name="${esc(spec.gatewayClassName || '')}" data-ns="">${esc(spec.gatewayClassName || '–')}</a>`],
+      ['Address', addrs.length ? esc(addrs.join(', ')) : '<span class="pill warn">none yet</span>', '', addrs.length ? '' : 'warn'],
+      ['Listeners', String(arr(spec.listeners).length)],
+      ['Status', programmed ? pill(programmed.status === 'True' ? 'programmed' : 'not programmed', condTone(programmed)) : pill('pending', 'warn'), programmed && programmed.status !== 'True' ? esc(programmed.reason || '') : '', programmed?.status === 'True' ? '' : 'warn'],
+    ])}
+    ${section('Listeners', `<div class="rv-routes">${arr(spec.listeners).map((l) => {
+      const st = lstat[l.name] || {};
+      const bad = arr(st.conditions).find((c) => c.status === 'False' && ['Accepted', 'Programmed', 'ResolvedRefs'].includes(c.type));
+      return `<div class="rv-route"><div class="rv-host ${l.protocol === 'HTTPS' || l.protocol === 'TLS' ? 'tls' : ''}">${l.protocol === 'HTTPS' || l.protocol === 'TLS' ? '<span title="TLS">🔒</span>' : '<span class="muted">○</span>'}<span>${esc(l.hostname || '*')}</span></div>
+        <div class="rv-paths"><div class="rv-path"><code>${esc(l.name)}</code><span class="muted rv-ptype">${esc(l.protocol)} :${esc(l.port)}</span>
+          <span class="muted rv-small">${st.attachedRoutes != null ? plural(st.attachedRoutes, 'route') : ''}</span>${bad ? `<span class="pill bad" title="${esc(bad.message || '')}">${esc(bad.reason || bad.type)}</span>` : ''}</div></div></div>`;
+    }).join('') || '<p class="muted">No listeners.</p>'}</div>`)}
+    ${section('Conditions', condPills(status.conditions))}
+    ${warnings(ctx.events)}
+    ${metadata(md)}`;
+}
+
+function routeSummary(o, ctx) {
+  const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
+  const kind = o.kind || 'Route';
+  const hosts = arr(spec.hostnames);
+  const routes = new Map();
+  const rules = arr(spec.rules);
+  rules.forEach((r) => {
+    const paths = arr(r.matches).map((m) => obj(m.path).value || (obj(m.method).service ? `/${m.method.service}/${m.method.method || '*'}` : '')).filter(Boolean);
+    for (const b of arr(r.backendRefs)) {
+      if ((b.kind || 'Service') !== 'Service' || !b.name) continue;
+      const key = b.namespace && b.namespace !== md.namespace ? `${b.namespace}/${b.name}` : b.name;
+      if (!routes.has(key)) routes.set(key, []);
+      for (const h of hosts.length ? hosts : ['*']) for (const p of paths.length ? paths : ['/']) routes.get(key).push(h + p);
+    }
+  });
+  const parents = arr(status.parents);
+  return `
+    ${facts([
+      ['Hostnames', hosts.length ? esc(hosts[0]) + (hosts.length > 1 ? ` <small>+${hosts.length - 1}</small>` : '') : '<span class="muted">from listener</span>'],
+      ['Gateways', String(arr(spec.parentRefs).length)],
+      ['Rules', String(rules.length), plural(routes.size, 'backend service')],
+    ])}
+    ${section('Attached to', arr(spec.parentRefs).map((p) => {
+      const ns = p.namespace || md.namespace;
+      const st = parents.find((x) => obj(x.parentRef).name === p.name && (obj(x.parentRef).namespace || md.namespace) === ns);
+      return `<div class="rv-path"><a class="rv-backend accent" data-open="cr:gateway.networking.k8s.io/gateways" data-name="${esc(p.name)}" data-ns="${esc(ns)}">${esc(ns)}/${esc(p.name)}${p.sectionName ? `<small>:${esc(p.sectionName)}</small>` : ''}</a>${st ? condPills(st.conditions) : '<span class="pill warn">not accepted yet</span>'}</div>`;
+    }).join('') || '<p class="muted">No parent gateways.</p>')}
+    ${section('Rules', `<div class="rv-routes">${rules.map((r) => `<div class="rv-route"><div class="rv-paths">
+      ${(arr(r.matches).length ? arr(r.matches) : [{}]).map((m) => `<div class="rv-path"><code>${esc(obj(m.path).value || (obj(m.method).service ? `${m.method.service}/${m.method.method || '*'}` : '/'))}</code><span class="muted rv-ptype">${esc(obj(m.path).type || (m.method ? 'gRPC' : 'PathPrefix'))}</span><span class="rv-arrow"></span>${arr(r.backendRefs).map((b) => `<span class="rv-backend accent">${esc(b.name)}<small>${b.port ? ':' + esc(b.port) : ''}${b.weight != null ? ` w${esc(b.weight)}` : ''}</small></span>`).join(' ') || '<span class="muted">no backends</span>'}</div>`).join('')}
+    </div></div>`).join('') || '<p class="muted">No rules.</p>'}</div>`)}
+    ${warnings(ctx.events)}
+    ${metadata(md)}
+    ${trafficPath(kind, md.name, hosts.length ? hosts[0] + (hosts.length > 1 ? ` +${hosts.length - 1}` : '') : '*', routes, ctx)}`;
 }
 
 // ---------- PVC / PV ----------
@@ -507,6 +581,8 @@ const RENDERERS = {
   pods: podSummary, deployments: workloadSummary('deployments'), statefulsets: workloadSummary('statefulsets'), daemonsets: workloadSummary('daemonsets'),
   services: serviceSummary, ingresses: ingressSummary, pvcs: pvcSummary, pvs: pvSummary, nodes: nodeSummary,
   'cr:cert-manager.io/certificates': certSummary, helm: helmSummary,
+  'cr:gateway.networking.k8s.io/gateways': gatewaySummary,
+  'cr:gateway.networking.k8s.io/httproutes': routeSummary, 'cr:gateway.networking.k8s.io/grpcroutes': routeSummary,
 };
 
 export const hasRichSummary = (kind) => kind in RENDERERS;
@@ -525,7 +601,7 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
           e.preventDefault();
           open(a.dataset.open, { cluster: d.cluster, namespace: a.dataset.ns ?? d.namespace ?? '', name: a.dataset.name });
         });
-        root.querySelectorAll('[data-open-pod]').forEach((b) => b.onclick = () => open('pods', { cluster: d.cluster, namespace: d.namespace, name: b.dataset.openPod }));
+        root.querySelectorAll('[data-open-pod]').forEach((b) => b.onclick = () => open('pods', { cluster: d.cluster, namespace: b.dataset.podNs || d.namespace, name: b.dataset.openPod }));
         root.querySelectorAll('[data-open-fwd]').forEach((a) => a.onclick = (e) => { e.preventDefault(); openForward(a.dataset.openFwd, a.href); });
         root.querySelectorAll('[data-act="forward"]').forEach((b) => b.onclick = () => pickForward(b, target, ctx.forward.ports));
         root.querySelectorAll('[data-forward-port]').forEach((b) => b.onclick = () => pickForward(b, target, [{ port: +b.dataset.forwardPort }]));

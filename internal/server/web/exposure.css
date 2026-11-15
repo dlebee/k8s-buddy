@@ -1,10 +1,10 @@
 /* exposure map: galaxy (all clusters) + flow (one cluster) */
 :root {
-  --k-controller: #326ce5; --k-lb: #7c4dff; --k-nodeport: #e8590c; --k-ingress: #0d9488; --k-service: #64748b;
+  --k-controller: #326ce5; --k-gateway: #db2777; --k-lb: #7c4dff; --k-nodeport: #e8590c; --k-ingress: #0d9488; --k-service: #64748b;
   --k-workload: #12b76a; --k-pod: #12b76a; --k-source: #475467; --xp-edge: #c3c9d6;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --k-controller: #6b9bff; --k-lb: #a78bfa; --k-nodeport: #fbae4b; --k-ingress: #2dd4bf; --k-service: #94a3b8; --k-workload: #34d399; --k-pod: #34d399; --k-source: #98a2b3; --xp-edge: #3a4150; }
+  :root { --k-controller: #6b9bff; --k-gateway: #f472b6; --k-lb: #a78bfa; --k-nodeport: #fbae4b; --k-ingress: #2dd4bf; --k-service: #94a3b8; --k-workload: #34d399; --k-pod: #34d399; --k-source: #98a2b3; --xp-edge: #3a4150; }
 }
 .xp-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .xp-seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 2px; }

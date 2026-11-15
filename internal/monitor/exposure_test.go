@@ -55,7 +55,7 @@ func TestBuildExposure(t *testing.T) {
 		}}}}}},
 	}}
 
-	got := buildExposure(pods, svcs, ings, classInfo{})
+	got := buildExposure(pods, svcs, ings, classInfo{}, gatewayData{})
 	if len(got) != 3 || got[0].Kind != "controller" || got[1].Kind != "lb" || got[2].Kind != "nodeport" {
 		t.Fatalf("entries: %+v", got)
 	}
@@ -79,7 +79,7 @@ func TestBuildExposure(t *testing.T) {
 	}
 
 	// No exposed controller: ingresses gather under their class.
-	got = buildExposure(pods, svcs[1:], ings, classInfo{controllers: map[string]string{"nginx": communityController}, def: "nginx"})
+	got = buildExposure(pods, svcs[1:], ings, classInfo{controllers: map[string]string{"nginx": communityController}, def: "nginx"}, gatewayData{})
 	if got[0].Kind != "class" || got[0].Name != "nginx" || len(got[0].Ingresses) != 1 {
 		t.Fatalf("class entry: %+v", got[0])
 	}

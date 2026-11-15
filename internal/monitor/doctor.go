@@ -31,6 +31,8 @@ var doctorChecks = []DoctorCheck{
 	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
 	{"nginx-mergeable", "NGINX mergeable ingresses", "Masters and minions NGINX ignores: minions without a master, masters without minions, and hosts claimed twice."},
 	{"ingress-annotations", "Annotations for the wrong NGINX", "Ingress annotations meant for the other NGINX controller are silently ignored — risky when they restrict access."},
+	{"gateway-status", "Gateways not serving", "Gateway API gateways no controller accepted or programmed, or whose GatewayClass does not exist."},
+	{"gateway-route", "Broken gateway routes", "HTTPRoutes and other routes that aren't accepted, point at a missing gateway, or send traffic to a missing service, port, or a service with no pods."},
 	{"pdb-blocking", "PDBs blocking drains", "PodDisruptionBudgets that currently allow zero disruptions will stall node drains and upgrades."},
 	{"hpa-target", "HPAs with missing targets", "Autoscaler targets a workload that does not exist."},
 	{"orphaned-pv", "Released / failed volumes", "PersistentVolumes no claim uses anymore; their disks usually still cost money."},
@@ -327,6 +329,8 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 		}
 	}
 
+	out = append(out, c.gatewayFindings(svcIndex, dangling)...)
+
 	if pdbs, err := c.cs.PolicyV1().PodDisruptionBudgets("").List(ctx, metav1.ListOptions{}); err != nil {
 		problems = append(problems, "pdbs: "+truncate(err.Error(), 120))
 	} else {
@@ -462,4 +466,55 @@ func portString(p networkingv1.ServiceBackendPort) string {
 		return p.Name
 	}
 	return fmt.Sprint(p.Number)
+}
+
+// gatewayFindings checks Gateway API objects from the informers (nothing when the CRDs are absent).
+func (c *cluster) gatewayFindings(svcIndex map[string]*corev1.Service, dangling map[string]bool) []Finding {
+	gw := c.gatewayData()
+	var out []Finding
+	add := func(check, kind, ns, name, msg string) {
+		res := strings.ToLower(kind) + "." + gatewayGroup + "/" + name
+		out = append(out, Finding{Cluster: c.name, Check: check, Severity: alert.Warning, Kind: kind, Namespace: ns, Name: name,
+			Message: msg, Hint: kubectl(c.name, ns, "describe "+res)})
+	}
+	gws := map[string]bool{}
+	for _, g := range gw.Gateways {
+		gws[g.Namespace+"/"+g.Name] = true
+		if _, ok := gw.Classes[g.Class]; !ok && len(gw.Classes) > 0 {
+			add("gateway-status", "Gateway", g.Namespace, g.Name, fmt.Sprintf("uses GatewayClass %q which does not exist", g.Class))
+		} else if g.Problem != "" {
+			add("gateway-status", "Gateway", g.Namespace, g.Name, g.Problem)
+		}
+	}
+	for _, r := range gw.Routes {
+		for _, p := range r.Parents {
+			key := p.Namespace + "/" + p.Name
+			switch {
+			case !gws[key]:
+				add("gateway-route", r.Kind, r.Namespace, r.Name, "attaches to Gateway "+key+" which does not exist")
+			case r.Problems[key] != "":
+				add("gateway-route", r.Kind, r.Namespace, r.Name, "on Gateway "+key+": "+r.Problems[key])
+			}
+		}
+		seen := map[string]bool{}
+		for _, rule := range r.Rules {
+			for _, b := range rule.Backends {
+				key := b.Namespace + "/" + b.Name
+				if b.Kind != "Service" || b.Name == "" || seen[key+fmt.Sprint(b.Port)] {
+					continue
+				}
+				seen[key+fmt.Sprint(b.Port)] = true
+				svc, ok := svcIndex[key]
+				switch {
+				case !ok:
+					add("gateway-route", r.Kind, r.Namespace, r.Name, "sends traffic to missing service "+key)
+				case b.Port != 0 && !servicePortExists(svc, networkingv1.ServiceBackendPort{Number: int32(b.Port)}):
+					add("gateway-route", r.Kind, r.Namespace, r.Name, fmt.Sprintf("service %s has no port %d", key, b.Port))
+				case dangling[key]:
+					add("gateway-route", r.Kind, r.Namespace, r.Name, "sends traffic to service "+key+" which has no pods")
+				}
+			}
+		}
+	}
+	return out
 }

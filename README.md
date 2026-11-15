@@ -6,6 +6,7 @@ A little floating friend that watches **every Kubernetes context in your kubecon
 - **Menu bar icon** — `⎈ 3` style count, overview, settings, show/hide the buddy.
 - **Multi-cluster overview** — health of all your clusters at a glance.
 - **Resources** — browse workloads, networking, storage (PVCs, PVs, storage classes), config (ConfigMaps, Secrets — values never loaded), Helm releases, nodes, events and **any custom resource** across all clusters. Every object, alert and doctor finding opens with `kubectl describe` output, YAML and a built-in **console** to run the suggested commands.
+- **Exposure map** — what each cluster exposes and where the traffic lands: entry points (ingress controllers, **Gateway API gateways**, LoadBalancers, NodePorts) → Ingresses / HTTPRoutes / GRPCRoutes → services → workloads → pods, as a zoomable galaxy or a left-to-right flow. Services that lead nowhere are drawn in red.
 - **Doctor** — an on-demand checkup for things that are quietly wrong (dangling services and ingresses, PDBs that block upgrades, orphaned volumes, …).
 
 Monitoring is read-only: it only lists and watches. The console runs `kubectl`, `helm` and `cmctl` directly (no shell, no pipes, no interactive commands) with your kubeconfig, and asks before anything that changes a cluster.
@@ -35,7 +36,7 @@ Alerts are deduplicated, state-based ones resolve on their own when the conditio
 
 ## Doctor checks
 
-Services with no pods · ingresses pointing at missing services/ports or empty services · ingresses using a missing IngressClass · NGINX mergeable ingresses that are silently ignored (minions without a master, empty masters, hosts claimed twice — this also catches cert-manager HTTP-01 solvers that can never succeed) · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
+Services with no pods · ingresses pointing at missing services/ports or empty services · ingresses using a missing IngressClass · Gateway API gateways that aren't accepted/programmed or use a missing GatewayClass · routes that aren't accepted, attach to a missing gateway, or send traffic to a missing service, port or empty service · NGINX mergeable ingresses that are silently ignored (minions without a master, empty masters, hosts claimed twice — this also catches cert-manager HTTP-01 solvers that can never succeed) · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
 
 ## Install / run (macOS)
 

@@ -42,7 +42,10 @@ type ExposureService struct {
 	Workloads []ExposureWorkload `json:"workloads"`
 }
 
+// ExposureIngress is an Ingress or a Gateway API route (Kind HTTPRoute, GRPCRoute, …).
 type ExposureIngress struct {
+	Kind      string            `json:"kind,omitempty"`
+	Problem   string            `json:"problem,omitempty"`
 	Namespace string            `json:"namespace"`
 	Name      string            `json:"name"`
 	Class     string            `json:"class,omitempty"`
@@ -51,10 +54,12 @@ type ExposureIngress struct {
 	Services  []ExposureService `json:"services"`
 }
 
-// Entry kinds: "controller" (an exposed ingress controller), "lb" and "nodeport" (services exposed
-// straight to their pods), and "class" (ingresses whose controller isn't exposed by a service here).
+// Entry kinds: "controller" (an exposed ingress controller), "gateway" (a Gateway API gateway),
+// "lb" and "nodeport" (services exposed straight to their pods), and "class" (ingresses whose
+// controller isn't exposed by a service here, or routes whose gateway doesn't exist).
 type ExposureEntry struct {
 	Kind       string             `json:"kind"`
+	Problem    string             `json:"problem,omitempty"`
 	Namespace  string             `json:"namespace"`
 	Name       string             `json:"name"`
 	Type       string             `json:"type"`
@@ -108,7 +113,7 @@ func (c *cluster) exposure() ClusterExposure {
 	svcs, _ := c.services.List(labels.Everything())
 	ings, _ := c.ingresses.List(labels.Everything())
 	ce.Pods, ce.Services = len(pods), len(svcs)
-	ce.Entries = buildExposure(pods, svcs, ings, c.classInfo())
+	ce.Entries = buildExposure(pods, svcs, ings, c.classInfo(), c.gatewayData())
 	return ce
 }
 
@@ -221,7 +226,7 @@ func workloadsOf(pods []*corev1.Pod) []ExposureWorkload {
 	return out
 }
 
-func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkingv1.Ingress, ci classInfo) []ExposureEntry {
+func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkingv1.Ingress, ci classInfo, gw gatewayData) []ExposureEntry {
 	podsByNS := map[string][]*corev1.Pod{}
 	for _, p := range pods {
 		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
@@ -249,8 +254,33 @@ func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkin
 
 	var entries []ExposureEntry
 	var controllers []int
+	// Services a gateway implementation created for a Gateway are folded into that gateway's entry.
+	gwIndex := map[string]int{}
+	for i, g := range gw.Gateways {
+		gwIndex[g.Namespace+"/"+g.Name] = i
+	}
+	gwServices := map[string][]*corev1.Service{}
+	for _, s := range svcs {
+		key := gatewayOfService(s.Labels, s.Namespace)
+		if _, ok := gwIndex[key]; !ok {
+			key = ""
+			for _, g := range gw.Gateways { // generic fallback: the gateway reports this service's address
+				for _, in := range s.Status.LoadBalancer.Ingress {
+					if a := firstNonEmpty(in.IP, in.Hostname); a != "" && slices.Contains(g.Addresses, a) {
+						key = g.Namespace + "/" + g.Name
+					}
+				}
+			}
+		}
+		if key != "" {
+			gwServices[key] = append(gwServices[key], s)
+		}
+	}
 	for _, s := range svcs {
 		if s.Spec.Type != corev1.ServiceTypeLoadBalancer && s.Spec.Type != corev1.ServiceTypeNodePort {
+			continue
+		}
+		if folded(gwServices, s) {
 			continue
 		}
 		ps := selected(s)
@@ -297,10 +327,22 @@ func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkin
 		}
 		return controllers[0]
 	}
+	newService := func(ns, name string) ExposureService {
+		es := ExposureService{Namespace: ns, Name: name, Routes: []string{}, Ports: []string{}, Workloads: []ExposureWorkload{}}
+		if s, found := svcIndex[ns+"/"+name]; found {
+			es.Type, es.Ports, es.Workloads = string(s.Spec.Type), servicePorts(s), workloadsOf(selected(s))
+			if es.Type == "" {
+				es.Type = string(corev1.ServiceTypeClusterIP)
+			}
+		} else {
+			es.Type, es.Missing = "missing", true
+		}
+		return es
+	}
 	pseudo := map[string]int{}
 	for _, ing := range ings {
 		class := ingressClassOf(ing.Annotations, ing.Spec.IngressClassName)
-		ei := ExposureIngress{Namespace: ing.Namespace, Name: ing.Name, Class: class, TLS: len(ing.Spec.TLS) > 0, Hosts: []string{}, Services: []ExposureService{}}
+		ei := ExposureIngress{Kind: "Ingress", Namespace: ing.Namespace, Name: ing.Name, Class: class, TLS: len(ing.Spec.TLS) > 0, Hosts: []string{}, Services: []ExposureService{}}
 		byName := map[string]int{}
 		addRoute := func(svc, route string) {
 			if svc == "" {
@@ -310,16 +352,7 @@ func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkin
 			if !ok {
 				i = len(ei.Services)
 				byName[svc] = i
-				es := ExposureService{Namespace: ing.Namespace, Name: svc, Routes: []string{}, Ports: []string{}, Workloads: []ExposureWorkload{}}
-				if s, found := svcIndex[ing.Namespace+"/"+svc]; found {
-					es.Type, es.Ports, es.Workloads = string(s.Spec.Type), servicePorts(s), workloadsOf(selected(s))
-					if es.Type == "" {
-						es.Type = string(corev1.ServiceTypeClusterIP)
-					}
-				} else {
-					es.Type, es.Missing = "missing", true
-				}
-				ei.Services = append(ei.Services, es)
+				ei.Services = append(ei.Services, newService(ing.Namespace, svc))
 			}
 			if !slices.Contains(ei.Services[i].Routes, route) {
 				ei.Services[i].Routes = append(ei.Services[i].Routes, route)
@@ -357,7 +390,9 @@ func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkin
 		entries[i].Ingresses = append(entries[i].Ingresses, ei)
 	}
 
-	rank := map[string]int{"controller": 0, "class": 1, "lb": 2, "nodeport": 3}
+	addGatewayEntries(&entries, gw, gwServices, selected, newService)
+
+	rank := map[string]int{"controller": 0, "gateway": 0, "class": 1, "lb": 2, "nodeport": 3}
 	slices.SortStableFunc(entries, func(a, b ExposureEntry) int {
 		if d := rank[a.Kind] - rank[b.Kind]; d != 0 {
 			return d
@@ -370,4 +405,98 @@ func buildExposure(pods []*corev1.Pod, svcs []*corev1.Service, ings []*networkin
 		})
 	}
 	return entries
+}
+
+func folded(gwServices map[string][]*corev1.Service, s *corev1.Service) bool {
+	for _, l := range gwServices {
+		if slices.Contains(l, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// addGatewayEntries adds one entry per Gateway, with the routes attached to it as its "ingresses".
+func addGatewayEntries(entries *[]ExposureEntry, gw gatewayData, gwServices map[string][]*corev1.Service,
+	selected func(*corev1.Service) []*corev1.Pod, newService func(ns, name string) ExposureService) {
+	if gw.empty() {
+		return
+	}
+	at := map[string]int{}
+	for _, g := range gw.Gateways {
+		key := g.Namespace + "/" + g.Name
+		e := ExposureEntry{Kind: "gateway", Namespace: g.Namespace, Name: g.Name, Type: "Gateway", Problem: g.Problem,
+			Ports: listenerPorts(g), Addresses: append([]string{}, g.Addresses...), Controller: firstNonEmpty(gw.Classes[g.Class], "class "+g.Class),
+			Workloads: []ExposureWorkload{}, Ingresses: []ExposureIngress{}}
+		var pods []*corev1.Pod
+		for _, s := range gwServices[key] {
+			pods = append(pods, selected(s)...)
+			if isInternalLB(s) {
+				e.Internal = true
+			}
+			if len(e.Addresses) == 0 {
+				for _, in := range s.Status.LoadBalancer.Ingress {
+					e.Addresses = append(e.Addresses, firstNonEmpty(in.IP, in.Hostname))
+				}
+			}
+		}
+		e.Workloads = workloadsOf(pods)
+		at[key] = len(*entries)
+		*entries = append(*entries, e)
+	}
+	gwByKey := map[string]*gwGateway{}
+	for i := range gw.Gateways {
+		gwByKey[gw.Gateways[i].Namespace+"/"+gw.Gateways[i].Name] = &gw.Gateways[i]
+	}
+	for _, r := range gw.Routes {
+		parents := r.Parents
+		if len(parents) == 0 {
+			parents = []gwParent{{}}
+		}
+		for _, p := range parents {
+			key := p.Namespace + "/" + p.Name
+			g := gwByKey[key]
+			ei := ExposureIngress{Kind: r.Kind, Namespace: r.Namespace, Name: r.Name, Hosts: effectiveHosts(r, g, p.Section),
+				TLS: gatewayTLS(g, p.Section), Problem: r.Problems[key], Services: []ExposureService{}}
+			byName := map[string]int{}
+			for _, rule := range r.Rules {
+				for _, b := range rule.Backends {
+					if b.Kind != "Service" || b.Name == "" {
+						continue
+					}
+					bk := b.Namespace + "/" + b.Name
+					i, ok := byName[bk]
+					if !ok {
+						i = len(ei.Services)
+						byName[bk] = i
+						ei.Services = append(ei.Services, newService(b.Namespace, b.Name))
+					}
+					for _, rs := range r.routeStrings(ei.Hosts, rule) {
+						if !slices.Contains(ei.Services[i].Routes, rs) {
+							ei.Services[i].Routes = append(ei.Services[i].Routes, rs)
+						}
+					}
+				}
+			}
+			i, ok := at[key]
+			if !ok { // the route names a gateway that isn't there
+				name := "missing gateway " + key
+				if p.Name == "" {
+					name = "no parent gateway"
+				}
+				if j, seen := at["missing:"+key]; seen {
+					i = j
+				} else {
+					i = len(*entries)
+					at["missing:"+key] = i
+					*entries = append(*entries, ExposureEntry{Kind: "class", Name: name, Type: "Gateway", Problem: "routes point at a Gateway that does not exist",
+						Ports: []string{}, Addresses: []string{}, Workloads: []ExposureWorkload{}, Ingresses: []ExposureIngress{}})
+				}
+				if ei.Problem == "" {
+					ei.Problem = "parent Gateway " + key + " not found"
+				}
+			}
+			(*entries)[i].Ingresses = append((*entries)[i].Ingresses, ei)
+		}
+	}
 }

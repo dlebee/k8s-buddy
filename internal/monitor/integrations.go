@@ -277,7 +277,7 @@ func (c *cluster) detectHelm() []alert.Alert {
 	return out
 }
 
-// ---------- CRD-backed watchers (cert-manager) ----------
+// ---------- CRD-backed watchers (cert-manager, Gateway API) ----------
 
 type crdWatch struct{ id, group, resource string }
 
@@ -285,6 +285,14 @@ var crdWatches = []crdWatch{
 	{"cm-certificates", "cert-manager.io", "certificates"},
 	{"cm-issuers", "cert-manager.io", "issuers"},
 	{"cm-clusterissuers", "cert-manager.io", "clusterissuers"},
+	// Gateway API: only watched on clusters that serve these CRDs.
+	{"gw-gatewayclasses", gatewayGroup, "gatewayclasses"},
+	{"gw-gateways", gatewayGroup, "gateways"},
+	{"gw-httproutes", gatewayGroup, "httproutes"},
+	{"gw-grpcroutes", gatewayGroup, "grpcroutes"},
+	{"gw-tlsroutes", gatewayGroup, "tlsroutes"},
+	{"gw-tcproutes", gatewayGroup, "tcproutes"},
+	{"gw-udproutes", gatewayGroup, "udproutes"},
 }
 
 // ensureCRDWatchers starts informers for integrations whose CRDs exist on the cluster.
