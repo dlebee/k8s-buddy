@@ -58,6 +58,23 @@ Settings and history live in `~/Library/Application Support/k8s-buddy/`. Context
 
 Kubeconfig exec plugins (`az`/`kubelogin`, `aws`, `gke-gcloud-auth-plugin`, `doctl`, …) work when launched from Finder too: the app borrows your login shell's `PATH`.
 
+## Releases
+
+Push a version tag and the [release workflow](.github/workflows/release.yml) does the rest:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+It publishes a signed and notarized macOS DMG (universal), Windows zips signed with Azure Trusted Signing,
+Linux tarballs and `SHA256SUMS.txt`. Tags with a suffix (`v0.3.0-rc.1`) become pre-releases.
+
+Signing setup (maintainers): repository variables hold the non-secret IDs (`AC_TEAM_ID`,
+`MACOS_SIGNING_IDENTITY`, `AZURE_*`); `packaging/macos/set-signing-secrets.sh` stores the Developer ID
+certificate and notarization credentials as secrets; Windows signs through OIDC from the `release`
+environment, trusted by a federated credential on the Entra app. Any signing step whose secrets are
+missing is skipped, so unsigned releases still build.
+
 ## Testing against a throwaway cluster
 
 `testdata/demo/` contains deliberately broken workloads that trip every detector and doctor check:

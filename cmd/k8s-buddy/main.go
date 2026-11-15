@@ -26,12 +26,20 @@ import (
 	"github.com/dlebee/k8s-buddy/internal/ui"
 )
 
+// version is set at build time with -ldflags "-X main.version=1.2.3".
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	headless := flag.Bool("headless", false, "no native UI; print the overview URL instead")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path (overrides settings, $KUBECONFIG and ~/.kube/config)")
 	dataDir := flag.String("data-dir", "", "settings/history directory (default: OS config dir)/k8s-buddy")
 	verbose := flag.Bool("v", false, "debug logging")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("k8s-buddy", version)
+		return
+	}
 
 	level := slog.LevelInfo
 	if *verbose {
@@ -138,7 +146,7 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 		driver.Quit()
 	}()
 
-	log.Info("k8s-buddy started", "data", dataDir, "overview", srv.URL("overview"))
+	log.Info("k8s-buddy started", "version", version, "data", dataDir, "overview", srv.URL("overview"))
 	driver.Run()
 	return nil
 }
