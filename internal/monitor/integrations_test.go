@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	appslisters "k8s.io/client-go/listers/apps/v1"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/dlebee/k8s-buddy/internal/alert"
@@ -94,5 +96,68 @@ func TestHelmDetection(t *testing.T) {
 		if r.Name == "ok" && (r.Status != "deployed" || r.Cols[0] != "2") {
 			t.Fatalf("latest revision not picked: %+v", r)
 		}
+	}
+}
+
+func helmDeploy(release, namespace, chart, name string, created time.Time) *appsv1.Deployment {
+	return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Namespace: namespace, CreationTimestamp: metav1.NewTime(created),
+		Labels:      map[string]string{"app.kubernetes.io/managed-by": "Helm", "helm.sh/chart": chart},
+		Annotations: map[string]string{"meta.helm.sh/release-name": release, "meta.helm.sh/release-namespace": namespace},
+	}}
+}
+
+func deployLister(t *testing.T, objs ...*appsv1.Deployment) appslisters.DeploymentLister {
+	idx := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	for _, o := range objs {
+		if err := idx.Add(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return appslisters.NewDeploymentLister(idx)
+}
+
+func TestHelmFallbackFromWorkloads(t *testing.T) {
+	now := time.Now()
+	c := &cluster{name: "c", deploys: deployLister(t,
+		helmDeploy("api", "prod", "api-1.2.3", "api", now.Add(-time.Hour)),
+		helmDeploy("api", "prod", "api-1.2.3", "api-worker", now.Add(-time.Minute)),
+		helmDeploy("ui", "prod", "ui-0.1.0", "ui", now.Add(-10*time.Minute)),
+	)}
+	rels := c.helmReleases()
+	if len(rels) != 2 {
+		t.Fatalf("want 2 releases, got %d: %+v", len(rels), rels)
+	}
+	byName := map[string]helmRelease{}
+	for _, r := range rels {
+		byName[r.name] = r
+	}
+	api := byName["api"]
+	if api.status != "unknown" || api.chart != "api-1.2.3" || len(api.workloads) != 2 {
+		t.Fatalf("api release: %+v", api)
+	}
+	// Alerts must not fire for fallback releases (status unknown).
+	if alerts := c.detectHelm(); len(alerts) != 0 {
+		t.Fatalf("no alerts should fire for fallback releases, got %+v", alerts)
+	}
+	// List rows carry "?" revision for fallback discoveries.
+	for _, r := range listHelm(c) {
+		if r.Cols[0] != "?" {
+			t.Fatalf("fallback revision should be ?, got %q (%+v)", r.Cols[0], r)
+		}
+	}
+}
+
+func TestHelmReleasesPrefersSecretOverWorkloads(t *testing.T) {
+	now := time.Now()
+	c := &cluster{name: "c",
+		helm: lister(t, helmSecret("api", "deployed", 3, now.Add(-time.Minute))),
+		deploys: deployLister(t,
+			helmDeploy("api", "ns", "api-1.2.3", "api", now.Add(-time.Hour)),
+		),
+	}
+	rels := c.helmReleases()
+	if len(rels) != 1 || rels[0].name != "api" || rels[0].status != "deployed" || rels[0].revision != 3 {
+		t.Fatalf("secret data should win: %+v", rels)
 	}
 }

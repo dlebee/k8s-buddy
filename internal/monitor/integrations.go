@@ -3,6 +3,7 @@ package monitor
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,30 +44,135 @@ type helmRelease struct {
 	namespace, name, status string
 	revision                int
 	updated                 time.Time
+	chart                   string        // from helm.sh/chart label (fallback only)
+	workloads               []helmOwnedRes // populated when derived from labels, not secrets
 }
 
+type helmOwnedRes struct{ kind, namespace, name string }
+
+// helmReleases returns the latest revision of each release. It prefers Helm's
+// own storage secrets (via c.helm); when those aren't readable (RBAC), it
+// falls back to scanning workloads for the standard Helm metadata labels.
+// The fallback can't reconstruct history, values, or revision numbers.
 func (c *cluster) helmReleases() []helmRelease {
-	objs, _ := c.helm.List(labels.Everything())
 	latest := map[string]helmRelease{}
-	for _, o := range objs {
-		m, ok := o.(*metav1.PartialObjectMetadata)
-		if !ok {
-			continue
+	if c.helm != nil {
+		objs, _ := c.helm.List(labels.Everything())
+		for _, o := range objs {
+			m, ok := o.(*metav1.PartialObjectMetadata)
+			if !ok {
+				continue
+			}
+			l := m.Labels
+			rev, _ := strconv.Atoi(l["version"])
+			r := helmRelease{namespace: m.Namespace, name: l["name"], status: l["status"], revision: rev, updated: m.CreationTimestamp.Time}
+			if ts, err := strconv.ParseInt(l["modifiedAt"], 10, 64); err == nil {
+				r.updated = time.Unix(ts, 0)
+			}
+			key := r.namespace + "/" + r.name
+			if cur, ok := latest[key]; !ok || r.revision > cur.revision {
+				latest[key] = r
+			}
 		}
-		l := m.Labels
-		rev, _ := strconv.Atoi(l["version"])
-		r := helmRelease{namespace: m.Namespace, name: l["name"], status: l["status"], revision: rev, updated: m.CreationTimestamp.Time}
-		if ts, err := strconv.ParseInt(l["modifiedAt"], 10, 64); err == nil {
-			r.updated = time.Unix(ts, 0)
-		}
-		key := r.namespace + "/" + r.name
-		if cur, ok := latest[key]; !ok || r.revision > cur.revision {
+	}
+	for key, r := range c.helmReleasesFromWorkloads() {
+		if _, ok := latest[key]; !ok {
 			latest[key] = r
 		}
 	}
 	out := make([]helmRelease, 0, len(latest))
 	for _, r := range latest {
 		out = append(out, r)
+	}
+	return out
+}
+
+// helmWorkloadFallbackReady reports whether at least one workload informer is
+// synced so a label-based Helm discovery can be attempted without the storage
+// secret.
+func (c *cluster) helmWorkloadFallbackReady() bool {
+	return c.synced("deployments") || c.synced("statefulsets") || c.synced("daemonsets") || c.synced("services") || c.synced("ingresses")
+}
+
+// helmReleasesFromWorkloads discovers Helm releases by their standard metadata
+// labels/annotations on resources the user can list, used as a fallback when
+// Helm's own storage secrets aren't readable.
+func (c *cluster) helmReleasesFromWorkloads() map[string]helmRelease {
+	sel, err := labels.Parse("app.kubernetes.io/managed-by=Helm")
+	if err != nil {
+		return nil
+	}
+	out := map[string]helmRelease{}
+	add := func(kind string, m metav1.Object) {
+		ann := m.GetAnnotations()
+		name, ns := ann["meta.helm.sh/release-name"], ann["meta.helm.sh/release-namespace"]
+		if name == "" {
+			return
+		}
+		if ns == "" {
+			ns = m.GetNamespace()
+		}
+		key := ns + "/" + name
+		r := out[key]
+		r.namespace, r.name = ns, name
+		if r.status == "" {
+			r.status = "unknown"
+		}
+		if ts := m.GetCreationTimestamp().Time; ts.After(r.updated) {
+			r.updated = ts
+		}
+		if r.chart == "" {
+			r.chart = m.GetLabels()["helm.sh/chart"]
+		}
+		r.workloads = append(r.workloads, helmOwnedRes{kind: kind, namespace: m.GetNamespace(), name: m.GetName()})
+		out[key] = r
+	}
+	if c.deploys != nil {
+		if l, _ := c.deploys.List(sel); len(l) > 0 {
+			for _, x := range l {
+				add("Deployment", x)
+			}
+		}
+	}
+	if c.sts != nil {
+		if l, _ := c.sts.List(sel); len(l) > 0 {
+			for _, x := range l {
+				add("StatefulSet", x)
+			}
+		}
+	}
+	if c.ds != nil {
+		if l, _ := c.ds.List(sel); len(l) > 0 {
+			for _, x := range l {
+				add("DaemonSet", x)
+			}
+		}
+	}
+	if c.services != nil {
+		if l, _ := c.services.List(sel); len(l) > 0 {
+			for _, x := range l {
+				add("Service", x)
+			}
+		}
+	}
+	if c.ingresses != nil {
+		if l, _ := c.ingresses.List(sel); len(l) > 0 {
+			for _, x := range l {
+				add("Ingress", x)
+			}
+		}
+	}
+	for k, r := range out {
+		sort.Slice(r.workloads, func(i, j int) bool {
+			if r.workloads[i].kind != r.workloads[j].kind {
+				return r.workloads[i].kind < r.workloads[j].kind
+			}
+			if r.workloads[i].namespace != r.workloads[j].namespace {
+				return r.workloads[i].namespace < r.workloads[j].namespace
+			}
+			return r.workloads[i].name < r.workloads[j].name
+		})
+		out[k] = r
 	}
 	return out
 }
@@ -91,8 +197,12 @@ func listHelm(c *cluster) []Resource {
 	rels := c.helmReleases()
 	out := make([]Resource, 0, len(rels))
 	for _, r := range rels {
+		rev := strconv.Itoa(r.revision)
+		if r.revision == 0 && len(r.workloads) > 0 {
+			rev = "?"
+		}
 		out = append(out, Resource{Namespace: r.namespace, Name: r.name, Status: r.status, Health: helmHealth(r), Created: r.updated,
-			Cols: []string{strconv.Itoa(r.revision), r.updated.Local().Format("2006-01-02 15:04")}})
+			Cols: []string{rev, r.updated.Local().Format("2006-01-02 15:04")}})
 	}
 	return out
 }
@@ -107,16 +217,36 @@ func (m *Manager) helmDetail(clusterName, ns, name string) (ResourceDetail, erro
 		return ResourceDetail{}, err
 	}
 	for _, r := range c.helmReleases() {
-		if r.namespace == ns && r.name == name {
+		if r.namespace != ns || r.name != name {
+			continue
+		}
+		cmds := []string{
+			helmCmd(clusterName, ns, "status "+name),
+			helmCmd(clusterName, ns, "history "+name),
+			helmCmd(clusterName, ns, "get values "+name),
+		}
+		if len(r.workloads) == 0 {
+			// Discovered via secret: full revision info available.
 			y := fmt.Sprintf("release: %s\nnamespace: %s\nrevision: %d\nstatus: %s\nupdated: %s\nstorage: secret/sh.helm.release.v1.%s.v%d\n",
 				r.name, r.namespace, r.revision, r.status, r.updated.Format(time.RFC3339), r.name, r.revision)
-			return ResourceDetail{Cluster: clusterName, Kind: "helm", Namespace: ns, Name: name, YAML: y, Events: []Resource{}, Commands: []string{
-				helmCmd(clusterName, ns, "status "+name),
-				helmCmd(clusterName, ns, "history "+name),
-				helmCmd(clusterName, ns, "get values "+name),
-				helmCmd(clusterName, ns, fmt.Sprintf("rollback %s %d", name, max(r.revision-1, 1))),
-			}}, nil
+			cmds = append(cmds, helmCmd(clusterName, ns, fmt.Sprintf("rollback %s %d", name, max(r.revision-1, 1))))
+			return ResourceDetail{Cluster: clusterName, Kind: "helm", Namespace: ns, Name: name, YAML: y, Events: []Resource{}, Commands: cmds}, nil
 		}
+		// Fallback: no secret access. Report what the labels tell us.
+		var b strings.Builder
+		fmt.Fprintf(&b, "release: %s\nnamespace: %s\nstatus: %s  # storage secret not readable; status, revision, values and history unavailable\n",
+			r.name, r.namespace, r.status)
+		if r.chart != "" {
+			fmt.Fprintf(&b, "chart: %s\n", r.chart)
+		}
+		if !r.updated.IsZero() {
+			fmt.Fprintf(&b, "latestResourceUpdate: %s\n", r.updated.Format(time.RFC3339))
+		}
+		fmt.Fprintf(&b, "resources:\n")
+		for _, w := range r.workloads {
+			fmt.Fprintf(&b, "  - %s %s/%s\n", w.kind, w.namespace, w.name)
+		}
+		return ResourceDetail{Cluster: clusterName, Kind: "helm", Namespace: ns, Name: name, YAML: b.String(), Events: []Resource{}, Commands: cmds}, nil
 	}
 	return ResourceDetail{}, fmt.Errorf("release %s/%s not found", ns, name)
 }
@@ -505,7 +635,11 @@ func nginxMergeIssues(ings []*networkingv1.Ingress, ci classInfo) map[string]mer
 				if served != nil {
 					for _, m := range contenders {
 						if len(m.ing.Status.LoadBalancer.Ingress) == 0 {
-							set(m.ing, alert.Warning, fmt.Sprintf("%s is already served by %s — NGINX (nginx.org) doesn't merge separate ingresses for one host, so this one is ignored and its paths and annotations don't apply (put the paths in one ingress, or use master/minions)", host, ingressKey(served)))
+							msg := fmt.Sprintf("%s is already served by %s and NGINX (nginx.org) doesn't merge separate ingresses for one host, so this one is ignored", host, ingressKey(served))
+							if d := lossDetail(m.ing, served, host); d != "" {
+								msg += ": " + d
+							}
+							set(m.ing, alert.Warning, msg+". Put the paths in one ingress, or use master/minions.")
 						}
 					}
 				}
@@ -527,8 +661,8 @@ func nginxMergeIssues(ings []*networkingv1.Ingress, ci classInfo) map[string]mer
 		winner := contenders[0]
 		for _, l := range contenders[1:] {
 			msg := fmt.Sprintf("%s is also claimed by %s (older) — NGINX keeps the oldest, so this one is ignored", host, ingressKey(winner.ing))
-			if l.typ == "master" {
-				msg += "; its server-level config (TLS, snippets, annotations) is not applied"
+			if d := lossDetail(l.ing, winner.ing, host); d != "" {
+				msg += ": " + d
 			}
 			set(l.ing, alert.Warning, msg)
 		}
@@ -547,4 +681,179 @@ func nginxMergeIssues(ings []*networkingv1.Ingress, ci classInfo) map[string]mer
 		}
 	}
 	return out
+}
+
+// ---------- ingress routing map ----------
+
+type RoutePath struct {
+	Path    string    `json:"path"`
+	Service string    `json:"service"`
+	Port    string    `json:"port,omitempty"`
+	FallsTo *RouteHop `json:"fallsTo,omitempty"`
+}
+
+type RouteHop struct {
+	Ingress string `json:"ingress"`
+	Path    string `json:"path"`
+	Service string `json:"service"`
+}
+
+type RouteIngress struct {
+	Namespace string      `json:"namespace"`
+	Name      string      `json:"name"`
+	Type      string      `json:"type"`
+	Served    bool        `json:"served"`
+	Address   string      `json:"address,omitempty"`
+	Reason    string      `json:"reason,omitempty"`
+	TLS       bool        `json:"tls"`
+	Ignored   []string    `json:"ignoredAnnotations,omitempty"`
+	Paths     []RoutePath `json:"paths"`
+	Created   time.Time   `json:"created"`
+}
+
+type RouteHost struct {
+	Host       string         `json:"host"`
+	Class      string         `json:"class"`
+	Controller string         `json:"controller,omitempty"`
+	Ingresses  []RouteIngress `json:"ingresses"`
+}
+
+func pathsOf(ing *networkingv1.Ingress, host string) []RoutePath {
+	var out []RoutePath
+	for _, r := range ing.Spec.Rules {
+		if r.Host != host || r.HTTP == nil {
+			continue
+		}
+		for _, p := range r.HTTP.Paths {
+			rp := RoutePath{Path: firstNonEmpty(p.Path, "/")}
+			if s := p.Backend.Service; s != nil {
+				rp.Service, rp.Port = s.Name, portString(s.Port)
+			}
+			out = append(out, rp)
+		}
+	}
+	return out
+}
+
+// fallthroughFor finds the served route NGINX will actually use for path: the longest matching prefix.
+func fallthroughFor(path string, served []RouteIngress) *RouteHop {
+	var best *RouteHop
+	bestLen := -1
+	for _, ri := range served {
+		for _, p := range ri.Paths {
+			prefix := strings.TrimSuffix(p.Path, "/")
+			if (path == p.Path || strings.HasPrefix(path, prefix+"/") || p.Path == "/") && len(p.Path) > bestLen {
+				bestLen = len(p.Path)
+				best = &RouteHop{Ingress: ri.Namespace + "/" + ri.Name, Path: p.Path, Service: p.Service}
+			}
+		}
+	}
+	return best
+}
+
+func buildRouteHosts(ings []*networkingv1.Ingress, target *networkingv1.Ingress, ci classInfo) []RouteHost {
+	merge := nginxMergeIssues(ings, ci)
+	targetClass := ingressClassOf(target.Annotations, target.Spec.IngressClassName)
+	var out []RouteHost
+	seen := map[string]bool{}
+	for _, rule := range target.Spec.Rules {
+		host := rule.Host
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		rh := RouteHost{Host: host, Class: firstNonEmpty(targetClass, ci.def), Controller: ci.controllerFor(targetClass)}
+		for _, ing := range ings {
+			if ingressClassOf(ing.Annotations, ing.Spec.IngressClassName) != targetClass || ing.DeletionTimestamp != nil {
+				continue
+			}
+			if !slices.ContainsFunc(ing.Spec.Rules, func(r networkingv1.IngressRule) bool { return r.Host == host }) {
+				continue
+			}
+			ri := RouteIngress{Namespace: ing.Namespace, Name: ing.Name, Type: firstNonEmpty(ing.Annotations[mergeableAnnotation], "plain"),
+				TLS: len(ing.Spec.TLS) > 0, Paths: pathsOf(ing, host), Created: ing.CreationTimestamp.Time}
+			if lb := ing.Status.LoadBalancer.Ingress; len(lb) > 0 {
+				ri.Served, ri.Address = true, firstNonEmpty(lb[0].IP, lb[0].Hostname)
+			}
+			if mi, ok := merge[ingressKey(ing)]; ok {
+				ri.Reason = mi.Message
+			}
+			ri.Ignored, _ = foreignAnnotations(ing, rh.Controller)
+			if ri.Paths == nil {
+				ri.Paths = []RoutePath{}
+			}
+			rh.Ingresses = append(rh.Ingresses, ri)
+		}
+		var served []RouteIngress
+		for _, ri := range rh.Ingresses {
+			if ri.Served && ri.Reason == "" {
+				served = append(served, ri)
+			}
+		}
+		for i := range rh.Ingresses {
+			ri := &rh.Ingresses[i]
+			if ri.Served && ri.Reason == "" {
+				continue
+			}
+			for j := range ri.Paths {
+				ri.Paths[j].FallsTo = fallthroughFor(ri.Paths[j].Path, served)
+			}
+		}
+		slices.SortStableFunc(rh.Ingresses, func(a, b RouteIngress) int {
+			if a.Served != b.Served {
+				if a.Served {
+					return -1
+				}
+				return 1
+			}
+			return a.Created.Compare(b.Created)
+		})
+		out = append(out, rh)
+	}
+	return out
+}
+
+var ignorableAnnotation = []string{"meta.helm.sh/", "cert-manager.io/", "kubectl.kubernetes.io/", "field.cattle.io/"}
+
+// lossDetail spells out what is lost when loser is ignored in favour of winner: where its paths
+// actually land, and which of its own annotations stop applying.
+func lossDetail(loser, winner *networkingv1.Ingress, host string) string {
+	won := []RouteIngress{{Namespace: winner.Namespace, Name: winner.Name, Paths: pathsOf(winner, host)}}
+	var parts []string
+	for _, p := range pathsOf(loser, host) {
+		if hop := fallthroughFor(p.Path, won); hop != nil {
+			parts = append(parts, fmt.Sprintf("%s is answered by %s's %s route (service %s) instead", p.Path, winner.Name, hop.Path, hop.Service))
+		} else {
+			parts = append(parts, p.Path+" isn't served at all (404)")
+		}
+	}
+	var lost []string
+	for k, v := range loser.Annotations {
+		if k == mergeableAnnotation || slices.ContainsFunc(ignorableAnnotation, func(p string) bool { return strings.HasPrefix(k, p) }) || winner.Annotations[k] == v {
+			continue
+		}
+		lost = append(lost, k[strings.LastIndex(k, "/")+1:])
+	}
+	slices.Sort(lost)
+	if len(lost) > 0 {
+		parts = append(parts, "its settings don't apply ("+strings.Join(lost, ", ")+")")
+	}
+	return strings.Join(parts, "; ")
+}
+
+// IngressRoutes shows every ingress sharing a host with the given one and where each path really goes.
+func (m *Manager) IngressRoutes(clusterName, ns, name string) ([]RouteHost, error) {
+	c, err := m.cluster(clusterName)
+	if err != nil {
+		return nil, err
+	}
+	if !c.synced("ingresses") {
+		return nil, fmt.Errorf("ingresses are still loading on %s", clusterName)
+	}
+	target, err := c.ingresses.Ingresses(ns).Get(name)
+	if err != nil {
+		return nil, err
+	}
+	ings, _ := c.ingresses.List(labels.Everything())
+	return buildRouteHosts(ings, target, c.classInfo()), nil
 }

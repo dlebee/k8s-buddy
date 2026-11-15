@@ -196,6 +196,16 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 			c.ensureLazy(spec.resource)
 		}
 		if !c.synced(spec.resource) {
+			// Helm falls back to label-based discovery on workloads when the
+			// storage secret watch is denied — if those are synced, serve
+			// what we can derive without the secret.
+			if q.Kind == "helm" && c.helmWorkloadFallbackReady() {
+				for _, r := range listHelm(c) {
+					r.Cluster = c.name
+					rows = append(rows, r)
+				}
+				continue
+			}
 			out.Unavailable = append(out.Unavailable, unavailable(c, spec.resource))
 			continue
 		}
