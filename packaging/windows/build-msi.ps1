@@ -35,4 +35,6 @@ wix build (Join-Path $root 'packaging\windows\k8s-buddy.wxs') `
 	-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" `
 	-o $Out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+# WiX writes a debug database next to the MSI; it isn't something to ship.
+Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.wixpdb'))
 Write-Host "built $Out (MSI version $msiVersion)"
