@@ -22,6 +22,7 @@ Monitoring is read-only: it only lists and watches. The console runs `kubectl`, 
 | Node `NotReady`, Memory/Disk/PID pressure, cordoned | node conditions |
 | Node pool rolling to a new kubelet version / OS image | new values per pool, mixed versions per pool |
 | Control plane upgrade | `/version` polled every 5m |
+| Kubernetes version near or past end-of-life | control plane minor vs [endoflife.date](https://endoflife.date/kubernetes) (fetched once a day, cached; no cluster data is sent) |
 | Selected warning events | FailedMount, FailedAttachVolume, Evicted, SystemOOM, BackoffLimitExceeded, SyncLoadBalancerFailed, … |
 | Cluster unreachable | connection / auth failures |
 | Scheduled VM maintenance (freeze / reboot / redeploy) | node-problem-detector events (AKS and others) |

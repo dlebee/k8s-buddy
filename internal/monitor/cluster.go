@@ -235,6 +235,38 @@ func (c *cluster) onVersion(v string) {
 			Hint:     kubectl(c.name, "", "version"),
 		})
 	}
+	c.checkEOL(v)
+}
+
+func (c *cluster) checkEOL(v string) {
+	e, ok := lookupEOL(v)
+	if !ok {
+		c.store.ResolveMissing(c.name, "k8s-eol", nil)
+		return
+	}
+	now := time.Now()
+	days := int(e.EOL.Sub(now).Hours() / 24)
+	if days > 60 {
+		c.store.ResolveMissing(c.name, "k8s-eol", nil)
+		return
+	}
+	sev := alert.Notice
+	title := fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s)", e.Minor, days, e.EOL.Format("2006-01-02"))
+	if days < 0 {
+		sev = alert.Warning
+		title = fmt.Sprintf("Kubernetes %s is past upstream EOL (%s)", e.Minor, e.EOL.Format("2006-01-02"))
+	}
+	detail := "Latest patch upstream is " + e.LatestPatch + ". Managed distros (EKS/GKE/AKS) usually extend support — check your provider."
+	c.store.Observe(alert.Alert{
+		Key:      "k8s-eol/" + e.Minor,
+		Source:   "k8s-eol",
+		Cluster:  c.name,
+		Severity: sev,
+		Category: "upgrade",
+		Title:    title,
+		Detail:   detail,
+		Hint:     kubectl(c.name, "", "version"),
+	})
 }
 
 func (c *cluster) onFailure(err error) {

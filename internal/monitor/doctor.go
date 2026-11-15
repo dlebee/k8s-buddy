@@ -34,6 +34,7 @@ var doctorChecks = []DoctorCheck{
 	{"unused-pvc", "Unused volume claims", "Bound claims that no pod mounts."},
 	{"leftover-pods", "Leftover failed pods", "Evicted or failed pods that were never cleaned up."},
 	{"naked-pods", "Pods without a controller", "Pods not managed by a Deployment, Job, etc. won't come back if their node dies."},
+	{"k8s-eol", "Kubernetes version EOL", "Control plane minor version is past, or close to, upstream end-of-life per endoflife.date."},
 }
 
 type Finding struct {
@@ -362,6 +363,23 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 		add("leftover-pods", alert.Info, "Pod", ns, fmt.Sprintf("%d pod(s)", len(names)),
 			truncate(strings.Join(names, ", "), 240),
 			kubectl(c.name, ns, "delete pods --field-selector=status.phase=Failed"))
+	}
+
+	c.mu.Lock()
+	ver := c.version
+	c.mu.Unlock()
+	if e, ok := lookupEOL(ver); ok {
+		days := int(time.Until(e.EOL).Hours() / 24)
+		switch {
+		case days < 0:
+			add("k8s-eol", alert.Warning, "Cluster", "", c.name,
+				fmt.Sprintf("Kubernetes %s is past upstream EOL (%s) · latest patch %s", e.Minor, e.EOL.Format("2006-01-02"), e.LatestPatch),
+				"Managed distros (EKS/GKE/AKS) may still support this — check your provider.")
+		case days < 60:
+			add("k8s-eol", alert.Notice, "Cluster", "", c.name,
+				fmt.Sprintf("Kubernetes %s reaches upstream EOL in %d days (%s) · latest patch %s", e.Minor, days, e.EOL.Format("2006-01-02"), e.LatestPatch),
+				"Managed distros (EKS/GKE/AKS) may extend support.")
+		}
 	}
 	return out, problems
 }
