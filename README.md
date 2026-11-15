@@ -93,6 +93,11 @@ kubeconfig ─▶ manager ─▶ one monitor per context (client-go informers + 
 - Windows (WebView2 + tray) and Linux shells. Everything except `internal/ui/ui_darwin.m` is portable; CI builds and tests on macOS, Windows and Linux, and `--headless` already works everywhere.
 - Launch at login, notifications, more doctor checks, custom rules.
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md). First-time contributors sign a
+short [CLA](CLA.md) by posting a comment on their pull request.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
