@@ -35,12 +35,15 @@ type Server struct {
 	settings *config.Store
 	mgr      *monitor.Manager
 	actions  Actions
+	forwards *forwarder
 }
 
 func New(store *alert.Store, settings *config.Store, mgr *monitor.Manager) *Server {
 	var b [24]byte
 	_, _ = rand.Read(b[:])
-	return &Server{token: hex.EncodeToString(b[:]), store: store, settings: settings, mgr: mgr}
+	s := &Server{token: hex.EncodeToString(b[:]), store: store, settings: settings, mgr: mgr}
+	s.forwards = &forwarder{env: s.kubectlEnv}
+	return s
 }
 
 func (s *Server) SetActions(a Actions) { s.actions = a }
@@ -126,6 +129,15 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, d)
 	})
+	mux.HandleFunc("GET /api/object", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		d, err := s.mgr.Object(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, d)
+	})
 	mux.HandleFunc("POST /api/exec", s.handleExec)
 	mux.HandleFunc("GET /api/ingress-routes", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -138,6 +150,17 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/azure", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.AzureStatus()) })
 	mux.HandleFunc("POST /api/azure/login", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.StartAzureLogin()) })
+	mux.HandleFunc("GET /api/portforwards", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.forwards.snapshot()) })
+	mux.HandleFunc("POST /api/portforwards", s.handleForwardStart)
+	mux.HandleFunc("DELETE /api/portforwards/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.forwards.stop(r.PathValue("id")) {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /api/portforwards/{id}/open", s.handleForwardOpen)
+	mux.HandleFunc("POST /api/shell", s.handleShell)
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
 	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

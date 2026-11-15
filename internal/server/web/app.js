@@ -1,4 +1,6 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
+import { renderSummary } from '/static/summary.js';
+import { mountForwardsDock } from '/static/forwards.js';
 
 const view = document.getElementById('view');
 const VIEWS = ['overview', 'resources', 'alerts', 'history', 'doctor', 'settings'];
@@ -62,6 +64,7 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('on');
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 1400);
 }
+window.buddyToast = toast;
 async function copyCmd(text) { await copy(text); toast('Copied to clipboard'); }
 const healthPill = (h, text) => `<span class="pill ${h === 'ok' ? 'ok' : h === 'bad' ? 'bad' : h === 'warn' ? 'warn' : ''}">${esc(text)}</span>`;
 const clusterHealth = (c) => c.status === 'excluded' ? 'neutral' : c.status === 'error' ? 'bad' : c.status === 'signin' ? 'warn'
@@ -450,34 +453,68 @@ function routingTab(cluster, namespace, name) {
   } };
 }
 
-// objectDrawer opens describe + details + console for something that points at a Kubernetes object.
+const objectQuery = (kind, t) => new URLSearchParams({ cluster: t.cluster, kind, namespace: t.namespace || '', name: t.name });
+
+// summaryTab leads every drawer: a per-kind summary built from the live object (see summary.js).
+function summaryTab(kindId, target, { row, detail, fallback }) {
+  const tab = { label: 'Summary' };
+  tab.load = async () => {
+    const [d, events] = await Promise.all([
+      api('/api/object?' + objectQuery(kindId, target)).catch((e) => ({ error: e })),
+      detail ? Promise.resolve(detail.events) : api('/api/resource?' + objectQuery(kindId, target)).then((x) => x.events, () => []),
+    ]);
+    if (d.error) {
+      const msg = d.error.message.replace(/^\d+ /, '');
+      const gone = /not found/i.test(msg), denied = /forbidden/i.test(msg);
+      const note = `<p class="muted">${gone ? '🔍 This object no longer exists.' : denied ? "🔒 You don't have access to read this object." : esc(msg)}</p>`;
+      return fallback ? note + fallback : `<div class="empty">${note}</div>`;
+    }
+    const res = renderSummary(kindId, d, { row, events, open: openRelated, fallback });
+    tab.bind = res.bind;
+    return res.html;
+  };
+  return tab;
+}
+
+const singular = (l) => l.replace(/ies$/, 'y').replace(/(sses|ches|shes|xes)$/, (m) => m.slice(0, -2)).replace(/s$/, '');
+
+// openRelated opens the drawer for an object linked from a summary (a pod, node, volume...).
+function openRelated(kind, t) {
+  resourceDrawer(kind, { cluster: t.cluster, namespace: t.namespace || '', name: t.name, health: '', status: '', cols: [] }, [])
+    .catch((e) => toast(e.message.replace(/^\d+ /, '').slice(0, 140)));
+}
+
+// objectDrawer opens summary + describe + details + console for something that points at a Kubernetes
+// object; ingresses lead with the routing map.
 function objectDrawer({ eyebrow, title, details, cluster, namespace, kind, name, commands }) {
   const kindId = KIND_IDS[kind];
   const tabs = [];
   if (kind === 'Ingress' && name) tabs.push(routingTab(cluster, namespace, name));
-  if (kindId && name) tabs.push(describeTab(kindId, { cluster, namespace, name }));
+  if (kindId && name) {
+    const target = { cluster, namespace, name };
+    tabs.push(summaryTab(kindId, target, { fallback: details }), describeTab(kindId, target));
+  }
   tabs.push({ label: 'Details', html: details });
   tabs.push(consoleTab(commands, cluster, namespace));
   openDrawer({ eyebrow, title, tabs });
 }
 
 async function resourceDrawer(kind, r, columns) {
-  const d = await api('/api/resource?' + new URLSearchParams({ cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }));
-  const kv = [['Status', healthPill(r.health, r.status)], ['Cluster', esc(r.cluster)], ...(r.namespace ? [['Namespace', esc(r.namespace)]] : []),
-    ...columns.map((c, i) => [esc(c), esc(r.cols[i] || '–')]), ['Created', `${new Date(r.created).toLocaleString()} (${ago(r.created)} ago)`]];
-  const summary = `<dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+  const d = await api('/api/resource?' + objectQuery(kind, r));
+  const kv = [...(r.status ? [['Status', healthPill(r.health, r.status)]] : []), ['Cluster', esc(r.cluster)], ...(r.namespace ? [['Namespace', esc(r.namespace)]] : []),
+    ...columns.map((c, i) => [esc(c), esc(r.cols[i] || '–')]), ...(r.created ? [['Created', `${new Date(r.created).toLocaleString()} (${ago(r.created)} ago)`]] : [])];
+  const generic = `<dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
     <div class="section-title" style="margin-top:6px">Recent warnings</div>
     ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
       : '<p class="muted">No warning events for this object.</p>'}`;
-  const tabs = [];
+  const tabs = [summaryTab(kind, r, { row: r.status ? r : null, detail: d, fallback: generic })];
   if (kind !== 'helm') tabs.push(describeTab(kind, r));
   tabs.push(
-    { label: 'Summary', html: summary },
     { label: kind === 'helm' ? 'Release' : 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },
     consoleTab(d.commands, r.cluster, r.namespace),
   );
   openDrawer({
-    eyebrow: `<span class="pill accent">${esc(kindLabel(kind).replace(/e?s$/, '').replace(/ie$/, 'y'))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
+    eyebrow: `<span class="pill accent">${esc(singular(kindLabel(kind)))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
     title: r.name,
     tabs,
   });
@@ -738,4 +775,5 @@ setInterval(() => {
 
 refreshBadges();
 refreshAzure();
+mountForwardsDock();
 render();
