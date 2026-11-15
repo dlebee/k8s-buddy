@@ -16,3 +16,35 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
       - run: go build -o k8s-buddy-bin ./cmd/k8s-buddy
+
+  windows-msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: Build exe and MSI (unsigned)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CGO_ENABLED = '0'
+          go build -ldflags "-H=windowsgui -X main.version=0.0.0-ci" -o build/amd64/k8s-buddy.exe ./cmd/k8s-buddy
+          & ./packaging/windows/build-msi.ps1 -Version 0.0.0-ci -Arch x64 -BinDir build/amd64 -Out dist/k8s-buddy-ci-x64.msi
+      - name: Install, check and uninstall the MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path dist/k8s-buddy-ci-x64.msi).Path
+          $p = Start-Process msiexec -ArgumentList "/i `"$msi`" /qn /l*v install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 50; throw "install failed: $($p.ExitCode)" }
+          $exe = Join-Path $env:ProgramFiles 'k8s-buddy\k8s-buddy.exe'
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $lnk = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\k8s-buddy.lnk'
+          if (-not (Test-Path $lnk)) { throw "missing Start menu shortcut" }
+          $run = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run').'k8s-buddy'
+          if ($run -notlike '*k8s-buddy.exe*') { throw "start-at-login entry missing: $run" }
+          Write-Host "installed OK: $exe, shortcut, autostart"
+          $p = Start-Process msiexec -ArgumentList "/x `"$msi`" /qn" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          if (Test-Path $exe) { throw "uninstall left $exe behind" }
+          Write-Host "uninstalled cleanly"

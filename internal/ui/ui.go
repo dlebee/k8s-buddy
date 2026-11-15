@@ -70,6 +70,11 @@ func (h *headless) ShowOverview(tab string) {
 	if t := sanitizeTab(tab); t != "" {
 		u += "#" + t
 	}
+	_ = OpenInBrowser(u)
+}
+
+// OpenInBrowser opens u in the user's default browser.
+func OpenInBrowser(u string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -79,7 +84,7 @@ func (h *headless) ShowOverview(tab string) {
 	default:
 		cmd = exec.Command("xdg-open", u)
 	}
-	_ = cmd.Start()
+	return cmd.Start()
 }
 
 func (h *headless) Quit() {

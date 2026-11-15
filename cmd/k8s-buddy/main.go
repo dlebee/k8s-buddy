@@ -35,6 +35,7 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig path (overrides settings, $KUBECONFIG and ~/.kube/config)")
 	dataDir := flag.String("data-dir", "", "settings/history directory (default: OS config dir)/k8s-buddy")
 	verbose := flag.Bool("v", false, "debug logging")
+	openOverview := flag.Bool("open", false, "open the overview once running (or in the already running instance)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("k8s-buddy", version)
@@ -49,13 +50,13 @@ func main() {
 	// client-go is chatty about watch errors; we surface those per cluster in the UI instead.
 	klog.SetLogger(logr.Discard())
 
-	if err := run(log, *headless, *kubeconfig, *dataDir); err != nil {
+	if err := run(log, *headless, *openOverview, *kubeconfig, *dataDir); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
+func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir string) error {
 	inheritLoginShellPath(log)
 
 	if dataDir == "" {
@@ -64,6 +65,13 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 			return err
 		}
 		dataDir = d
+	}
+	if url, ok := runningInstance(dataDir); ok {
+		log.Info("k8s-buddy is already running", "overview", url)
+		if openOverview {
+			return ui.OpenInBrowser(url)
+		}
+		return nil
 	}
 	settings, err := config.Open(dataDir)
 	if err != nil {
@@ -104,8 +112,10 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 	}
 	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = httpSrv.Serve(ln) }()
+	releaseInstance := claimInstance(dataDir, srv.URL("overview"))
 
 	quit := func() {
+		releaseInstance()
 		srv.StopForwards()
 		cancel()
 		if err := store.Save(historyPath); err != nil {
@@ -146,6 +156,12 @@ func run(log *slog.Logger, headless bool, kubeconfig, dataDir string) error {
 		driver.Quit()
 	}()
 
+	if openOverview {
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			driver.ShowOverview("")
+		}()
+	}
 	log.Info("k8s-buddy started", "version", version, "data", dataDir, "overview", srv.URL("overview"))
 	driver.Run()
 	return nil

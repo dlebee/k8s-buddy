@@ -149,7 +149,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           foreach ($arch in 'amd64', 'arm64') {
             $env:GOOS = 'windows'; $env:GOARCH = $arch; $env:CGO_ENABLED = '0'
-            go build -trimpath -ldflags "-s -w -X main.version=$env:VERSION" -o "build/$arch/k8s-buddy.exe" ./cmd/k8s-buddy
+            # windowsgui: no console window pops up when launched from the Start menu or at login.
+            go build -trimpath -ldflags "-s -w -H=windowsgui -X main.version=$env:VERSION" -o "build/$arch/k8s-buddy.exe" ./cmd/k8s-buddy
             if ($LASTEXITCODE -ne 0) { throw "build failed for $arch" }
           }
 
@@ -189,13 +190,26 @@ jobs:
         run: |
           foreach ($arch in 'amd64', 'arm64') { & ./packaging/windows/sign-file.ps1 "build/$arch/k8s-buddy.exe" }
 
-      - name: Package
+      - name: Build MSIs
+        shell: pwsh
+        run: |
+          foreach ($pair in @(@('amd64', 'x64'), @('arm64', 'arm64'))) {
+            & ./packaging/windows/build-msi.ps1 -Version $env:VERSION -Arch $pair[1] -BinDir "build/$($pair[0])" `
+              -Out "dist/k8s-buddy-$env:VERSION-windows-$($pair[1]).msi"
+          }
+
+      - name: Sign MSIs
+        if: env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          foreach ($msi in Get-ChildItem dist -Filter *.msi) { & ./packaging/windows/sign-file.ps1 $msi.FullName }
+
+      - name: Package zips
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
           foreach ($arch in 'amd64', 'arm64') {
-            Copy-Item LICENSE, NOTICE, README.md "build/$arch/"
+            Copy-Item LICENSE, NOTICE, README.md "build/$arch/" -Force
             Compress-Archive -Path "build/$arch/*" -DestinationPath "dist/k8s-buddy-$env:VERSION-windows-$arch.zip"
           }
 
