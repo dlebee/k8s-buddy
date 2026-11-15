@@ -2,9 +2,10 @@ import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/stati
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
 import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from '/static/scope.js';
+import { mountExposure } from '/static/exposure.js';
 
 const view = document.getElementById('view');
-const VIEWS = ['overview', 'resources', 'alerts', 'history', 'doctor', 'settings'];
+const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'settings'];
 const HEALTH_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
 const SEV_PILL = { critical: 'bad', warning: 'warn', notice: 'notice', info: '' };
 let current = null;
@@ -36,8 +37,9 @@ async function render() {
   subnav.hidden = r.name !== 'resources';
   current = r.name;
   closeDrawer();
+  exposureHandle?.destroy(); exposureHandle = null;
   try {
-    await ({ overview, resources, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings })[r.name](r.params);
+    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings })[r.name](r.params);
   } catch (e) {
     view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
   }
@@ -95,6 +97,29 @@ async function loadClusters() { clustersCache = await api('/api/clusters'); retu
 
 function head(title, sub, right = '') {
   return `<div class="page-head"><div><h1>${title}</h1>${sub ? `<p>${sub}</p>` : ''}</div><div class="spacer"></div>${right}</div>`;
+}
+
+// ---------- exposure ----------
+let exposureHandle = null;
+async function exposure(params) {
+  const ov = clustersCache || await loadClusters();
+  if (current !== 'exposure') return;
+  const monitored = ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name);
+  pruneClusters(monitored);
+  view.innerHTML = `
+    ${head('Exposure', 'What each cluster exposes to the outside and where that traffic lands: entry point → ingress → service → workload → pod.', '<span data-pick="clusters"></span>')}
+    ${scopeChip(monitored.length)}
+    <div id="xp"></div>`;
+  mountPickers(view, monitored, []);
+  exposureHandle = mountExposure(view.querySelector('#xp'), {
+    clusters: monitored.filter((n) => inScope('clusters', n)),
+    params,
+    onState: (p) => {
+      const qs = new URLSearchParams(Object.entries(p).filter(([, v]) => v)).toString();
+      history.replaceState(null, '', '#exposure' + (qs ? '?' + qs : ''));
+    },
+    openResource: (kind, t) => openRelated(kind, t),
+  });
 }
 
 // ---------- overview ----------
@@ -813,3 +838,11 @@ refreshBadges();
 refreshAzure();
 mountForwardsDock();
 render();
+
+// Dev mode (K8S_BUDDY_WEB_DIR set): reload the page when a web file changes. Release builds answer 404
+// here, so this stops after one request.
+(async () => {
+  let v;
+  try { v = await api('/api/dev/version'); } catch { return; }
+  setInterval(async () => { try { if ((await api('/api/dev/version')) !== v) location.reload(); } catch { /* app restarting */ } }, 1000);
+})();

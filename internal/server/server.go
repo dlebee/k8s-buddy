@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,20 @@ func (s *Server) URL(page string) string {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	static, _ := fs.Sub(webFS, "web")
-	files := http.FileServerFS(static)
+	// Dev mode: K8S_BUDDY_WEB_DIR serves the web UI from disk, uncached, and pages reload when it changes.
+	devDir := os.Getenv("K8S_BUDDY_WEB_DIR")
+	if devDir != "" {
+		static = os.DirFS(devDir)
+	}
+	var files http.Handler = http.FileServerFS(static)
+	if devDir != "" {
+		fsrv := files
+		files = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			fsrv.ServeHTTP(w, r)
+		})
+		mux.HandleFunc("GET /api/dev/version", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, webVersion(static)) })
+	}
 	for _, p := range []string{"character", "panel", "overview"} {
 		mux.HandleFunc("GET /"+p, func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFileFS(w, r, static, p+".html")
@@ -103,6 +117,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/clusters", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.Overview()) })
+	mux.HandleFunc("GET /api/exposure", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.Exposure(listParam(r, "cluster"))) })
 	mux.HandleFunc("GET /api/kinds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, monitor.Kinds()) })
 	mux.HandleFunc("GET /api/resources", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -312,4 +327,21 @@ func listParam(r *http.Request, key string) []string {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// webVersion changes whenever a file under the dev web directory is modified, added or removed.
+func webVersion(fsys fs.FS) string {
+	var latest time.Time
+	n := 0
+	_ = fs.WalkDir(fsys, ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		n++
+		return nil
+	})
+	return strconv.FormatInt(latest.UnixNano(), 10) + "-" + strconv.Itoa(n)
 }
