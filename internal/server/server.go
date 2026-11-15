@@ -126,6 +126,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, d)
 	})
+	mux.HandleFunc("POST /api/exec", s.handleExec)
 	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
 	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

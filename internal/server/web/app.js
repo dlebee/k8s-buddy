@@ -293,6 +293,7 @@ function openDrawer({ eyebrow, title, tabs }) {
     }
     body.innerHTML = t.html;
     bind();
+    t.bind?.(body);
   };
   tabsEl.querySelectorAll('button').forEach((b) => b.onclick = () => show(+b.dataset.i));
   show(0);
@@ -316,6 +317,84 @@ async function describeText(kind, r) {
   return text;
 }
 
+const RUNNABLE = /^(kubectl|helm|cmctl)\s/;
+const consoleHistory = [];
+
+// consoleTab renders suggested commands with Run buttons plus a free-form prompt; output stays in the tab.
+function consoleTab(cmds, cluster, namespace) {
+  const prefill = `kubectl --context ${cluster}${namespace ? ' -n ' + namespace : ''} `;
+  const lines = cmds.filter((c) => c.trim());
+  return {
+    label: 'Console',
+    html: `<p class="muted" style="margin-top:0">Runs on this Mac with your kubeconfig. Read-only commands run right away; anything that changes the cluster asks first.</p>
+      ${lines.map((c) => RUNNABLE.test(c)
+        ? `<div class="cmd"><pre class="code">${esc(c)}</pre><button class="btn sm" data-copy="${esc(c)}">Copy</button><button class="btn sm primary" data-run="${esc(c)}">Run</button></div>`
+        : `<p class="muted">${esc(c)}</p>`).join('')}
+      <div class="console">
+        <div class="console-log" id="cLog"></div>
+        <form class="console-prompt" id="cForm"><span>$</span><input id="cIn" value="${esc(prefill)}" spellcheck="false" autocomplete="off"><button class="btn sm primary">Run</button></form>
+      </div>`,
+    bind(root) {
+      const log = root.querySelector('#cLog');
+      const input = root.querySelector('#cIn');
+      let hist = consoleHistory.length;
+      const run = async (command) => {
+        const block = document.createElement('div');
+        block.className = 'console-block';
+        block.innerHTML = `<div class="console-cmd">$ ${esc(command)}</div><pre class="console-out">running…</pre>`;
+        log.appendChild(block);
+        block.scrollIntoView({ block: 'nearest' });
+        consoleHistory.push(command); hist = consoleHistory.length;
+        const out = block.querySelector('.console-out');
+        const exec = (confirm) => api('/api/exec', { method: 'POST', body: JSON.stringify({ command, confirm }) });
+        try {
+          let res = await exec(false);
+          if (res.needsConfirm) {
+            if (!window.confirm(`${res.confirmReason}\n\n${command}\n\nRun it?`)) { out.textContent = 'cancelled'; out.classList.add('muted'); return; }
+            res = await exec(true);
+          }
+          out.textContent = res.error ? res.error : (res.output || '(no output)') + (res.truncated ? '\n… output truncated' : '');
+          block.querySelector('.console-cmd').insertAdjacentHTML('beforeend',
+            `<span class="console-meta ${res.exitCode === 0 ? 'ok' : 'bad'}">${res.error && res.exitCode === -1 ? 'blocked' : 'exit ' + res.exitCode}${res.durationMs ? ' · ' + (res.durationMs / 1000).toFixed(1) + 's' : ''}</span>`);
+          if (res.exitCode !== 0) out.classList.add('bad');
+        } catch (e) { out.textContent = e.message; out.classList.add('bad'); }
+        block.scrollIntoView({ block: 'nearest' });
+      };
+      root.querySelectorAll('[data-run]').forEach((b) => b.onclick = () => run(b.dataset.run));
+      root.querySelector('#cForm').onsubmit = (e) => { e.preventDefault(); const c = input.value.trim(); if (c) run(c); };
+      input.onkeydown = (e) => {
+        if (e.key === 'ArrowUp' && hist > 0) { input.value = consoleHistory[--hist]; e.preventDefault(); }
+        if (e.key === 'ArrowDown' && hist < consoleHistory.length) { input.value = consoleHistory[++hist] ?? prefill; e.preventDefault(); }
+      };
+    },
+  };
+}
+
+// Maps an object kind (as found on alerts and doctor findings) to a describable resource id.
+const KIND_IDS = {
+  Pod: 'pods', Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets', ReplicaSet: 'cr:apps/replicasets',
+  Job: 'jobs', CronJob: 'cronjobs', Service: 'services', Ingress: 'ingresses', PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
+  Node: 'nodes', ConfigMap: 'configmaps', HorizontalPodAutoscaler: 'hpas', PodDisruptionBudget: 'pdbs',
+  Certificate: 'cr:cert-manager.io/certificates', Issuer: 'cr:cert-manager.io/issuers', ClusterIssuer: 'cr:cert-manager.io/clusterissuers',
+};
+
+function describeTab(kindId, target) {
+  return { label: 'Describe', load: async () => {
+    const text = await describeText(kindId, target);
+    return `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(text)}">Copy</button></div><pre class="code yaml">${esc(text)}</pre>`;
+  } };
+}
+
+// objectDrawer opens describe + details + console for something that points at a Kubernetes object.
+function objectDrawer({ eyebrow, title, details, cluster, namespace, kind, name, commands }) {
+  const kindId = KIND_IDS[kind];
+  const tabs = [];
+  if (kindId && name) tabs.push(describeTab(kindId, { cluster, namespace, name }));
+  tabs.push({ label: 'Details', html: details });
+  tabs.push(consoleTab(commands, cluster, namespace));
+  openDrawer({ eyebrow, title, tabs });
+}
+
 async function resourceDrawer(kind, r, columns) {
   const d = await api('/api/resource?' + new URLSearchParams({ cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }));
   const kv = [['Status', healthPill(r.health, r.status)], ['Cluster', esc(r.cluster)], ...(r.namespace ? [['Namespace', esc(r.namespace)]] : []),
@@ -325,16 +404,11 @@ async function resourceDrawer(kind, r, columns) {
     ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
       : '<p class="muted">No warning events for this object.</p>'}`;
   const tabs = [];
-  if (kind !== 'helm') {
-    tabs.push({ label: 'Describe', load: async () => {
-      const text = await describeText(kind, r);
-      return `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(text)}">Copy</button></div><pre class="code yaml">${esc(text)}</pre>`;
-    } });
-  }
+  if (kind !== 'helm') tabs.push(describeTab(kind, r));
   tabs.push(
     { label: 'Summary', html: summary },
     { label: kind === 'helm' ? 'Release' : 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },
-    { label: 'Commands', html: cmdBlock(d.commands) },
+    consoleTab(d.commands, r.cluster, r.namespace),
   );
   openDrawer({
     eyebrow: `<span class="pill accent">${esc(kindLabel(kind).replace(/e?s$/, '').replace(/ie$/, 'y'))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
@@ -347,8 +421,8 @@ function eventDrawer(r) {
   openDrawer({
     eyebrow: `<span class="pill warn">Warning event</span>${esc(r.cluster)} · ${esc(r.namespace)}`,
     title: r.status + ' · ' + r.cols[0],
-    tabs: [{ label: 'Summary', html: `<dl class="kv"><dt>Object</dt><dd>${esc(r.cols[0])}</dd><dt>Count</dt><dd>${esc(r.cols[2])}</dd><dt>Last seen</dt><dd>${esc(r.cols[3])} ago</dd></dl><pre class="code">${esc(r.cols[1])}</pre>
-      <div class="section-title">Commands</div>${cmdBlock([`kubectl --context ${r.cluster} -n ${r.namespace} describe ${r.cols[0]}`])}` }],
+    tabs: [{ label: 'Summary', html: `<dl class="kv"><dt>Object</dt><dd>${esc(r.cols[0])}</dd><dt>Count</dt><dd>${esc(r.cols[2])}</dd><dt>Last seen</dt><dd>${esc(r.cols[3])} ago</dd></dl><pre class="code">${esc(r.cols[1])}</pre>` },
+      consoleTab([`kubectl --context ${r.cluster} -n ${r.namespace} describe ${r.cols[0]}`], r.cluster, r.namespace)],
   });
 }
 
@@ -363,23 +437,39 @@ function alertRow(a) {
       ${a.detail ? `<div class="detail">${esc(a.detail)}</div>` : ''}
     </div>
     <div class="actions">
-      ${a.hint ? `<button class="btn sm" data-act="cmd">Commands</button>` : ''}
+      <button class="btn sm primary" data-act="open">Open</button>
       ${!a.resolved ? `<button class="btn sm" data-act="ack">Snooze</button>` : ''}
       <button class="btn sm" data-act="mute" title="Never show this exact alert again">Mute</button>
     </div></div>`;
 }
 
+function alertDrawer(a) {
+  const details = `<dl class="kv">
+      <dt>Severity</dt><dd><span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span></dd>
+      <dt>Cluster</dt><dd>${esc(a.cluster)}</dd>${a.namespace ? `<dt>Namespace</dt><dd>${esc(a.namespace)}</dd>` : ''}
+      ${a.kind ? `<dt>Object</dt><dd>${esc(a.kind)}${a.name ? ' / ' + esc(a.name) : ''}</dd>` : ''}
+      <dt>First seen</dt><dd>${new Date(a.firstSeen).toLocaleString()} (${ago(a.firstSeen)} ago)</dd>
+      <dt>Last seen</dt><dd>${ago(a.lastSeen)} ago${a.count > 1 ? ` · ×${a.count}` : ''}</dd>
+      <dt>State</dt><dd>${a.resolved ? 'resolved ' + ago(a.resolvedAt) + ' ago' : a.ackedAt ? 'snoozed' : 'open'}</dd>
+    </dl>
+    ${a.detail ? `<pre class="code">${esc(a.detail)}</pre>` : ''}
+    <p class="muted mono" style="margin-top:14px">key: ${esc(a.key)}</p>`;
+  objectDrawer({
+    eyebrow: `<span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span>${esc(a.cluster)}${a.namespace ? ' · ' + esc(a.namespace) : ''}`,
+    title: a.title, details, cluster: a.cluster, namespace: a.namespace, kind: a.kind, name: a.name,
+    commands: (a.hint || '').split('\n'),
+  });
+}
+
 function bindAlertRows(root, alerts, after = render) {
   root.querySelectorAll('.alert[data-id]').forEach((el) => {
     const a = alerts.find((x) => x.id === el.dataset.id);
+    el.style.cursor = 'pointer';
+    el.onclick = () => alertDrawer(a);
     el.querySelectorAll('[data-act]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       const act = b.dataset.act;
-      if (act === 'cmd') {
-        openDrawer({ eyebrow: `<span class="pill ${SEV_PILL[a.severity]}">${a.severity}</span>${esc(a.cluster)}`, title: a.title,
-          tabs: [{ label: 'What to run', html: `${a.detail ? `<p>${esc(a.detail)}</p>` : ''}${cmdBlock(a.hint.split('\n'))}<p class="muted mono" style="margin-top:14px">key: ${esc(a.key)}</p>` }] });
-        return;
-      }
+      if (act === 'open') return alertDrawer(a);
       await post(`/api/alerts/${a.id}/${act}`);
       toast(act === 'ack' ? 'Snoozed' : 'Muted — undo in Settings');
       after();
@@ -450,12 +540,22 @@ async function doctor() {
           <div><div class="t">${esc(c.title)}</div><div class="d">${esc(c.description)}</div></div><span class="chev">›</span></summary>
         ${list.map((x) => `<div class="finding"><div class="what">${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}</span></div>
           <div class="msg">${esc(x.message)}</div>
-          ${x.hint ? `<div class="act"><button class="btn sm" data-copy="${esc(x.hint)}">Copy kubectl</button></div>` : ''}</div>`).join('')}
+          <div class="act"><button class="btn sm primary" data-finding="${rep.findings.indexOf(x)}">Open</button></div></div>`).join('')}
       </details>`;
     }).join('') : ''}`;
   view.querySelector('#runDoctor').onclick = async () => { await post('/api/doctor'); doctor(); };
   view.querySelector('#dCluster')?.addEventListener('change', (e) => go('doctor', { cluster: e.target.value }));
   view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+  view.querySelectorAll('[data-finding]').forEach((b) => b.onclick = () => {
+    const x = rep.findings[+b.dataset.finding];
+    const check = rep.checks.find((c) => c.id === x.check);
+    objectDrawer({
+      eyebrow: `<span class="pill ${SEV_PILL[x.severity]}">${esc(check?.title || x.check)}</span>${esc(x.cluster)}${x.namespace ? ' · ' + esc(x.namespace) : ''}`,
+      title: x.name, cluster: x.cluster, namespace: x.namespace, kind: x.kind, name: x.check === 'leftover-pods' ? '' : x.name,
+      details: `<p>${esc(x.message)}</p>${check ? `<p class="muted">${esc(check.description)}</p>` : ''}`,
+      commands: [x.hint || ''],
+    });
+  });
   clearTimeout(doctorPoll);
   if (rep.running) doctorPoll = setTimeout(() => current === 'doctor' && doctor(), 1500);
 }
@@ -527,7 +627,7 @@ async function refreshBadges() {
 }
 const onChange = debounce(() => {
   refreshBadges();
-  if (current === 'alerts' || current === 'history') render();
+  if ((current === 'alerts' || current === 'history') && drawer.hidden) render();
 }, 600);
 stream({ summary: onChange });
 setInterval(() => {

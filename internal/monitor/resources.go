@@ -320,7 +320,7 @@ func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, 
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "logs "+name+" --all-containers --tail=200"))
 	} else if kind == "secrets" {
 		for _, k := range secretKeys[:min(len(secretKeys), 5)] {
-			d.Commands = append(d.Commands, kubectl(clusterName, ns, fmt.Sprintf("get secret %s -o jsonpath=%s | base64 -d", name, shellQuote("{.data."+strings.ReplaceAll(k, ".", `\.`)+"}"))))
+			d.Commands = append(d.Commands, kubectl(clusterName, ns, fmt.Sprintf("get secret %s -o go-template='{{index .data %q | base64decode}}'", name, k)))
 		}
 	} else if kind == "deployments" || kind == "statefulsets" || kind == "daemonsets" {
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "rollout status "+ref), kubectl(clusterName, ns, "rollout restart "+ref))

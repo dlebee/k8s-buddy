@@ -5,10 +5,10 @@ A little floating friend that watches **every Kubernetes context in your kubecon
 - **Floating buddy** — sits on top of your windows, bounces and shows a count when something new breaks. Click it for the alert history; drag it anywhere; right-click for the menu.
 - **Menu bar icon** — `⎈ 3` style count, overview, settings, show/hide the buddy.
 - **Multi-cluster overview** — health of all your clusters at a glance.
-- **Resources** — browse workloads, networking, storage (PVCs, PVs, storage classes), config (ConfigMaps, Secrets — values never loaded), Helm releases, nodes, events and **any custom resource** across all clusters. Every object has `kubectl describe` output, YAML and copy-ready commands.
+- **Resources** — browse workloads, networking, storage (PVCs, PVs, storage classes), config (ConfigMaps, Secrets — values never loaded), Helm releases, nodes, events and **any custom resource** across all clusters. Every object, alert and doctor finding opens with `kubectl describe` output, YAML and a built-in **console** to run the suggested commands.
 - **Doctor** — an on-demand checkup for things that are quietly wrong (dangling services and ingresses, PDBs that block upgrades, orphaned volumes, …).
 
-It is read-only: it only lists and watches.
+Monitoring is read-only: it only lists and watches. The console runs `kubectl`, `helm` and `cmctl` directly (no shell, no pipes, no interactive commands) with your kubeconfig, and asks before anything that changes a cluster.
 
 ## What it watches
 
