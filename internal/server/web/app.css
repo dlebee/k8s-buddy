@@ -293,4 +293,5 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ms-foot { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; }
 .scope-chip { display: inline-flex; align-items: center; gap: 10px; padding: 6px 12px; margin: -6px 0 16px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 600; }
 .scope-chip button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; font-weight: 600; padding: 0; }
-.page-head > .ms, .page-head > [data-pick] { align-self: center; }
+.ms + .ms { margin-left: 8px; }
+#fPickers { display: inline-flex; align-items: center; }
