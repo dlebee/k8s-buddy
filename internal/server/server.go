@@ -219,13 +219,21 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		if tok == "" {
 			tok = r.Header.Get("X-Buddy-Token")
 		}
-		isStatic := strings.HasPrefix(r.URL.Path, "/static/")
-		if !isStatic && subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) != 1 {
+		// Static files and the three page shells hold no data, so they load without the token (the
+		// pages drop it from the address bar and keep it in session storage); every API needs it.
+		public := strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/overview" || r.URL.Path == "/panel" || r.URL.Path == "/character"
+		if !public && subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
+		h := w.Header()
+		h.Set("Cache-Control", "no-store")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Frame-Options", "DENY")
+		// Only our own scripts run: a missed escape somewhere can't turn into script execution.
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

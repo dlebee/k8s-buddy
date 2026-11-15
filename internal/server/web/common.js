@@ -1,9 +1,23 @@
-export const TOKEN = new URLSearchParams(location.search).get('t') || '';
+// The API token arrives once in the page URL. Keep it in this tab's session storage and take it out
+// of the address bar so it never lands in browser history, then send it as a header.
+function takeToken() {
+  const params = new URLSearchParams(location.search);
+  let token = params.get('t') || '';
+  try {
+    if (token) sessionStorage.setItem('buddyToken', token);
+    else token = sessionStorage.getItem('buddyToken') || '';
+  } catch { /* storage unavailable: keep it in memory only */ }
+  if (params.has('t')) {
+    params.delete('t');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+  }
+  return token;
+}
+export const TOKEN = takeToken();
 
 export async function api(path, opts = {}) {
-  const u = new URL(path, location.origin);
-  u.searchParams.set('t', TOKEN);
-  const r = await fetch(u, opts);
+  const r = await fetch(new URL(path, location.origin), { ...opts, headers: { ...(opts.headers || {}), 'X-Buddy-Token': TOKEN } });
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.status === 204 ? null : r.json();
 }

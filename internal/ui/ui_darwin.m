@@ -18,6 +18,7 @@ static WKWebView *gOverviewView;
 static NSStatusItem *gStatus;
 static NSMenu *gMenu;
 static BOOL gDragging;
+static BOOL gInspectable;
 static NSTimeInterval gPanelAutoHiddenAt;
 
 static void togglePanel(void);
@@ -105,7 +106,7 @@ static WKWebView *makeWebView(NSRect frame, NSString *url, BOOL transparent) {
     WKWebView *wv = [[WKWebView alloc] initWithFrame:frame configuration:cfg];
     wv.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     if (transparent) [wv setValue:@NO forKey:@"drawsBackground"];
-    if (@available(macOS 13.3, *)) wv.inspectable = YES;
+    if (@available(macOS 13.3, *)) wv.inspectable = gInspectable;
     [wv loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:url]]];
     return wv;
 }
@@ -277,7 +278,8 @@ static void createMenus(void) {
     NSApp.mainMenu = main;
 }
 
-void buddy_run(const char *characterURL, const char *panelURL, const char *overviewURL, int showCharacter) {
+void buddy_run(const char *characterURL, const char *panelURL, const char *overviewURL, int showCharacter, int inspectable) {
+    gInspectable = inspectable != 0;
     @autoreleasepool {
         gCharURL = [[NSString alloc] initWithUTF8String:characterURL];
         gPanelURL = [[NSString alloc] initWithUTF8String:panelURL];

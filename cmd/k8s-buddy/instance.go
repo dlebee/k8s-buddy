@@ -41,7 +41,10 @@ func runningInstance(dataDir string) (string, bool) {
 func claimInstance(dataDir, url string) func() {
 	path := instancePath(dataDir)
 	b, _ := json.Marshal(instanceInfo{PID: os.Getpid(), URL: url})
-	if os.WriteFile(path, b, 0o600) != nil {
+	// Write-then-rename so an existing file's looser mode can't be inherited.
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) != nil || os.Chmod(tmp, 0o600) != nil || os.Rename(tmp, path) != nil {
+		os.Remove(tmp)
 		return func() {}
 	}
 	return func() {

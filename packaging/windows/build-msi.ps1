@@ -8,12 +8,34 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $wixVersion = '5.0.2'
+# Pinned hashes: WiX builds the MSI before it is signed, so a tampered toolchain would get signed too.
+$pinned = @{
+	"wix.$wixVersion.nupkg"                  = 'F30EF0C74E2A986126539C5780BE93AC24E8136EAF723B1937B26272703AE173'
+	"wixtoolset.ui.wixext.$wixVersion.nupkg" = '5EF2C707614B9F70B6BBADD2D4ABCB4124EFEE215E9B16BFBC80113079A604C7'
+}
+$feed = Join-Path ([IO.Path]::GetTempPath()) 'k8s-buddy-wix-feed'
+New-Item -ItemType Directory -Force -Path $feed | Out-Null
+foreach ($file in $pinned.Keys) {
+	$path = Join-Path $feed $file
+	if (-not (Test-Path $path)) {
+		$id = $file -replace "\.$([regex]::Escape($wixVersion))\.nupkg$", ''
+		Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$id/$wixVersion/$file" -OutFile $path
+	}
+	if ((Get-FileHash $path -Algorithm SHA256).Hash -ne $pinned[$file]) { throw "hash mismatch for $file" }
+}
 
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-	dotnet tool install --global wix --version $wixVersion | Out-Host
+	# Install only from the verified local feed.
+	$config = Join-Path $feed 'nuget.config'
+	"<configuration><packageSources><clear /><add key=`"local`" value=`"$feed`" /></packageSources></configuration>" | Set-Content $config
+	dotnet tool install --global wix --version $wixVersion --configfile $config | Out-Host
+	if ($LASTEXITCODE -ne 0) { throw 'wix install failed' }
 	$env:PATH += ";$env:USERPROFILE\.dotnet\tools"
 }
-wix extension add -g "WixToolset.UI.wixext/$wixVersion" | Out-Host
+$uiExt = Join-Path $feed 'ui-ext'
+Expand-Archive (Join-Path $feed "wixtoolset.ui.wixext.$wixVersion.nupkg") -DestinationPath $uiExt -Force
+$uiDll = Get-ChildItem $uiExt -Filter WixToolset.UI.wixext.dll -Recurse | Select-Object -First 1 -ExpandProperty FullName
+if (-not $uiDll) { throw 'WixToolset.UI.wixext.dll not found' }
 
 # MSI versions are numeric: 1.2.3-rc.1 installs as 1.2.3.
 $msiVersion = ($Version -replace '^(\d+\.\d+\.\d+).*$', '$1')
@@ -31,7 +53,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
 
 wix build (Join-Path $root 'packaging\windows\k8s-buddy.wxs') `
 	-arch $Arch `
-	-ext WixToolset.UI.wixext `
+	-ext $uiDll `
 	-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" `
 	-o $Out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }

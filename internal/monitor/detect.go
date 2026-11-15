@@ -397,6 +397,15 @@ func eventTime(e *corev1.Event) time.Time {
 	}
 }
 
+// eventHint suggests describing the event's object, unless its kind/name aren't plain Kubernetes
+// names: involvedObject isn't validated by the API server, so it must not reach a command line.
+func eventHint(cluster string, obj corev1.ObjectReference, target string) string {
+	if !validKind(obj.Kind) || !validObjectName(obj.Name) || (obj.Namespace != "" && !validObjectName(obj.Namespace)) {
+		return ""
+	}
+	return kubectl(cluster, obj.Namespace, "describe "+target)
+}
+
 func (c *cluster) onEvent(e *corev1.Event) {
 	sev, ok := eventReasons[e.Reason]
 	if !ok {
@@ -448,7 +457,7 @@ func (c *cluster) onEvent(e *corev1.Event) {
 		Kind:     kind, Namespace: obj.Namespace, Name: name,
 		Title:  title,
 		Detail: truncate(e.Message, 300),
-		Hint:   kubectl(c.name, obj.Namespace, "describe "+target),
+		Hint:   eventHint(c.name, obj, target),
 	})
 }
 

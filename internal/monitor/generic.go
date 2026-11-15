@@ -74,7 +74,9 @@ func genericFor(kind string) (genericKind, bool) {
 	}
 	if id, ok := strings.CutPrefix(kind, "cr:"); ok {
 		group, resource, ok := strings.Cut(id, "/")
-		if ok && resource != "" {
+		// The core group (Secrets, ConfigMaps, ...) has dedicated kinds with redaction; never reach it
+		// through the raw generic path.
+		if ok && resource != "" && group != "" {
 			return genericKind{label: resource, res: APIResource{Group: group, Resource: resource}}, true
 		}
 	}
@@ -456,9 +458,7 @@ func (m *Manager) genericDetail(clusterName, kind string, g genericKind, ns, nam
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return ResourceDetail{}, err
 	}
-	if md, ok := obj["metadata"].(map[string]any); ok {
-		delete(md, "managedFields")
-	}
+	redactObject(obj)
 	b, err := yaml.Marshal(obj)
 	if err != nil {
 		return ResourceDetail{}, err
@@ -482,6 +482,30 @@ func (m *Manager) genericDetail(clusterName, kind string, g genericKind, ns, nam
 		d.Commands = append(d.Commands, "cmctl status certificate "+name+" -n "+shellQuote(ns)+" --context "+shellQuote(clusterName))
 	}
 	return d, nil
+}
+
+// redactObject strips noise and anything that can carry secret values from a raw object: managed
+// fields, the last-applied annotation (which holds a full copy of what was applied), and Secret data.
+func redactObject(obj map[string]any) {
+	if md, ok := obj["metadata"].(map[string]any); ok {
+		delete(md, "managedFields")
+		if ann, ok := md["annotations"].(map[string]any); ok {
+			delete(ann, "kubectl.kubernetes.io/last-applied-configuration")
+		}
+	}
+	if obj["kind"] != "Secret" {
+		return
+	}
+	hidden := map[string]any{}
+	for _, field := range []string{"data", "stringData"} {
+		if m, ok := obj[field].(map[string]any); ok {
+			for k := range m {
+				hidden[k] = "<hidden by k8s-buddy>"
+			}
+		}
+		delete(obj, field)
+	}
+	obj["stringData"] = hidden
 }
 
 var builtinGroupKinds = map[string]schema.GroupKind{

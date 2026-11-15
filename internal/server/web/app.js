@@ -365,19 +365,21 @@ const cmdBlock = (cmds) => cmds.map((c) => `<div class="cmd"><pre class="code">$
 
 async function describeText(kind, r) {
   const u = new URL('/api/describe', location.origin);
-  Object.entries({ t: TOKEN, cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }).forEach(([k, v]) => u.searchParams.set(k, v));
-  const res = await fetch(u);
+  Object.entries({ cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }).forEach(([k, v]) => u.searchParams.set(k, v));
+  const res = await fetch(u, { headers: { 'X-Buddy-Token': TOKEN } });
   const text = await res.text();
   if (!res.ok) throw new Error(text.trim() || res.statusText);
   return text;
 }
 
 const RUNNABLE = /^(kubectl|helm|cmctl)\s/;
+// shQuote quotes a value for display in a command line (kubeconfig context names can contain anything).
+const shQuote = (s) => /^[A-Za-z0-9_.\/:@-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`;
 const consoleHistory = [];
 
 // consoleTab renders suggested commands with Run buttons plus a free-form prompt; output stays in the tab.
 function consoleTab(cmds, cluster, namespace) {
-  const prefill = `kubectl --context ${cluster}${namespace ? ' -n ' + namespace : ''} `;
+  const prefill = `kubectl --context ${shQuote(cluster)}${namespace ? ' -n ' + shQuote(namespace) : ''} `;
   const lines = cmds.filter((c) => c.trim());
   return {
     label: 'Console',
@@ -405,7 +407,15 @@ function consoleTab(cmds, cluster, namespace) {
         try {
           let res = await exec(false);
           if (res.needsConfirm) {
-            if (!window.confirm(`${res.confirmReason}\n\n${command}\n\nRun it?`)) { out.textContent = 'cancelled'; out.classList.add('muted'); return; }
+            // In-page confirmation: the Mac app's web view doesn't show window.confirm dialogs.
+            out.innerHTML = `<span class="console-warn">⚠ ${esc(res.confirmReason)}</span>
+              <span class="console-confirm"><button class="btn sm danger" data-yes>Run it</button><button class="btn sm" data-no>Cancel</button></span>`;
+            const ok = await new Promise((resolve) => {
+              out.querySelector('[data-yes]').onclick = () => resolve(true);
+              out.querySelector('[data-no]').onclick = () => resolve(false);
+            });
+            if (!ok) { out.textContent = 'cancelled'; out.classList.add('muted'); return; }
+            out.textContent = 'running…';
             res = await exec(true);
           }
           out.textContent = res.error ? res.error : (res.output || '(no output)') + (res.truncated ? '\n… output truncated' : '');
@@ -550,7 +560,9 @@ function eventDrawer(r) {
     eyebrow: `<span class="pill warn">Warning event</span>${esc(r.cluster)} · ${esc(r.namespace)}`,
     title: r.status + ' · ' + r.cols[0],
     tabs: [{ label: 'Summary', html: `<dl class="kv"><dt>Object</dt><dd>${esc(r.cols[0])}</dd><dt>Count</dt><dd>${esc(r.cols[2])}</dd><dt>Last seen</dt><dd>${esc(r.cols[3])} ago</dd></dl><pre class="code">${esc(r.cols[1])}</pre>` },
-      consoleTab([`kubectl --context ${r.cluster} -n ${r.namespace} describe ${r.cols[0]}`], r.cluster, r.namespace)],
+      // involvedObject isn't validated by the API server: only suggest a command for plain names.
+      consoleTab(/^[a-z][a-z0-9]{0,62}\/[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/.test(r.cols[0])
+        ? [`kubectl --context ${shQuote(r.cluster)} -n ${shQuote(r.namespace)} describe ${r.cols[0]}`] : [], r.cluster, r.namespace)],
   });
 }
 

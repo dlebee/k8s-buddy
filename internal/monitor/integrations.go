@@ -65,6 +65,9 @@ func (c *cluster) helmReleases() []helmRelease {
 			}
 			l := m.Labels
 			rev, _ := strconv.Atoi(l["version"])
+			if !validHelmName(l["name"]) {
+				continue
+			}
 			r := helmRelease{namespace: m.Namespace, name: l["name"], status: l["status"], revision: rev, updated: m.CreationTimestamp.Time}
 			if ts, err := strconv.ParseInt(l["modifiedAt"], 10, 64); err == nil {
 				r.updated = time.Unix(ts, 0)
@@ -106,11 +109,12 @@ func (c *cluster) helmReleasesFromWorkloads() map[string]helmRelease {
 	add := func(kind string, m metav1.Object) {
 		ann := m.GetAnnotations()
 		name, ns := ann["meta.helm.sh/release-name"], ann["meta.helm.sh/release-namespace"]
-		if name == "" {
-			return
-		}
 		if ns == "" {
 			ns = m.GetNamespace()
+		}
+		// Annotations are free-form and anyone who can create a workload can set them.
+		if !validHelmName(name) || !validObjectName(ns) {
+			return
 		}
 		key := ns + "/" + name
 		r := out[key]

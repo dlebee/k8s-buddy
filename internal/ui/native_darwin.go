@@ -46,7 +46,7 @@ func (n *native) Run() {
 	defer f2()
 	ov, f3 := cstr(n.o.OverviewURL)
 	defer f3()
-	C.buddy_run(ch, pa, ov, cbool(n.o.ShowCharacter))
+	C.buddy_run(ch, pa, ov, cbool(n.o.ShowCharacter), cbool(n.o.Inspectable))
 }
 
 func (n *native) SetTray(title, tooltip string) {

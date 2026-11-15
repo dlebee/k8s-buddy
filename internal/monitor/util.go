@@ -11,6 +11,18 @@ import (
 
 var cronJobSuffix = regexp.MustCompile(`-\d{8,}$`)
 
+// Some names reach us without API-server validation (Event involvedObject, Helm annotations and
+// labels). Anything that doesn't look like a real Kubernetes name must never end up inside a
+// suggested command, where it could smuggle flags or shell syntax.
+var (
+	dnsSubdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+	kindName     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,62}$`)
+)
+
+func validObjectName(s string) bool { return len(s) <= 253 && dnsSubdomain.MatchString(s) }
+func validKind(s string) bool       { return kindName.MatchString(s) }
+func validHelmName(s string) bool   { return len(s) <= 53 && dnsSubdomain.MatchString(s) }
+
 // workloadOf maps a pod to its top-level controller so alerts dedupe per workload, not per pod.
 func workloadOf(p *corev1.Pod) (kind, name string) {
 	for _, o := range p.OwnerReferences {

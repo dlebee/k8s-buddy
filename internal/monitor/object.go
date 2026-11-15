@@ -156,6 +156,7 @@ func (m *Manager) Object(clusterName, kind, ns, name string) (ObjectDetail, erro
 		if err := json.Unmarshal(raw, &d.Object); err != nil {
 			return d, err
 		}
+		redactObject(d.Object)
 		if res.Group == "networking.k8s.io" && res.Resource == "ingresses" {
 			c.ingressBackends(&d)
 		}

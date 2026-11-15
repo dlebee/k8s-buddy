@@ -36,35 +36,39 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version-file: go.mod}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: {go-version-file: go.mod, cache: false}
       - run: go vet ./... && go test ./...
 
   macos:
     name: macOS (sign + notarize)
     runs-on: macos-latest
     needs: [version, test]
+    environment: release # signing secrets live in this environment, readable only by release jobs
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
       MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
-      AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
-      AC_APP_PASSWORD: ${{ secrets.AC_APP_PASSWORD }}
       AC_TEAM_ID: ${{ vars.AC_TEAM_ID }}
+      # Only says whether signing is configured; the secret itself is passed to the steps that use it.
+      SIGNING: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+      NOTARIZING: ${{ secrets.AC_APPLE_ID != '' && secrets.AC_APP_PASSWORD != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version-file: go.mod}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: {go-version-file: go.mod, cache: false}
 
       - name: Build universal app
         run: packaging/macos/build-app.sh "$VERSION" build
 
       - name: Import Developer ID certificate into a temporary keychain
-        if: env.MACOS_CERT_P12_BASE64 != ''
+        if: env.SIGNING == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/cert.p12"' EXIT
           KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           echo "::add-mask::$KEYCHAIN_PASSWORD"
@@ -80,14 +84,17 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Codesign the app (hardened runtime)
-        if: env.MACOS_CERT_P12_BASE64 != ''
+        if: env.SIGNING == 'true'
         run: |
           set -euo pipefail
           codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" build/k8s-buddy.app
           codesign --verify --strict --deep --verbose=2 build/k8s-buddy.app
 
       - name: Notarize and staple the app
-        if: env.MACOS_CERT_P12_BASE64 != '' && env.AC_APPLE_ID != '' && env.AC_APP_PASSWORD != ''
+        if: env.SIGNING == 'true' && env.NOTARIZING == 'true'
+        env:
+          AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
+          AC_APP_PASSWORD: ${{ secrets.AC_APP_PASSWORD }}
         run: |
           set -euo pipefail
           ditto -c -k --keepParent build/k8s-buddy.app "$RUNNER_TEMP/notarize.zip"
@@ -106,7 +113,10 @@ jobs:
           ditto -c -k --keepParent build/k8s-buddy.app "dist/k8s-buddy-$VERSION-macos-universal.zip"
 
       - name: Sign, notarize and staple the DMG
-        if: env.MACOS_CERT_P12_BASE64 != ''
+        if: env.SIGNING == 'true'
+        env:
+          AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
+          AC_APP_PASSWORD: ${{ secrets.AC_APP_PASSWORD }}
         run: |
           set -euo pipefail
           DMG="dist/k8s-buddy-$VERSION-macos-universal.dmg"
@@ -122,7 +132,7 @@ jobs:
         if: always()
         run: security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: macos, path: dist/*, if-no-files-found: error}
 
   windows:
@@ -139,9 +149,9 @@ jobs:
       AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT }}
       AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version-file: go.mod}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: {go-version-file: go.mod, cache: false}
 
       - name: Build
         shell: pwsh
@@ -172,6 +182,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           $zip = Join-Path $out 'client.zip'
           Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/$pkg/$ver/$pkg.$ver.nupkg" -OutFile $zip
+          # Pinned: this DLL is loaded into signtool while the Azure signing token is live.
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne '74BD7D27E6CE1051409C38D9B46BC8DF0400ECD643D51FFBF2AC00869061E40B') { throw 'Trusted Signing client hash mismatch' }
           Expand-Archive $zip -DestinationPath (Join-Path $out 'pkg') -Force
           $dlib = Get-ChildItem (Join-Path $out 'pkg') -Filter Azure.CodeSigning.Dlib.dll -Recurse |
             Where-Object { $_.Directory.Name -eq 'x64' } | Select-Object -First 1 -ExpandProperty FullName
@@ -213,7 +225,7 @@ jobs:
             Compress-Archive -Path "build/$arch/*" -DestinationPath "dist/k8s-buddy-$env:VERSION-windows-$arch.zip"
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: windows, path: dist/*, if-no-files-found: error}
 
   linux:
@@ -223,9 +235,9 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version-file: go.mod}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: {go-version-file: go.mod, cache: false}
       - name: Build and package
         run: |
           set -euo pipefail
@@ -237,7 +249,7 @@ jobs:
             cp LICENSE NOTICE README.md "$dir/"
             tar -C build -czf "dist/k8s-buddy-$VERSION-linux-$arch.tar.gz" "$(basename "$dir")"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: {name: linux, path: dist/*, if-no-files-found: error}
 
   publish:
@@ -245,7 +257,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [version, macos, windows, linux]
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: {path: dist, merge-multiple: true}
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt

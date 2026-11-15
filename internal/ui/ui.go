@@ -13,6 +13,8 @@ type Options struct {
 	PanelURL      string
 	OverviewURL   string
 	ShowCharacter bool
+	// Inspectable lets Safari's Web Inspector attach to the web views (development builds only).
+	Inspectable bool
 	// OnQuit runs synchronously right before the process exits.
 	OnQuit func()
 	// OnCharacterVisible reports visibility changes made from native UI (tray / context menu).

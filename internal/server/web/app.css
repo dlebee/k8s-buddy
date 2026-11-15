@@ -295,3 +295,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 .scope-chip button { border: 0; background: none; color: inherit; text-decoration: underline; cursor: pointer; font-weight: 600; padding: 0; }
 .ms + .ms { margin-left: 8px; }
 #fPickers { display: inline-flex; align-items: center; }
+
+.console-warn { color: #ffcf6b; display: block; margin-bottom: 8px; }
+.console-confirm { display: flex; gap: 8px; }

@@ -50,12 +50,6 @@
       <ComponentRef Id="StartAtLogin" />
     </Feature>
 
-    <!-- Launch after install so the dashboard opens straight away. -->
-    <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" ExeCommand="&quot;[INSTALLFOLDER]k8s-buddy.exe&quot; --open"
-                  Return="asyncNoWait" Impersonate="yes" />
-    <InstallExecuteSequence>
-      <Custom Action="LaunchApp" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE AND UILevel &gt;= 5" />
-    </InstallExecuteSequence>
 
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
     <ui:WixUI Id="WixUI_FeatureTree" />
