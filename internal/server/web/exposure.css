@@ -44,6 +44,9 @@
 .fnode.dim, .fedge.dim { opacity: .18; }
 .fedge { fill: none; stroke: var(--xp-edge); stroke-width: 1.4; }
 .fedge.hot { stroke: var(--accent); stroke-width: 2; }
+.fedge.dangling, .fedge.dangling.hot { stroke: var(--bad); stroke-width: 1.8; }
+.fdangle path { fill: none; stroke: var(--bad); stroke-width: 1.8; stroke-dasharray: 4 3; }
+.fdangle path.x { stroke-dasharray: none; stroke-width: 2; }
 .froute text { fill: var(--muted); font-size: 10.5px; font-family: var(--mono); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
 .froute.hot text { fill: var(--accent); }
 .froute.dim { opacity: .18; }

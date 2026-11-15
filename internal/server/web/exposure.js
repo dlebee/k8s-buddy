@@ -61,7 +61,7 @@ function buildCluster(c, ci) {
       ports: e.ports, ip: e.addresses, internal: e.internal, ctrl: e.controller, total: sum(e.workloads, 'total'), ready: sum(e.workloads, 'ready'),
     });
     if (pseudo) en.note = 'Controller not exposed by a LoadBalancer or NodePort service in this cluster';
-    else if (!e.workloads.length) en.issue = 'No pods behind this service';
+    else if (!e.workloads.length) { en.issue = 'No pods behind this service'; en.dangling = true; }
     else if (e.type === 'LoadBalancer' && !e.addresses.length) en.issue = 'LoadBalancer has no external address yet';
     link(root, en);
     for (const w of e.workloads) link(en, wl(e.namespace, w));
@@ -71,8 +71,8 @@ function buildCluster(c, ci) {
       for (const s of i.services) {
         const sv = add(`s:${s.namespace}/${s.name}`, { kind: 'service', name: s.name, ns: s.namespace, type: s.type, ports: s.ports, routes: [] });
         sv.routes.push(...s.routes.map((r) => ({ r, ing: i.name })));
-        if (s.missing) sv.issue = 'Backend service not found';
-        else if (!s.workloads.length) sv.issue = 'No pods match this service selector';
+        if (s.missing) { sv.issue = 'Backend service not found'; sv.dangling = true; }
+        else if (!s.workloads.length) { sv.issue = 'No pods match this service selector'; sv.dangling = true; }
         link(ig, sv);
         for (const w of s.workloads) link(sv, wl(s.namespace, w));
       }
@@ -315,13 +315,25 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
           const hot = rel && rel.has(e.a) && rel.has(e.b), tree = e.b.parents[0] === e.a;
           const a = rel ? (hot ? .9 : .05) : (tree ? .28 : .16);
           const [x1, y1] = toS(e.a.x, e.a.y), [x2, y2] = toS(e.b.x, e.b.y);
-          ctx.strokeStyle = hot ? `rgba(160,190,255,${a * eA})` : `rgba(130,150,220,${a * eA})`;
-          ctx.lineWidth = hot ? 1.6 : 1;
+          const dang = e.b.dangling, da = rel ? (hot ? 1 : .12) : .75;
+          ctx.strokeStyle = dang ? `rgba(248,113,113,${da * eA})` : hot ? `rgba(160,190,255,${a * eA})` : `rgba(130,150,220,${a * eA})`;
+          ctx.lineWidth = hot || dang ? 1.6 : 1;
           ctx.setLineDash(tree ? [] : [3, 4]);
           ctx.beginPath(); ctx.moveTo(x1, y1);
           if (e.a.kind === 'cluster') ctx.lineTo(x2, y2);
           else { const mx = (x1 + x2) / 2, my = (y1 + y2) / 2; ctx.quadraticCurveTo(mx + (cx - mx) * .12, my + (cy - my) * .12, x2, y2); }
           ctx.stroke();
+        }
+        // Dangling services: a red stub reaching out toward the workloads that aren't there.
+        if (S.depth >= 4) for (const n of c.nodes) {
+          if (!n.dangling || !visible(n)) continue;
+          const lit = !rel || rel.has(n), r0 = RING[LAYER[n.kind]] * c.f, r1 = r0 + (RING[4] * c.f - r0) * .7;
+          const [x1, y1] = toS(n.x, n.y), [x2, y2] = toS(c.x + Math.cos(n.ang) * r1, c.y + Math.sin(n.ang) * r1);
+          ctx.strokeStyle = `rgba(248,113,113,${(lit ? .85 : .12) * eA})`; ctx.lineWidth = 1.6; ctx.setLineDash([4, 3]);
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.setLineDash([]);
+          const s = clamp(3 * Math.sqrt(k * c.f), 1.5, 5);
+          ctx.beginPath(); ctx.moveTo(x2 - s, y2 - s); ctx.lineTo(x2 + s, y2 + s); ctx.moveTo(x2 + s, y2 - s); ctx.lineTo(x2 - s, y2 + s); ctx.stroke();
         }
         ctx.setLineDash([]);
       }
@@ -628,7 +640,7 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
 
     function edge(a, b) {
       const x1 = xOf(a) + NW, y1 = Y.get(a) + NH / 2, x2 = xOf(b), y2 = Y.get(b) + NH / 2, mx = (x1 + x2) / 2;
-      const p = el('path', { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, class: 'fedge' }, eg);
+      const p = el('path', { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, class: 'fedge' + (b.dangling ? ' dangling' : '') }, eg);
       p._a = a; p._b = b;
       if (a.kind === 'ingress' && b.kind === 'service') { // label the connector with the route(s) it carries
         const rs = b.routes.filter((r) => r.ing === a.name).map((r) => r.r);
@@ -667,6 +679,12 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
                   : n.kind === 'pod' ? `${n.status}${n.restarts ? ` · ${n.restarts}↻` : ''} · ${n.node || ''}`
                     : `${n.wkind} · ${n.ns}`;
       el('text', { x: 40, y: lines.length > 1 ? 47 : 40, class: 's' }, g).textContent = sub.length > 31 ? sub.slice(0, 30) + '…' : sub;
+      if (n.dangling && S.depth >= 4 && !n.children.length) { // red stub: this service points at nothing
+        const sg = el('g', { class: 'fdangle', transform: `translate(${NW},${NH / 2})` }, g);
+        el('path', { d: 'M0,0 H44' }, sg);
+        el('path', { d: 'M40,-4 L48,4 M48,-4 L40,4', class: 'x' }, sg);
+        el('title', {}, sg).textContent = n.issue;
+      }
       if (n.issue) el('text', { x: NW - 14, y: 16, 'text-anchor': 'middle', style: 'fill:var(--bad);font-size:12px' }, g).textContent = '⚠';
       if (n.kind === 'workload') { // pod counter doubles as the expand toggle
         const expanded = open(n);
@@ -751,9 +769,9 @@ export function mountExposure(root, { clusters: scoped, params, onState, openRes
   function renderLegends() {
     const items = [['controller', 'Ingress controller'], ['lb', 'LoadBalancer'], ['nodeport', 'NodePort'], ['ingress', 'Ingress'], ['service', 'Service'], ['workload', 'Workload / pod']];
     $('glegend').innerHTML = items.map(([k, l]) => `<span><i style="background:${GCOL[k]};box-shadow:0 0 6px ${GCOL[k]}"></i>${l}</span>`).join('') +
-      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down / issue</span><span style="opacity:.7">dashed = shared backend · click a workload for its pods</span>`;
+      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down / issue</span><span><b style="color:${HCOL.bad}">- - ✕</b> dangling service</span><span style="opacity:.7">dashed = shared backend · click a workload for its pods</span>`;
     $('flegend').innerHTML = items.map(([k, l]) => `<span><i style="background:var(--k-${k})"></i>${l}</span>`).join('') +
-      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down</span><span>×N = pods, click to expand · − / + collapse</span>`;
+      `<span><i style="background:${HCOL.warn}"></i>degraded</span><span><i style="background:${HCOL.bad}"></i>down</span><span><b style="color:var(--bad)">- - ✕</b> dangling service</span><span>×N = pods, click to expand · − / + collapse</span>`;
   }
   function setDepth(d, rebuild = true) {
     S.depth = d;
