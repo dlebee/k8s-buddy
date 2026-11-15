@@ -25,6 +25,7 @@ type DoctorCheck struct {
 var doctorChecks = []DoctorCheck{
 	{"dangling-service", "Services with no pods", "Selector matches no running pods, so traffic goes nowhere."},
 	{"ingress-backend", "Broken ingress backends", "Ingress points at a missing service, a missing port, or a service with no pods."},
+	{"ingress-class", "Ingresses without a usable class", "Ingress names an IngressClass that does not exist, or names none and the cluster has no default."},
 	{"pdb-blocking", "PDBs blocking drains", "PodDisruptionBudgets that currently allow zero disruptions will stall node drains and upgrades."},
 	{"hpa-target", "HPAs with missing targets", "Autoscaler targets a workload that does not exist."},
 	{"orphaned-pv", "Released / failed volumes", "PersistentVolumes no claim uses anymore; their disks usually still cost money."},
@@ -167,6 +168,28 @@ func (c *cluster) doctor(ctx context.Context) ([]Finding, []string) {
 	if ings, err := c.cs.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{}); err != nil {
 		problems = append(problems, "ingresses: "+truncate(err.Error(), 120))
 	} else {
+		classes := map[string]bool{}
+		hasDefault := false
+		if ics, err := c.cs.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{}); err == nil {
+			for _, ic := range ics.Items {
+				classes[ic.Name] = true
+				if ic.Annotations[networkingv1.AnnotationIsDefaultIngressClass] == "true" {
+					hasDefault = true
+				}
+			}
+			for _, ing := range ings.Items {
+				class := ingressClassOf(ing.Annotations, ing.Spec.IngressClassName)
+				hint := kubectl(c.name, "", "get ingressclass")
+				switch {
+				case class != "" && !classes[class]:
+					add("ingress-class", alert.Warning, "Ingress", ing.Namespace, ing.Name, fmt.Sprintf("uses ingress class %q which does not exist", class), hint)
+				case class == "" && !hasDefault:
+					add("ingress-class", alert.Warning, "Ingress", ing.Namespace, ing.Name, "has no ingress class and the cluster has no default class", hint)
+				}
+			}
+		} else {
+			problems = append(problems, "ingressclasses: "+truncate(err.Error(), 120))
+		}
 		for _, ing := range ings.Items {
 			var backends []*networkingv1.IngressServiceBackend
 			if b := ing.Spec.DefaultBackend; b != nil && b.Service != nil {

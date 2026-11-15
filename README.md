@@ -5,7 +5,7 @@ A little floating friend that watches **every Kubernetes context in your kubecon
 - **Floating buddy** — sits on top of your windows, bounces and shows a count when something new breaks. Click it for the alert history; drag it anywhere; right-click for the menu.
 - **Menu bar icon** — `⎈ 3` style count, overview, settings, show/hide the buddy.
 - **Multi-cluster overview** — health of all your clusters at a glance.
-- **Resources** — browse pods, deployments, statefulsets, daemonsets, services, PVCs, nodes and warning events across all clusters, with filters, YAML and copy-ready `kubectl` commands.
+- **Resources** — browse workloads, networking, storage (PVCs, PVs, storage classes), config (ConfigMaps, Secrets — values never loaded), Helm releases, nodes, events and **any custom resource** across all clusters. Every object has `kubectl describe` output, YAML and copy-ready commands.
 - **Doctor** — an on-demand checkup for things that are quietly wrong (dangling services and ingresses, PDBs that block upgrades, orphaned volumes, …).
 
 It is read-only: it only lists and watches.
@@ -24,12 +24,17 @@ It is read-only: it only lists and watches.
 | Control plane upgrade | `/version` polled every 5m |
 | Selected warning events | FailedMount, FailedAttachVolume, Evicted, SystemOOM, BackoffLimitExceeded, SyncLoadBalancerFailed, … |
 | Cluster unreachable | connection / auth failures |
+| Scheduled VM maintenance (freeze / reboot / redeploy) | node-problem-detector events (AKS and others) |
+| Repeated readiness / liveness probe failures | `Unhealthy` events (3+ failures) |
+| cert-manager: certificate **not renewing on time**, expired, not ready; issuer not ready | Certificate / Issuer / ClusterIssuer status |
+| Helm release failed or stuck in `pending-*` | Helm release secrets' labels (payload never read) |
+| Ingress never got an address | ingress status (wrong class, controller down) |
 
 Alerts are deduplicated, state-based ones resolve on their own when the condition clears, and you can **snooze** (default 4h) or **mute** any alert.
 
 ## Doctor checks
 
-Services with no pods · ingresses pointing at missing services/ports or empty services · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
+Services with no pods · ingresses pointing at missing services/ports or empty services · ingresses using a missing IngressClass · PodDisruptionBudgets allowing 0 disruptions · HPAs targeting missing workloads · Released/Failed PersistentVolumes · bound PVCs no pod mounts · leftover failed/evicted pods · pods without a controller.
 
 ## Install / run (macOS)
 
@@ -53,6 +58,17 @@ Settings and history live in `~/Library/Application Support/k8s-buddy/`. Context
 
 Kubeconfig exec plugins (`az`/`kubelogin`, `aws`, `gke-gcloud-auth-plugin`, `doctl`, …) work when launched from Finder too: the app borrows your login shell's `PATH`.
 
+## Testing against a throwaway cluster
+
+`testdata/demo/` contains deliberately broken workloads that trip every detector and doctor check:
+
+```bash
+docker run -d --name k8s-buddy-k3s --privileged -p 127.0.0.1:16443:6443 rancher/k3s:v1.33.5-k3s1 server --tls-san 127.0.0.1
+docker exec k8s-buddy-k3s cat /etc/rancher/k3s/k3s.yaml | sed 's/6443/16443/' > /tmp/k3s.yaml
+KUBECONFIG=/tmp/k3s.yaml kubectl apply -f testdata/demo/broken.yaml
+./bin/k8s-buddy --headless --kubeconfig /tmp/k3s.yaml --data-dir /tmp/buddy-demo
+```
+
 ## How it works
 
 ```
@@ -74,7 +90,7 @@ kubeconfig ─▶ manager ─▶ one monitor per context (client-go informers + 
 ## Roadmap
 
 - **Bring your own model**: the `alert.Filter` interface is where an LLM can review deterministic alerts and drop noisy false alarms before they nudge you.
-- Windows (WebView2 + tray) and Linux shells.
+- Windows (WebView2 + tray) and Linux shells. Everything except `internal/ui/ui_darwin.m` is portable; CI builds and tests on macOS, Windows and Linux, and `--headless` already works everywhere.
 - Launch at login, notifications, more doctor checks, custom rules.
 
 ## License

@@ -1,0 +1,209 @@
+# Deliberately broken workloads for exercising k8s-buddy's detectors and doctor checks.
+# Apply to a throwaway cluster only:  kubectl apply -f testdata/demo/broken.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buddy-demo
+---
+# CrashLoopBackOff + restart alerts
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: crashy, namespace: buddy-demo}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: crashy}}
+  template:
+    metadata: {labels: {app: crashy}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "echo starting; sleep 3; echo boom >&2; exit 1"]
+---
+# ImagePullBackOff
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: bad-image, namespace: buddy-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: bad-image}}
+  template:
+    metadata: {labels: {app: bad-image}}
+    spec:
+      containers:
+        - name: app
+          image: registry.invalid/k8s-buddy/does-not-exist:1.0
+---
+# OOMKilled restarts
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: hungry, namespace: buddy-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: hungry}}
+  template:
+    metadata: {labels: {app: hungry}}
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 5; tail /dev/zero"]
+          resources: {limits: {memory: 32Mi}}
+---
+# Readiness probe failing (Unhealthy events)
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: not-ready, namespace: buddy-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: not-ready}}
+  template:
+    metadata: {labels: {app: not-ready}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+          readinessProbe:
+            httpGet: {path: /, port: 9999}
+            periodSeconds: 3
+---
+# Unschedulable
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: nowhere-to-run, namespace: buddy-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: nowhere-to-run}}
+  template:
+    metadata: {labels: {app: nowhere-to-run}}
+    spec:
+      nodeSelector: {k8s-buddy/does-not-exist: "true"}
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sleep", "infinity"]
+---
+# Healthy app guarded by a PDB that allows 0 disruptions (blocks drains)
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: precious, namespace: buddy-demo}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: precious}}
+  template:
+    metadata: {labels: {app: precious}}
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.27-alpine
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: precious, namespace: buddy-demo}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: precious}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: precious, namespace: buddy-demo}
+spec:
+  selector: {app: precious}
+  ports: [{name: http, port: 80, targetPort: 80}]
+---
+# Dangling service + ingresses with broken backends
+apiVersion: v1
+kind: Service
+metadata: {name: ghost, namespace: buddy-demo}
+spec:
+  selector: {app: ghost}
+  ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: to-ghost, namespace: buddy-demo}
+spec:
+  rules:
+    - host: ghost.buddy.test
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: ghost, port: {number: 80}}}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: to-nothing, namespace: buddy-demo}
+spec:
+  rules:
+    - host: nothing.buddy.test
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: does-not-exist, port: {number: 80}}}}
+          - {path: /api, pathType: Prefix, backend: {service: {name: precious, port: {number: 8443}}}}
+---
+# LoadBalancer nobody will ever fulfil
+apiVersion: v1
+kind: Service
+metadata: {name: no-ip, namespace: buddy-demo}
+spec:
+  type: LoadBalancer
+  loadBalancerClass: example.com/no-such-controller
+  selector: {app: precious}
+  ports: [{port: 80, targetPort: 80}]
+---
+# PVC that can never bind
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: stuck-claim, namespace: buddy-demo}
+spec:
+  storageClassName: does-not-exist
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+# HPA pointing at nothing
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: lost-hpa, namespace: buddy-demo}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: was-deleted}
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 80}}
+---
+# Pod without a controller, and a failed one that never got cleaned up
+apiVersion: v1
+kind: Pod
+metadata: {name: naked, namespace: buddy-demo}
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "infinity"]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: failed-once, namespace: buddy-demo}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "exit 3"]
+---
+# Config and secret for the resource browser (fake values)
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: app-config, namespace: buddy-demo}
+data:
+  LOG_LEVEL: debug
+  feature-flags.json: '{"newUI": true}'
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: app-credentials, namespace: buddy-demo}
+type: Opaque
+stringData:
+  username: demo
+  password: not-a-real-password
+  api.token: fake-token-123

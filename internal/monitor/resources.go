@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -43,6 +44,8 @@ type kindSpec struct {
 }
 
 // Columns roughly follow `kubectl get` / k9s for each kind.
+var lazyKinds = map[string]bool{"configmaps": true, "secrets": true}
+
 var kinds = map[string]kindSpec{
 	"pods": {"pods", "Pods", true, []string{"Ready", "Restarts", "Node", "IP"}, listPods,
 		func(c *cluster, ns, n string) (runtime.Object, string, error) {
@@ -79,20 +82,49 @@ var kinds = map[string]kindSpec{
 			o, err := c.nodes.Get(n)
 			return o, "Node", err
 		}},
+	"configmaps": {"configmaps", "ConfigMaps", true, []string{"Keys"}, listConfigMaps,
+		func(c *cluster, ns, n string) (runtime.Object, string, error) {
+			o, err := c.configmaps.ConfigMaps(ns).Get(n)
+			return o, "ConfigMap", err
+		}},
+	"secrets": {"secrets", "Secrets", true, []string{"Type", "Keys"}, listSecrets,
+		func(c *cluster, ns, n string) (runtime.Object, string, error) {
+			o, err := c.secrets.Secrets(ns).Get(n)
+			return o, "Secret", err
+		}},
+	"helm":   {"helm", "Helm releases", true, []string{"Revision", "Updated"}, listHelm, nil},
 	"events": {"events", "Warning events", true, []string{"Object", "Message", "Count", "Last seen"}, listEvents, nil},
 }
 
 type KindInfo struct {
 	ID      string   `json:"id"`
 	Label   string   `json:"label"`
-	Columns []string `json:"columns"`
+	Section string   `json:"section"`
+	Columns []string `json:"columns,omitempty"`
+}
+
+var kindSections = []struct {
+	name string
+	ids  []string
+}{
+	{"Workloads", []string{"pods", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs", "hpas"}},
+	{"Network", []string{"services", "ingresses", "networkpolicies"}},
+	{"Storage", []string{"pvcs", "pvs", "storageclasses"}},
+	{"Config", []string{"configmaps", "secrets"}},
+	{"Cluster", []string{"nodes", "namespaces", "pdbs", "events"}},
+	{"Helm", []string{"helm"}},
 }
 
 func Kinds() []KindInfo {
-	order := []string{"pods", "deployments", "statefulsets", "daemonsets", "services", "pvcs", "nodes", "events"}
-	out := make([]KindInfo, len(order))
-	for i, id := range order {
-		out[i] = KindInfo{ID: id, Label: kinds[id].label, Columns: kinds[id].columns}
+	var out []KindInfo
+	for _, sec := range kindSections {
+		for _, id := range sec.ids {
+			if k, ok := kinds[id]; ok {
+				out = append(out, KindInfo{ID: id, Label: k.label, Section: sec.name, Columns: k.columns})
+			} else {
+				out = append(out, KindInfo{ID: id, Label: genericBuiltins[id].label, Section: sec.name})
+			}
+		}
 	}
 	return out
 }
@@ -107,14 +139,32 @@ type ResourceQuery struct {
 }
 
 type ResourceList struct {
-	Kind        string     `json:"kind"`
-	Columns     []string   `json:"columns"`
-	Namespaced  bool       `json:"namespaced"`
-	Items       []Resource `json:"items"`
-	Total       int        `json:"total"`
-	Problems    int        `json:"problems"`
-	Namespaces  []string   `json:"namespaces"`
-	Unavailable []string   `json:"unavailable"`
+	Kind        string        `json:"kind"`
+	Columns     []string      `json:"columns"`
+	Namespaced  bool          `json:"namespaced"`
+	Items       []Resource    `json:"items"`
+	Total       int           `json:"total"`
+	Problems    int           `json:"problems"`
+	Namespaces  []string      `json:"namespaces"`
+	Unavailable []Unavailable `json:"unavailable"`
+}
+
+type Unavailable struct {
+	Cluster string `json:"cluster"`
+	Reason  string `json:"reason"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+func unavailable(c *cluster, resource string) Unavailable {
+	msg := c.resourceError(resource)
+	switch {
+	case msg == "":
+		return Unavailable{Cluster: c.name, Reason: "loading"}
+	case strings.Contains(msg, "forbidden"):
+		return Unavailable{Cluster: c.name, Reason: "no access", Detail: msg}
+	default:
+		return Unavailable{Cluster: c.name, Reason: "error", Detail: msg}
+	}
 }
 
 func (m *Manager) connected() []*cluster {
@@ -129,42 +179,62 @@ func (m *Manager) connected() []*cluster {
 }
 
 func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
+	if g, ok := genericFor(q.Kind); ok {
+		return m.genericResources(q, g), nil
+	}
 	spec, ok := kinds[q.Kind]
 	if !ok {
 		return ResourceList{}, fmt.Errorf("unknown kind %q", q.Kind)
 	}
-	out := ResourceList{Kind: q.Kind, Columns: spec.columns, Namespaced: spec.namespaced, Items: []Resource{}, Unavailable: []string{}}
-	nsSet := map[string]bool{}
-	needle := strings.ToLower(q.Search)
+	out := newResourceList(q.Kind, spec.columns, spec.namespaced)
+	var rows []Resource
 	for _, c := range m.connected() {
 		if q.Cluster != "" && c.name != q.Cluster {
 			continue
 		}
+		if lazyKinds[q.Kind] {
+			c.ensureLazy(spec.resource)
+		}
 		if !c.synced(spec.resource) {
-			out.Unavailable = append(out.Unavailable, c.name)
+			out.Unavailable = append(out.Unavailable, unavailable(c, spec.resource))
 			continue
 		}
 		for _, r := range spec.list(c) {
 			r.Cluster = c.name
-			if r.Namespace != "" {
-				nsSet[r.Namespace] = true
-			}
-			if q.Namespace != "" && r.Namespace != q.Namespace {
-				continue
-			}
-			bad := r.Health == HealthBad || r.Health == HealthWarn
-			if q.Problems && !bad {
-				continue
-			}
-			if needle != "" && !strings.Contains(strings.ToLower(strings.Join(append([]string{r.Cluster, r.Namespace, r.Name, r.Status}, r.Cols...), " ")), needle) {
-				continue
-			}
-			out.Total++
-			if bad {
-				out.Problems++
-			}
-			out.Items = append(out.Items, r)
+			rows = append(rows, r)
 		}
+	}
+	out.apply(rows, q)
+	return out, nil
+}
+
+func newResourceList(kind string, columns []string, namespaced bool) ResourceList {
+	return ResourceList{Kind: kind, Columns: columns, Namespaced: namespaced, Items: []Resource{}, Namespaces: []string{}, Unavailable: []Unavailable{}}
+}
+
+// apply filters, counts, sorts and truncates rows according to q.
+func (out *ResourceList) apply(rows []Resource, q ResourceQuery) {
+	nsSet := map[string]bool{}
+	needle := strings.ToLower(q.Search)
+	for _, r := range rows {
+		if r.Namespace != "" {
+			nsSet[r.Namespace] = true
+		}
+		if q.Namespace != "" && r.Namespace != q.Namespace {
+			continue
+		}
+		bad := r.Health == HealthBad || r.Health == HealthWarn
+		if q.Problems && !bad {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(strings.Join(append([]string{r.Cluster, r.Namespace, r.Name, r.Status}, r.Cols...), " ")), needle) {
+			continue
+		}
+		out.Total++
+		if bad {
+			out.Problems++
+		}
+		out.Items = append(out.Items, r)
 	}
 	slices.SortStableFunc(out.Items, func(a, b Resource) int {
 		if q.Kind == "events" {
@@ -175,14 +245,10 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 	if q.Limit > 0 && len(out.Items) > q.Limit {
 		out.Items = out.Items[:q.Limit]
 	}
-	out.Namespaces = slices.Sorted(func(yield func(string) bool) {
-		for ns := range nsSet {
-			if !yield(ns) {
-				return
-			}
-		}
-	})
-	return out, nil
+	for ns := range nsSet {
+		out.Namespaces = append(out.Namespaces, ns)
+	}
+	slices.Sort(out.Namespaces)
 }
 
 type ResourceDetail struct {
@@ -196,6 +262,12 @@ type ResourceDetail struct {
 }
 
 func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, error) {
+	if g, ok := genericFor(kind); ok {
+		return m.genericDetail(clusterName, kind, g, ns, name)
+	}
+	if kind == "helm" {
+		return m.helmDetail(clusterName, ns, name)
+	}
 	spec, ok := kinds[kind]
 	if !ok || spec.get == nil {
 		return ResourceDetail{}, fmt.Errorf("no detail view for %q", kind)
@@ -219,6 +291,15 @@ func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, 
 		apiVersion = "apps/v1"
 	}
 	obj.GetObjectKind().SetGroupVersionKind(schema.FromAPIVersionAndKind(apiVersion, k8sKind))
+	var secretKeys []string
+	if sec, ok := obj.(*corev1.Secret); ok {
+		secretKeys = slices.Sorted(maps.Keys(sec.Data))
+		hidden := make(map[string]string, len(sec.Data))
+		for _, k := range secretKeys {
+			hidden[k] = "<hidden by k8s-buddy>"
+		}
+		sec.Data, sec.StringData = nil, hidden
+	}
 	b, err := yaml.Marshal(obj)
 	if err != nil {
 		return ResourceDetail{}, err
@@ -237,10 +318,41 @@ func (m *Manager) Resource(clusterName, kind, ns, name string) (ResourceDetail, 
 	d.Commands = []string{kubectl(clusterName, ns, "describe "+ref), kubectl(clusterName, ns, "get "+ref+" -o yaml")}
 	if kind == "pods" {
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "logs "+name+" --all-containers --tail=200"))
+	} else if kind == "secrets" {
+		for _, k := range secretKeys[:min(len(secretKeys), 5)] {
+			d.Commands = append(d.Commands, kubectl(clusterName, ns, fmt.Sprintf("get secret %s -o jsonpath=%s | base64 -d", name, shellQuote("{.data."+strings.ReplaceAll(k, ".", `\.`)+"}"))))
+		}
 	} else if kind == "deployments" || kind == "statefulsets" || kind == "daemonsets" {
 		d.Commands = append(d.Commands, kubectl(clusterName, ns, "rollout status "+ref), kubectl(clusterName, ns, "rollout restart "+ref))
 	}
 	return d, nil
+}
+
+func keyList(keys []string) string {
+	slices.Sort(keys)
+	return truncate(fmt.Sprintf("%d · %s", len(keys), strings.Join(keys, ", ")), 90)
+}
+
+func listConfigMaps(c *cluster) []Resource {
+	cms, _ := c.configmaps.List(labels.Everything())
+	out := make([]Resource, 0, len(cms))
+	for _, cm := range cms {
+		keys := slices.Collect(maps.Keys(cm.Data))
+		keys = append(keys, slices.Collect(maps.Keys(cm.BinaryData))...)
+		out = append(out, Resource{Namespace: cm.Namespace, Name: cm.Name, Status: "Active", Health: HealthNeutral,
+			Created: cm.CreationTimestamp.Time, Cols: []string{keyList(keys)}})
+	}
+	return out
+}
+
+func listSecrets(c *cluster) []Resource {
+	secs, _ := c.secrets.List(labels.Everything())
+	out := make([]Resource, 0, len(secs))
+	for _, s := range secs {
+		out = append(out, Resource{Namespace: s.Namespace, Name: s.Name, Status: "Active", Health: HealthNeutral,
+			Created: s.CreationTimestamp.Time, Cols: []string{string(s.Type), keyList(slices.Collect(maps.Keys(s.Data)))}})
+	}
+	return out
 }
 
 func listPods(c *cluster) []Resource {

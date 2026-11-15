@@ -1,4 +1,4 @@
-import { api, post, stream, esc, ago, copy, debounce, RANK } from '/static/common.js';
+import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
 
 const view = document.getElementById('view');
 const VIEWS = ['overview', 'resources', 'alerts', 'history', 'doctor', 'settings'];
@@ -21,7 +21,8 @@ window.buddyShowTab = (tab) => go(VIEWS.includes(tab) ? tab : 'overview');
 
 async function render() {
   const r = route();
-  document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === r.name));
+  document.querySelectorAll('nav a[data-view]').forEach((a) => a.classList.toggle('on', a.dataset.view === r.name));
+  subnav.hidden = r.name !== 'resources';
   current = r.name;
   closeDrawer();
   try {
@@ -30,7 +31,7 @@ async function render() {
     view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
   }
 }
-document.querySelectorAll('nav a').forEach((a) => a.addEventListener('click', () => go(a.dataset.view)));
+document.querySelectorAll('nav a[data-view]').forEach((a) => a.addEventListener('click', () => go(a.dataset.view)));
 window.addEventListener('hashchange', render);
 
 // ---------- helpers ----------
@@ -91,7 +92,7 @@ function clusterCard(c) {
   if (s?.pvcPending) flags.push(`<span class="pill warn">${s.pvcPending} PVC pending</span>`);
   if (s?.lbPending) flags.push(`<span class="pill warn">${s.lbPending} LB pending</span>`);
   if (c.alerts) flags.push(`<span class="pill accent">${plural(c.alerts, 'alert')}</span>`);
-  if (c.resourceErrors) flags.push(`<span class="pill warn" title="${esc(JSON.stringify(c.resourceErrors))}">limited access</span>`);
+  if (c.resourceErrors) flags.push(`<span class="pill warn" title="${esc(accessTooltip(c.resourceErrors))}">limited access</span>`);
   const active = s ? s.pods - s.podsDone : 0;
   const podPct = active ? (s.podsRunning / active) * 100 : 0, badPct = active ? (s.podsProblem / active) * 100 : 0;
   return `<div class="card cluster h-${h}" data-name="${esc(c.name)}" data-status="${c.status}">
@@ -106,17 +107,82 @@ function clusterCard(c) {
   </div>`;
 }
 
+function accessTooltip(errs) {
+  const entries = Object.entries(errs);
+  const denied = entries.filter(([, e]) => /forbidden/i.test(e)).map(([r]) => r);
+  const other = entries.filter(([, e]) => !/forbidden/i.test(e));
+  const lines = [];
+  if (denied.length) lines.push(`No access to: ${denied.join(', ')}`);
+  for (const [r, e] of other) lines.push(`${r}: ${e.replace(/^.*?: /, '').slice(0, 140)}`);
+  const sample = entries.find(([, e]) => /forbidden/i.test(e));
+  if (sample) lines.push('', sample[1].replace(/^.*?forbidden: /i, '').slice(0, 200));
+  return lines.join('\n');
+}
+
 // ---------- resources ----------
 const resState = { sort: null, asc: true };
-async function resources(params) {
+let crds = [];
+let crdsAt = 0;
+let lastList = null;
+const subnav = document.getElementById('subnav');
+
+async function loadKinds() {
   if (!kinds.length) kinds = await api('/api/kinds');
+  if (Date.now() - crdsAt > 5 * 60 * 1000) {
+    crdsAt = Date.now();
+    crds = await api('/api/crds').catch(() => crds);
+  }
+}
+
+const crKind = (c) => `cr:${c.group}/${c.resource}`;
+function kindLabel(id) {
+  const k = kinds.find((x) => x.id === id);
+  if (k) return k.label;
+  const c = crds.find((x) => crKind(x) === id);
+  return c ? `${c.kind}s` : id.replace(/^cr:/, '');
+}
+
+function renderSubnav(active) {
+  const sections = [...new Set(kinds.map((k) => k.section))];
+  const groups = {};
+  crds.forEach((c) => (groups[c.group] ||= []).push(c));
+  const filter = subnav.dataset.filter || '';
+  const groupNames = Object.keys(groups).sort().filter((g) => !filter || g.includes(filter) || groups[g].some((c) => c.kind.toLowerCase().includes(filter)));
+  subnav.innerHTML = `
+    ${sections.map((sec) => `<div class="sub-section">${esc(sec)}</div>
+      ${kinds.filter((k) => k.section === sec).map((k) => `<a data-kind="${k.id}" class="${k.id === active ? 'on' : ''}">${esc(k.label)}</a>`).join('')}`).join('')}
+    <div class="sub-section">Custom resources ${crds.length ? `<span class="muted">${crds.length}</span>` : ''}</div>
+    ${crds.length ? `<input class="sub-filter" id="crdFilter" placeholder="Filter CRDs…" value="${esc(filter)}" spellcheck="false">` : '<div class="sub-empty">None found</div>'}
+    ${groupNames.map((g) => {
+      const items = groups[g].filter((c) => !filter || g.includes(filter) || c.kind.toLowerCase().includes(filter));
+      const open = filter || items.some((c) => crKind(c) === active);
+      return `<details class="sub-group" ${open ? 'open' : ''}><summary title="${esc(g)}">${esc(g)}</summary>
+        ${items.map((c) => `<a data-kind="${esc(crKind(c))}" class="${crKind(c) === active ? 'on' : ''}" title="${esc(c.kind)} · on ${c.clusters.length} cluster(s)">${esc(c.kind)}<span class="muted">${c.clusters.length}</span></a>`).join('')}
+      </details>`;
+    }).join('')}`;
+  subnav.querySelectorAll('a[data-kind]').forEach((a) => a.onclick = () => {
+    resState.sort = null;
+    const p = route().params;
+    go('resources', { kind: a.dataset.kind, cluster: p.get('cluster') || '', problems: p.get('problems') || '' });
+  });
+  const fi = subnav.querySelector('#crdFilter');
+  if (fi) {
+    fi.oninput = debounce(() => { subnav.dataset.filter = fi.value.toLowerCase(); renderSubnav(active); subnav.querySelector('#crdFilter')?.focus(); }, 150);
+    if (filter) fi.setSelectionRange(filter.length, filter.length);
+  }
+  subnav.querySelector('a.on')?.scrollIntoView({ block: 'nearest' });
+}
+
+async function resources(params) {
+  await loadKinds();
   const ov = clustersCache || await loadClusters();
   const kind = params.get('kind') || 'pods';
   const f = { kind, cluster: params.get('cluster') || '', namespace: params.get('namespace') || '', q: params.get('q') || '', problems: params.get('problems') === '1' };
   const clusterNames = ov.clusters.filter((c) => c.stats).map((c) => c.name);
+  renderSubnav(kind);
+  const crd = crds.find((c) => crKind(c) === kind);
   view.innerHTML = `
-    ${head('Resources', 'Everything across your clusters, live from the watch cache.')}
-    <div class="toolbar"><div class="seg" id="kinds">${kinds.map((k) => `<button data-k="${k.id}" class="${k.id === kind ? 'on' : ''}">${esc(k.label)}</button>`).join('')}</div></div>
+    ${head(esc(kindLabel(kind)), crd ? `<code>${esc(crd.group)}/${esc(crd.version)}</code> · custom resource on ${plural(crd.clusters.length, 'cluster')}` : 'Across all your clusters.')}
     <div class="toolbar">
       <select class="input" id="fCluster"><option value="">All clusters</option>${clusterNames.map((n) => `<option ${n === f.cluster ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
       <select class="input" id="fNs"><option value="">All namespaces</option></select>
@@ -127,7 +193,6 @@ async function resources(params) {
     <div class="card"><div class="table-wrap" id="resTable"><div class="empty">Loading…</div></div><div class="table-foot" id="resFoot" hidden></div></div>`;
 
   const update = (patch) => go('resources', { ...f, problems: f.problems ? '1' : '', ...patch });
-  view.querySelectorAll('#kinds button').forEach((b) => b.onclick = () => { resState.sort = null; update({ kind: b.dataset.k, namespace: '' }); });
   view.querySelector('#fCluster').onchange = (e) => update({ cluster: e.target.value, namespace: '' });
   view.querySelector('#fNs').onchange = (e) => update({ namespace: e.target.value });
   view.querySelector('#fProblems').onchange = (e) => update({ problems: e.target.checked ? '1' : '' });
@@ -138,7 +203,8 @@ async function resources(params) {
   async function load() {
     const qs = new URLSearchParams({ kind: f.kind, cluster: f.cluster, namespace: f.namespace, q: f.q, problems: f.problems ? '1' : '' });
     const list = await api('/api/resources?' + qs);
-    if (current !== 'resources') return;
+    if (current !== 'resources' || route().params.get('kind') && route().params.get('kind') !== f.kind) return;
+    lastList = list;
     const ns = view.querySelector('#fNs');
     ns.disabled = !list.namespaced;
     ns.innerHTML = `<option value="">All namespaces</option>` + list.namespaces.map((n) => `<option ${n === f.namespace ? 'selected' : ''}>${esc(n)}</option>`).join('');
@@ -165,7 +231,9 @@ async function resources(params) {
     }
     const wrap = view.querySelector('#resTable');
     if (!items.length) {
-      wrap.innerHTML = `<div class="empty"><span class="big">${f.problems ? '✨' : '🔍'}</span>${f.problems ? 'No problems here.' : 'Nothing matches.'}</div>`;
+      const waiting = list.unavailable.some((u) => u.reason === 'loading');
+      const denied = list.unavailable.length && list.unavailable.every((u) => u.reason === 'no access');
+      wrap.innerHTML = `<div class="empty"><span class="big">${waiting ? '⏳' : denied ? '🔒' : f.problems ? '✨' : '🔍'}</span>${waiting ? 'Loading…' : denied ? "You don't have access to list these on any cluster." : f.problems ? 'No problems here.' : 'Nothing here.'}</div>`;
     } else {
       wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th data-i="${i}" class="${resState.sort === i ? 'sorted' + (resState.asc ? ' asc' : '') : ''}">${esc(c)}</th>`).join('')}</tr></thead><tbody>
         ${items.map((r, idx) => `<tr data-idx="${idx}">
@@ -185,14 +253,19 @@ async function resources(params) {
       });
       wrap.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => {
         const r = items[+tr.dataset.idx];
-        if (f.kind === 'events') eventDrawer(r); else resourceDrawer(f.kind, r);
+        if (f.kind === 'events') eventDrawer(r); else resourceDrawer(f.kind, r, list.columns);
       });
     }
     const foot = view.querySelector('#resFoot');
     const notes = [];
     if (list.total > list.items.length) notes.push(`Showing first ${list.items.length.toLocaleString()} of ${list.total.toLocaleString()} — narrow it down with filters.`);
-    if (list.unavailable.length) notes.push(`Still syncing or no access: ${list.unavailable.join(', ')}`);
+    const by = (r) => list.unavailable.filter((u) => u.reason === r).map((u) => u.cluster);
+    if (by('loading').length) notes.push(`Loading from ${plural(by('loading').length, 'cluster')}… (first look at this kind takes a few seconds)`);
+    if (by('no access').length) notes.push(`No access on ${by('no access').join(', ')}`);
+    if (by('error').length) notes.push(`Errors on ${by('error').join(', ')}`);
+    if (by('loading').length) setTimeout(() => current === 'resources' && resources.refresh?.(), 2500);
     foot.hidden = !notes.length; foot.textContent = notes.join(' · ');
+    foot.title = list.unavailable.filter((u) => u.detail).map((u) => `${u.cluster}: ${u.detail}`).join('\n');
   }
   await load();
   resources.refresh = load;
@@ -200,17 +273,26 @@ async function resources(params) {
 
 // ---------- drawer ----------
 const drawer = document.getElementById('drawer');
+let drawerSeq = 0;
 function openDrawer({ eyebrow, title, tabs }) {
+  const seq = ++drawerSeq;
   document.getElementById('dEyebrow').innerHTML = eyebrow;
   document.getElementById('dTitle').textContent = title;
   const tabsEl = document.getElementById('dTabs');
   const body = document.getElementById('dBody');
   tabsEl.innerHTML = tabs.map((t, i) => `<button data-i="${i}" class="${i === 0 ? 'on' : ''}">${esc(t.label)}</button>`).join('');
-  const show = (i) => {
+  const bind = () => body.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+  const show = async (i) => {
     tabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', +b.dataset.i === i));
-    body.innerHTML = tabs[i].html;
-    body.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copyCmd(b.dataset.copy));
+    const t = tabs[i];
     body.scrollTop = 0;
+    if (t.load && t.html == null) {
+      body.innerHTML = '<div class="empty">Loading…</div>';
+      try { t.html = await t.load(); } catch (e) { t.html = `<div class="empty" style="color:var(--bad)">${esc(e.message)}</div>`; }
+      if (seq !== drawerSeq || !tabsEl.querySelector(`button[data-i="${i}"].on`)) return;
+    }
+    body.innerHTML = t.html;
+    bind();
   };
   tabsEl.querySelectorAll('button').forEach((b) => b.onclick = () => show(+b.dataset.i));
   show(0);
@@ -225,22 +307,39 @@ document.addEventListener('keydown', (e) => {
 
 const cmdBlock = (cmds) => cmds.map((c) => `<div class="cmd"><pre class="code">${esc(c)}</pre><button class="btn sm" data-copy="${esc(c)}">Copy</button></div>`).join('');
 
-async function resourceDrawer(kind, r) {
+async function describeText(kind, r) {
+  const u = new URL('/api/describe', location.origin);
+  Object.entries({ t: TOKEN, cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }).forEach(([k, v]) => u.searchParams.set(k, v));
+  const res = await fetch(u);
+  const text = await res.text();
+  if (!res.ok) throw new Error(text.trim() || res.statusText);
+  return text;
+}
+
+async function resourceDrawer(kind, r, columns) {
   const d = await api('/api/resource?' + new URLSearchParams({ cluster: r.cluster, kind, namespace: r.namespace || '', name: r.name }));
-  const kindInfo = kinds.find((k) => k.id === kind);
   const kv = [['Status', healthPill(r.health, r.status)], ['Cluster', esc(r.cluster)], ...(r.namespace ? [['Namespace', esc(r.namespace)]] : []),
-    ...kindInfo.columns.map((c, i) => [esc(c), esc(r.cols[i] || '–')]), ['Created', `${new Date(r.created).toLocaleString()} (${ago(r.created)} ago)`]];
+    ...columns.map((c, i) => [esc(c), esc(r.cols[i] || '–')]), ['Created', `${new Date(r.created).toLocaleString()} (${ago(r.created)} ago)`]];
+  const summary = `<dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    <div class="section-title" style="margin-top:6px">Recent warnings</div>
+    ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
+      : '<p class="muted">No warning events for this object.</p>'}`;
+  const tabs = [];
+  if (kind !== 'helm') {
+    tabs.push({ label: 'Describe', load: async () => {
+      const text = await describeText(kind, r);
+      return `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(text)}">Copy</button></div><pre class="code yaml">${esc(text)}</pre>`;
+    } });
+  }
+  tabs.push(
+    { label: 'Summary', html: summary },
+    { label: kind === 'helm' ? 'Release' : 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },
+    { label: 'Commands', html: cmdBlock(d.commands) },
+  );
   openDrawer({
-    eyebrow: `<span class="pill accent">${esc(kindInfo.label.replace(/s$/, ''))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
+    eyebrow: `<span class="pill accent">${esc(kindLabel(kind).replace(/e?s$/, '').replace(/ie$/, 'y'))}</span>${esc(r.cluster)}${r.namespace ? ' · ' + esc(r.namespace) : ''}`,
     title: r.name,
-    tabs: [
-      { label: 'Summary', html: `<dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
-          <div class="section-title" style="margin-top:6px">Recent warnings</div>
-          ${d.events.length ? `<div class="card alerts">${d.events.map((e) => `<div class="alert warning"><div class="stripe"></div><div><div class="meta"><b>${esc(e.status)}</b><span>${ago(e.created)} ago</span><span>×${esc(e.cols[2])}</span></div><div class="detail">${esc(e.cols[1])}</div></div><div></div></div>`).join('')}</div>`
-            : '<p class="muted">No warning events for this object.</p>'}` },
-      { label: 'YAML', html: `<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn sm" data-copy="${esc(d.yaml)}">Copy YAML</button></div><pre class="code yaml">${esc(d.yaml)}</pre>` },
-      { label: 'Commands', html: cmdBlock(d.commands) },
-    ],
+    tabs,
   });
 }
 

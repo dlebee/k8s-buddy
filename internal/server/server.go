@@ -126,6 +126,17 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, d)
 	})
+	mux.HandleFunc("GET /api/crds", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.CustomResources()) })
+	mux.HandleFunc("GET /api/describe", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		out, err := s.mgr.Describe(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(out))
+	})
 	mux.HandleFunc("GET /api/doctor", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.mgr.DoctorReport()) })
 	mux.HandleFunc("POST /api/doctor", func(w http.ResponseWriter, r *http.Request) {
 		s.mgr.StartDoctor()

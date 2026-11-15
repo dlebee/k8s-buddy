@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -175,6 +176,9 @@ func updateTray(ctx context.Context, store *alert.Store, d ui.Driver) {
 // GUI apps launched from Finder get a minimal PATH, which breaks kubeconfig exec plugins
 // (aws, gke-gcloud-auth-plugin, kubelogin, ...). Borrow the user's login shell PATH.
 func inheritLoginShellPath(log *slog.Logger) {
+	if runtime.GOOS == "windows" {
+		return
+	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/zsh"

@@ -1,0 +1,43 @@
+# cert-manager + ingress fixtures. Requires cert-manager installed.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata: {name: buddy-selfsigned}
+spec:
+  selfSigned: {}
+---
+# Issuer whose CA secret does not exist -> Ready=False
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata: {name: broken-ca, namespace: buddy-demo}
+spec:
+  ca: {secretName: no-such-ca-secret}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: healthy-short-lived, namespace: buddy-demo}
+spec:
+  secretName: healthy-short-lived-tls
+  dnsNames: [healthy.buddy.test]
+  duration: 1h
+  renewBefore: 20m
+  issuerRef: {name: buddy-selfsigned, kind: ClusterIssuer}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: never-issued, namespace: buddy-demo}
+spec:
+  secretName: never-issued-tls
+  dnsNames: [broken.buddy.test]
+  issuerRef: {name: broken-ca, kind: Issuer}
+---
+# Ingress for a controller that is not installed
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: wrong-class, namespace: buddy-demo}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: nginx.buddy.test
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: precious, port: {number: 80}}}}

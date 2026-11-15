@@ -61,6 +61,42 @@ var eventReasons = map[string]alert.Severity{
 	"FailedPostStartHook":              alert.Warning,
 	"InvalidDiskCapacity":              alert.Info,
 	"FailedNodeAllocatableEnforcement": alert.Info,
+	"Unhealthy":                        alert.Warning,
+	// node-problem-detector (AKS and others): platform maintenance and node OS trouble.
+	"VMEventScheduled":            alert.Notice,
+	"FreezeScheduled":             alert.Notice,
+	"RebootScheduled":             alert.Notice,
+	"RedeployScheduled":           alert.Notice,
+	"TerminateScheduled":          alert.Notice,
+	"PreemptScheduled":            alert.Warning,
+	"KernelDeadlock":              alert.Warning,
+	"ReadonlyFilesystem":          alert.Critical,
+	"FilesystemCorruptionProblem": alert.Warning,
+	"FrequentKubeletRestart":      alert.Warning,
+	"FrequentContainerdRestart":   alert.Warning,
+}
+
+// Scheduled maintenance stays relevant until it happens, so these are surfaced even if they
+// were emitted before k8s-buddy started.
+var maintenanceReasons = map[string]string{
+	"VMEventScheduled":   "Upcoming VM maintenance",
+	"FreezeScheduled":    "VM freeze scheduled",
+	"RebootScheduled":    "VM reboot scheduled",
+	"RedeployScheduled":  "VM redeploy scheduled",
+	"TerminateScheduled": "VM termination scheduled",
+	"PreemptScheduled":   "Spot VM eviction scheduled",
+}
+
+const (
+	maintenanceMaxAge = 12 * time.Hour
+	unhealthyMinCount = 3
+)
+
+func eventCount(e *corev1.Event) int32 {
+	if e.Series != nil && e.Series.Count > 0 {
+		return e.Series.Count
+	}
+	return max(e.Count, 1)
 }
 
 // sweep re-evaluates all state-based detectors and resolves alerts whose condition cleared.
@@ -76,6 +112,15 @@ func (c *cluster) sweep() {
 	}
 	if c.synced("nodes") {
 		c.emit("nodes", c.detectNodes())
+	}
+	if c.synced("ingresses") {
+		c.emit("ingresses", c.detectIngresses())
+	}
+	if c.synced("helm") {
+		c.emit("helm", c.detectHelm())
+	}
+	if c.synced("cm-certificates") {
+		c.emit("cert-manager", c.detectCertManager())
 	}
 }
 
@@ -358,7 +403,17 @@ func (c *cluster) onEvent(e *corev1.Event) {
 		return
 	}
 	ts := eventTime(e)
-	if ts.Before(c.startedAt.Add(-time.Minute)) || time.Since(ts) > eventMaxAge {
+	maintenance, isMaintenance := maintenanceReasons[e.Reason]
+	switch {
+	case isMaintenance:
+		if time.Since(ts) > maintenanceMaxAge {
+			return
+		}
+	case ts.Before(c.startedAt.Add(-time.Minute)) || time.Since(ts) > eventMaxAge:
+		return
+	}
+	// One failed probe during a rollout is normal; keep repeated failures.
+	if e.Reason == "Unhealthy" && eventCount(e) < unhealthyMinCount {
 		return
 	}
 	obj := e.InvolvedObject
@@ -372,14 +427,26 @@ func (c *cluster) onEvent(e *corev1.Event) {
 		kind, name = jobOwner(name)
 	}
 	target := strings.ToLower(obj.Kind) + "/" + obj.Name
+	title := fmt.Sprintf("%s · %s", e.Reason, shortRef(kind, name))
+	category := "event"
+	switch {
+	case isMaintenance:
+		title, category = maintenance+" · "+shortRef(kind, name), "maintenance"
+	case e.Reason == "Unhealthy":
+		probe := "Probe"
+		if i := strings.Index(e.Message, " probe failed"); i > 0 {
+			probe = e.Message[:i] + " probe"
+		}
+		title = probe + " failing · " + shortRef(kind, name)
+	}
 	c.store.Record(alert.Alert{
 		Key:      fmt.Sprintf("event/%s/%s/%s/%s", e.Reason, obj.Namespace, kind, name),
 		Source:   "events",
 		Cluster:  c.name,
 		Severity: sev,
-		Category: "event",
+		Category: category,
 		Kind:     kind, Namespace: obj.Namespace, Name: name,
-		Title:  fmt.Sprintf("%s · %s", e.Reason, shortRef(kind, name)),
+		Title:  title,
 		Detail: truncate(e.Message, 300),
 		Hint:   kubectl(c.name, obj.Namespace, "describe "+target),
 	})

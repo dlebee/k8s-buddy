@@ -12,10 +12,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	networkinglisters "k8s.io/client-go/listers/networking/v1"
+	"k8s.io/client-go/metadata"
+	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
@@ -98,6 +102,15 @@ type cluster struct {
 	sts         appslisters.StatefulSetLister
 	ds          appslisters.DaemonSetLister
 	cs          kubernetes.Interface
+	runCtx      context.Context
+	ingresses   networkinglisters.IngressLister
+	helm        cache.GenericLister
+	dynf        dynamicinformer.DynamicSharedInformerFactory
+	dynListers  map[string]cache.GenericLister
+	disc        discoveryCache
+	tables      tableCache
+	configmaps  corelisters.ConfigMapLister
+	secrets     corelisters.SecretLister
 	nodesSynced atomic.Bool
 }
 
@@ -159,6 +172,7 @@ func (c *cluster) run(ctx context.Context) {
 				c.onFailure(err)
 			} else {
 				c.onVersion(v)
+				c.ensureCRDWatchers()
 			}
 		}
 	}
@@ -260,6 +274,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	deploys := f.Apps().V1().Deployments()
 	sts := f.Apps().V1().StatefulSets()
 	ds := f.Apps().V1().DaemonSets()
+	ings := f.Networking().V1().Ingresses()
 
 	infs := map[string]cache.SharedIndexInformer{
 		"pods":         pods.Informer(),
@@ -270,6 +285,15 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 		"deployments":  deploys.Informer(),
 		"statefulsets": sts.Informer(),
 		"daemonsets":   ds.Informer(),
+		"ingresses":    ings.Informer(),
+	}
+	var mf metadatainformer.SharedInformerFactory
+	if mc, err := metadata.NewForConfig(c.cfg); err == nil {
+		mf = metadatainformer.NewFilteredSharedInformerFactory(mc, 0, "", func(o *metav1.ListOptions) { o.LabelSelector = "owner=helm" })
+		h := mf.ForResource(corev1.SchemeGroupVersion.WithResource("secrets"))
+		_ = h.Informer().SetTransform(stripHelmMeta)
+		infs["helm"] = h.Informer()
+		c.helm = h.Lister()
 	}
 	for name, inf := range infs {
 		_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.setResourceErr(name, err) })
@@ -322,12 +346,17 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	c.mu.Lock()
 	c.informers = infs
 	c.cs = cs
+	c.runCtx = ctx
 	c.pods, c.pvcs, c.services, c.nodes, c.events = pods.Lister(), pvcs.Lister(), svcs.Lister(), nodes.Lister(), events.Lister()
 	c.deploys, c.sts, c.ds = deploys.Lister(), sts.Lister(), ds.Lister()
+	c.ingresses = ings.Lister()
 	c.mu.Unlock()
 
 	f.Start(ctx.Done())
 	ef.Start(ctx.Done())
+	if mf != nil {
+		mf.Start(ctx.Done())
+	}
 
 	go func() {
 		sctx, cancel := context.WithTimeout(ctx, syncTimeout)
@@ -345,6 +374,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 			c.status = StatusConnected
 		}
 		c.mu.Unlock()
+		c.ensureCRDWatchers()
 		c.sweep()
 	}()
 }
@@ -353,6 +383,59 @@ func (c *cluster) setResourceErr(resource string, err error) {
 	c.mu.Lock()
 	c.resErrs[resource] = resourceErr{msg: truncate(err.Error(), 300), at: time.Now()}
 	c.mu.Unlock()
+}
+
+// ensureLazy starts informers for kinds we only watch once someone asks for them.
+func (c *cluster) ensureLazy(resource string) {
+	c.mu.Lock()
+	if c.informers == nil || c.informers[resource] != nil || c.runCtx == nil {
+		c.mu.Unlock()
+		return
+	}
+	var inf cache.SharedIndexInformer
+	var f informers.SharedInformerFactory
+	switch resource {
+	case "configmaps":
+		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(stripManagedFields))
+		cm := f.Core().V1().ConfigMaps()
+		inf, c.configmaps = cm.Informer(), cm.Lister()
+	case "secrets":
+		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(redactSecret))
+		sec := f.Core().V1().Secrets()
+		inf, c.secrets = sec.Informer(), sec.Lister()
+	default:
+		c.mu.Unlock()
+		return
+	}
+	_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.setResourceErr(resource, err) })
+	c.informers[resource] = inf
+	ctx := c.runCtx
+	c.mu.Unlock()
+	f.Start(ctx.Done())
+}
+
+// redactSecret keeps secret metadata and key names but never retains values in memory.
+func redactSecret(obj any) (any, error) {
+	if s, ok := obj.(*corev1.Secret); ok {
+		s.ManagedFields = nil
+		delete(s.Annotations, corev1.LastAppliedConfigAnnotation)
+		for k := range s.Data {
+			s.Data[k] = nil
+		}
+		for k := range s.StringData {
+			s.StringData[k] = ""
+		}
+	}
+	return obj, nil
+}
+
+func (c *cluster) resourceError(resource string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.resErrs[resource]; ok {
+		return e.msg
+	}
+	return ""
 }
 
 func (c *cluster) synced(resource string) bool {
