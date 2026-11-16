@@ -88,7 +88,7 @@ var kinds = map[string]kindSpec{
 			o, err := c.pvcs.PersistentVolumeClaims(ns).Get(n)
 			return o, "PersistentVolumeClaim", err
 		}},
-	"nodes": {"nodes", "Nodes", false, []string{"Roles", "Pool", "Version", "OS image"}, listNodes,
+	"nodes": {"nodes", "Nodes", false, []string{"Roles", "Pool", "Version", "Disks", "OS image"}, listNodes,
 		func(c *cluster, _, n string) (runtime.Object, string, error) {
 			o, err := c.nodes.Get(n)
 			return o, "Node", err
@@ -633,7 +633,7 @@ func listNodes(c *cluster) []Resource {
 		slices.Sort(roles)
 		out = append(out, Resource{
 			Name: n.Name, Status: status, Health: h, Created: n.CreationTimestamp.Time,
-			Cols: []string{strings.Join(roles, ","), poolOf(n), n.Status.NodeInfo.KubeletVersion, n.Status.NodeInfo.OSImage},
+			Cols: []string{strings.Join(roles, ","), poolOf(n), n.Status.NodeInfo.KubeletVersion, nodeDisks(n, c.csiNode(n.Name)).cell(), n.Status.NodeInfo.OSImage},
 		})
 	}
 	return out

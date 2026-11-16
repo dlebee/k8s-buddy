@@ -267,7 +267,24 @@ function usageCell(used, req, lim, fmt, isMem) {
     has && ref ? `${Math.round((used / ref) * 100)}% of ${lim > 0 ? 'limit' : 'request'}` : ''].filter(Boolean).join(' · ');
   return `<td class="uc ${tone}" title="${esc(tip)}"><span>${has ? fmt(used) : req > 0 ? `<span class="muted">req ${fmt(req)}</span>` : '<span class="muted">–</span>'}</span>${ref ? `<i><b style="width:${pct}%"></b>${lim > 0 && req > 0 ? `<u style="left:${Math.min(100, (req / lim) * 100)}%"></u>` : ''}</i>` : ''}</td>`;
 }
-const usageCells = (u) => u ? usageCell(u.cpu, u.cpuReq, u.cpuLim, fmtCPU) + usageCell(u.mem, u.memReq, u.memLim, fmtMem, true) : '<td></td><td></td>';
+const usageCells = (u, which) => !u ? '<td></td>' : which === 'cpu' ? usageCell(u.cpu, u.cpuReq, u.cpuLim, fmtCPU) : usageCell(u.mem, u.memReq, u.memLim, fmtMem, true);
+
+// diskCell colours "3/16" as the node nears its attach limit.
+function diskCell(v) {
+  const [a, l] = String(v).split('/').map(Number);
+  const tone = l > 0 ? (a >= l ? 'bad' : a >= l * 0.8 ? 'warn' : '') : '';
+  return `<td class="dkc ${tone}" title="${l > 0 ? `${a} disks attached of ${l} the node can take` : `${a} disks attached (no attach limit advertised)`}">${esc(v)}</td>`;
+}
+
+// ---------- column picker ----------
+// Columns hidden by default per kind; everything else shows. People's own picks override these.
+const DEFAULT_HIDDEN = { pods: ['c:IP'], nodes: ['c:OS image'] };
+function hiddenColumns(kind) {
+  try { const v = localStorage.getItem('buddy.cols.' + kind); if (v) return new Set(JSON.parse(v)); } catch { /* storage unavailable */ }
+  return new Set(DEFAULT_HIDDEN[kind] || []);
+}
+function saveHidden(kind, set) { try { localStorage.setItem('buddy.cols.' + kind, JSON.stringify([...set])); } catch { /* ignore */ } }
+function resetHidden(kind) { try { localStorage.removeItem('buddy.cols.' + kind); } catch { /* ignore */ } }
 
 async function resources(params) {
   await Promise.all([loadKinds(), loadReleases()]);
@@ -283,6 +300,7 @@ async function resources(params) {
       <span id="fPickers">${PICKERS}</span>
       <input class="input search" id="fQ" placeholder="Search name, status, image, IP…" value="${esc(f.q)}" autocomplete="off" spellcheck="false">
       <label class="toggle"><input type="checkbox" id="fProblems" ${f.problems ? 'checked' : ''}> Only problems</label>
+      <span class="colpick"><button class="btn sm" id="fCols" title="Choose columns">Columns</button><div class="colpick-menu" id="fColsMenu" hidden></div></span>
       <span class="spacer" style="flex:1"></span><span class="muted" id="resCount"></span>
     </div>
     <div class="card"><div class="table-wrap" id="resTable"><div class="empty">Loading…</div></div><div class="table-foot" id="resFoot" hidden></div></div>`;
@@ -306,51 +324,79 @@ async function resources(params) {
     renderTable(list);
   }
 
-  function renderTable(list) {
+  // Columns are descriptors so people can pick which ones show; the choice is kept per kind.
+  function renderColumnPicker(all, list) {
+    const btn = view.querySelector('#fCols'), menu = view.querySelector('#fColsMenu');
+    if (!btn) return;
+    const hidden = hiddenColumns(f.kind);
+    const pickable = all.filter((c) => !c.fixed);
+    menu.innerHTML = `<div class="colpick-head">Columns<button class="btn sm" data-reset>Defaults</button></div>${pickable.map((c) => `<label><input type="checkbox" data-col="${esc(c.id)}" ${hidden.has(c.id) ? '' : 'checked'}> ${esc(c.label)}</label>`).join('')}`;
+    menu.querySelectorAll('[data-col]').forEach((cb) => cb.onchange = () => {
+      const h = hiddenColumns(f.kind);
+      cb.checked ? h.delete(cb.dataset.col) : h.add(cb.dataset.col);
+      saveHidden(f.kind, h);
+      renderTable(list);
+    });
+    menu.querySelector('[data-reset]').onclick = () => { resetHidden(f.kind); renderTable(list); };
+    btn.onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+    menu.onclick = (e) => e.stopPropagation();
+    if (!resources.closePicker) { resources.closePicker = true; document.addEventListener('click', () => { const m = document.getElementById('fColsMenu'); if (m) m.hidden = true; }); }
+  }
+
+  function columnsFor(list) {
     const usage = list.items.some((r) => r.usage);
-    const cols = ['', 'Name', ...(list.namespaced ? ['Namespace'] : []), 'Cluster', 'Status', ...(usage ? ['CPU', 'Memory'] : []), ...list.columns, 'Age'];
-    const usageAt = usage ? (list.namespaced ? 5 : 4) : -1; // CPU column, right after Status; Memory follows
-    const key = (r, i) => {
-      const off = list.namespaced ? 1 : 0;
-      if (i === 0) return HEALTH_ORDER[r.health];
-      if (i === 1) return r.name;
-      if (list.namespaced && i === 2) return r.namespace;
-      if (i === 2 + off) return r.cluster;
-      if (i === 3 + off) return r.status;
-      if (i === cols.length - 1) return -new Date(r.created).getTime();
-      if (usage && (i === usageAt || i === usageAt + 1)) { const u = r.usage || {}; return i === usageAt ? -(u.cpu * 1e6 + Math.max(u.cpuReq, 0)) : -(u.mem * 1e3 + Math.max(u.memReq, 0) / 1e9); }
-      const v = r.cols[i - 4 - off - (usage ? 2 : 0)]; const n = parseFloat(v);
-      return isNaN(n) || String(n) !== String(v).split('/')[0] ? v : n;
-    };
+    const nodes = f.kind === 'nodes';
+    const cols = [
+      { id: 'health', label: '', fixed: true, td: (r) => `<td style="width:18px"><span class="dot ${r.health}"></span></td>`, key: (r) => HEALTH_ORDER[r.health] },
+      { id: 'name', label: 'Name', fixed: true, td: (r) => `<td class="name" title="${esc(r.name)}">${esc(r.name)}</td>`, key: (r) => r.name },
+      ...(list.namespaced ? [{ id: 'namespace', label: 'Namespace', td: (r) => `<td>${esc(r.namespace)}</td>`, key: (r) => r.namespace }] : []),
+      { id: 'cluster', label: 'Cluster', td: (r) => `<td class="muted">${esc(r.cluster)}</td>`, key: (r) => r.cluster },
+      { id: 'status', label: 'Status', td: (r) => `<td>${healthPill(r.health, r.status)}</td>`, key: (r) => r.status },
+      ...(usage ? [
+        { id: 'cpu', label: 'CPU', server: 'cpu', td: (r) => usageCells(r.usage, 'cpu'), key: (r) => -(r.usage?.cpu ?? -1) },
+        { id: 'memory', label: 'Memory', server: 'memory', td: (r) => usageCells(r.usage, 'mem'), key: (r) => -(r.usage?.mem ?? -1) },
+      ] : []),
+      ...list.columns.map((label, ci) => ({
+        id: 'c:' + label, label,
+        td: (r) => {
+          const v = r.cols[ci] ?? '';
+          if (nodes && label === 'Version') return `<td>${verSpan(v)}</td>`;
+          if (nodes && label === 'Disks') return diskCell(v);
+          return `<td title="${esc(v)}">${esc(v)}</td>`;
+        },
+        key: (r) => { const v = r.cols[ci]; const n = parseFloat(v); return isNaN(n) || String(n) !== String(v).split('/')[0] ? v : n; },
+      })),
+      { id: 'age', label: 'Age', td: (r) => `<td class="muted">${ago(r.created)}</td>`, key: (r) => -new Date(r.created).getTime() },
+    ];
+    const hidden = hiddenColumns(f.kind);
+    return { all: cols, shown: cols.filter((c) => c.fixed || !hidden.has(c.id)) };
+  }
+
+  function renderTable(list) {
+    const { all, shown } = columnsFor(list);
     const items = [...list.items];
-    if (resState.sort != null && !(usage && f.sort && (resState.sort === usageAt || resState.sort === usageAt + 1))) {
-      items.sort((a, b) => { const x = key(a, resState.sort), y = key(b, resState.sort); return (x < y ? -1 : x > y ? 1 : 0) * (resState.asc ? 1 : -1); });
+    const sortCol = shown.find((c) => c.id === resState.sort);
+    if (sortCol && !(sortCol.server && f.sort)) {
+      items.sort((a, b) => { const x = sortCol.key(a), y = sortCol.key(b); return (x < y ? -1 : x > y ? 1 : 0) * (resState.asc ? 1 : -1); });
     }
+    renderColumnPicker(all, list);
     const wrap = view.querySelector('#resTable');
     if (!items.length) {
       const waiting = list.unavailable.some((u) => u.reason === 'loading');
       const denied = list.unavailable.length && list.unavailable.every((u) => u.reason === 'no access');
       wrap.innerHTML = `<div class="empty"><span class="big">${waiting ? '⏳' : denied ? '🔒' : f.problems ? '✨' : '🔍'}</span>${waiting ? 'Loading…' : denied ? "You don't have access to list these on any cluster." : f.problems ? 'No problems here.' : 'Nothing here.'}</div>`;
     } else {
-      const sortedCol = usage && f.sort ? (f.sort === 'cpu' ? usageAt : usageAt + 1) : resState.sort;
-      wrap.innerHTML = `<table><thead><tr>${cols.map((c, i) => `<th data-i="${i}" class="${sortedCol === i ? 'sorted' + (resState.asc || (usage && f.sort) ? '' : ' asc') : ''}"${usage && i >= usageAt && i <= usageAt + 1 ? ' title="Sort heaviest first, across all pods"' : ''}>${esc(c)}</th>`).join('')}</tr></thead><tbody>
-        ${items.map((r, idx) => `<tr data-idx="${idx}">
-          <td style="width:18px"><span class="dot ${r.health}"></span></td>
-          <td class="name" title="${esc(r.name)}">${esc(r.name)}</td>
-          ${list.namespaced ? `<td>${esc(r.namespace)}</td>` : ''}
-          <td class="muted">${esc(r.cluster)}</td>
-          <td>${healthPill(r.health, r.status)}</td>
-          ${usage ? usageCells(r.usage) : ''}
-          ${r.cols.map((c, ci) => f.kind === 'nodes' && list.columns[ci] === 'Version' ? `<td>${verSpan(c)}</td>` : `<td title="${esc(c)}">${esc(c)}</td>`).join('')}
-          <td class="muted">${ago(r.created)}</td></tr>`).join('')}
+      const sortedId = f.sort ? (f.sort === 'cpu' ? 'cpu' : 'memory') : resState.sort;
+      wrap.innerHTML = `<table><thead><tr>${shown.map((c) => `<th data-id="${esc(c.id)}" class="${sortedId === c.id ? 'sorted' + (resState.asc || f.sort ? '' : ' asc') : ''}"${c.server ? ' title="Sort heaviest first, across all pods"' : ''}>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>
+        ${items.map((r, idx) => `<tr data-idx="${idx}">${shown.map((c) => c.td(r)).join('')}</tr>`).join('')}
       </tbody></table>`;
       wrap.querySelectorAll('th').forEach((th) => th.onclick = () => {
-        const i = +th.dataset.i;
+        const c = shown.find((x) => x.id === th.dataset.id);
         // CPU/Memory sort on the server so "heaviest" covers every pod, not just the rows shown.
-        if (usage && (i === usageAt || i === usageAt + 1)) { const s = i === usageAt ? 'cpu' : 'memory'; resState.sort = null; resources.setSort(f.sort === s ? '' : s); return; }
+        if (c.server) { resState.sort = null; resources.setSort(f.sort === c.server ? '' : c.server); return; }
         if (f.sort) { f.sort = ''; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); }
-        resState.asc = resState.sort === i ? !resState.asc : true;
-        resState.sort = i;
+        resState.asc = resState.sort === c.id ? !resState.asc : true;
+        resState.sort = c.id;
         renderTable(list);
       });
       wrap.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => {
@@ -358,6 +404,7 @@ async function resources(params) {
         if (f.kind === 'events') eventDrawer(r); else resourceDrawer(f.kind, r, list.columns);
       });
     }
+    const usage = shown.some((c) => c.server);
     const foot = view.querySelector('#resFoot');
     const notes = [];
     if (list.total > list.items.length) notes.push(`Showing first ${list.items.length.toLocaleString()} of ${list.total.toLocaleString()} — narrow it down with filters.`);

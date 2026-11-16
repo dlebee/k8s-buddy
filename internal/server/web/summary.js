@@ -636,10 +636,23 @@ function nodeSummary(o, ctx) {
       ${ctx.podCount != null ? meter('Pods', ctx.podCount, qty(alloc.pods), (n) => String(Math.round(n)), 'scheduled of allocatable') : ''}
       ${cap['ephemeral-storage'] ? meter('Ephemeral storage', qty(alloc['ephemeral-storage']), qty(cap['ephemeral-storage']), bytes) : ''}
     </div>`)}
+    ${ctx.disks ? section(`Disks <span class="muted">${ctx.disks.limit >= 0 ? `${ctx.disks.attached} of ${ctx.disks.limit} attachable` : `${ctx.disks.attached} attached`}</span>`, diskHTML(ctx.disks)) : ''}
     ${section('Conditions', conditionChips(status.conditions, ['MemoryPressure', 'DiskPressure', 'PIDPressure', 'NetworkUnavailable']))}
     ${section(`Taints <span class="muted">${arr(spec.taints).length}</span>`, arr(spec.taints).length ? `<div class="rv-chips">${arr(spec.taints).map((t) => `<span class="rv-chip taint ${t.effect === 'NoExecute' ? 'bad' : ''}"><i>${esc(t.key)}${t.value ? '=' + esc(t.value) : ''}</i>${esc(t.effect)}</span>`).join('')}</div>` : '<span class="muted">none</span>')}
     ${warnings(ctx.events)}
     ${metadata(md)}`;
+}
+
+// diskHTML shows attached volumes per storage driver, against the limit the driver advertises.
+function diskHTML(dk) {
+  if (!dk.drivers.length) return '<p class="muted">No volumes attached, and no driver advertises an attach limit.</p>';
+  return `<div class="rv-meters">${dk.drivers.map((d) => {
+    const tone = d.limit > 0 ? (d.attached >= d.limit ? 'bad' : d.attached >= d.limit * 0.8 ? 'warn' : '') : '';
+    const vols = (d.volumes || []).map((v) => /^pvc-[0-9a-f-]+$/.test(v) ? `<a class="rv-chip" data-open="pvs" data-name="${esc(v)}" data-ns="">${esc(v)}</a>` : `<span class="rv-chip" title="${esc(v)}">${esc(v.length > 40 ? '…' + v.slice(-39) : v)}</span>`).join('');
+    const head = d.limit >= 0 ? meter(d.driver, d.attached, d.limit, (n) => String(Math.round(n)), tone === 'bad' ? '⚠ at the attach limit: new volumes for pods on this node will wait' : tone === 'warn' ? 'close to the attach limit' : 'attached of the attach limit')
+      : `<div class="rv-meter"><div class="rv-meter-top"><b>${esc(d.driver)}</b><span>${d.attached} <span class="muted">attached · no limit advertised</span></span></div></div>`;
+    return `<div class="dk ${tone}">${head}${vols ? `<div class="rv-chips" style="margin-top:6px">${vols}</div>` : ''}</div>`;
+  }).join('')}</div>`;
 }
 
 // ---------- cert-manager Certificate ----------
@@ -715,7 +728,7 @@ export const hasRichSummary = (kind) => kind in RENDERERS;
 
 // renderSummary returns { html, bind } for the drawer. d is the /api/object response, events the warning events.
 export function renderSummary(kind, d, { row, events, open, fallback }) {
-  const ctx = { row, events, pods: d.pods, services: d.services, backendPods: d.backendPods, secretSizes: d.secretSizes, history: d.history, podCount: d.podCount, base: { cluster: d.cluster, namespace: d.namespace || '' } };
+  const ctx = { row, events, pods: d.pods, services: d.services, backendPods: d.backendPods, secretSizes: d.secretSizes, history: d.history, podCount: d.podCount, disks: d.disks, base: { cluster: d.cluster, namespace: d.namespace || '' } };
   const fn = RENDERERS[kind];
   const html = fn ? `<div class="rv">${fn(d.object || {}, ctx)}</div>` : fallback;
   return {

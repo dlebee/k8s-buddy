@@ -18,6 +18,7 @@ import (
 	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/metadata/metadatainformer"
 	"k8s.io/client-go/rest"
@@ -97,6 +98,7 @@ type cluster struct {
 	pvcs         corelisters.PersistentVolumeClaimLister
 	services     corelisters.ServiceLister
 	nodes        corelisters.NodeLister
+	csinodes     storagelisters.CSINodeLister
 	events       corelisters.EventLister
 	deploys      appslisters.DeploymentLister
 	sts          appslisters.StatefulSetLister
@@ -322,6 +324,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	ds := f.Apps().V1().DaemonSets()
 	ings := f.Networking().V1().Ingresses()
 	ics := f.Networking().V1().IngressClasses()
+	csin := f.Storage().V1().CSINodes() // per-node attach limits (small, cluster-scoped)
 
 	infs := map[string]cache.SharedIndexInformer{
 		"pods":           pods.Informer(),
@@ -334,6 +337,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 		"daemonsets":     ds.Informer(),
 		"ingresses":      ings.Informer(),
 		"ingressclasses": ics.Informer(),
+		"csinodes":       csin.Informer(),
 	}
 	var mf metadatainformer.SharedInformerFactory
 	if mc, err := metadata.NewForConfig(c.cfg); err == nil {
@@ -399,6 +403,7 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	c.deploys, c.sts, c.ds = deploys.Lister(), sts.Lister(), ds.Lister()
 	c.ingresses = ings.Lister()
 	c.ingressClasses = ics.Lister()
+	c.csinodes = csin.Lister()
 	c.mu.Unlock()
 
 	f.Start(ctx.Done())

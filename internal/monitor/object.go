@@ -36,6 +36,8 @@ type ObjectDetail struct {
 	History     []HelmRevision `json:"history,omitempty"`
 	// PodCount is the number of pods scheduled on a node.
 	PodCount *int `json:"podCount,omitempty"`
+	// Disks are the volumes attached to a node, against the attach limits its drivers advertise.
+	Disks *NodeDisks `json:"disks,omitempty"`
 }
 
 // PodBrief is just enough of a pod to draw a health dot and offer shell/port-forward.
@@ -217,6 +219,8 @@ func (c *cluster) related(d *ObjectDetail, obj any) {
 			}
 		}
 		d.PodCount = &n
+		disks := nodeDisks(o, c.csiNode(o.Name))
+		d.Disks = &disks
 	case *corev1.PersistentVolumeClaim:
 		d.Pods = []PodBrief{}
 		if c.synced("pods") {

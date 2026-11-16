@@ -269,3 +269,8 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .sv-val { margin-top: 6px; }
 .sv-pre { margin: 0; max-height: 260px; overflow: auto; padding: 8px 10px; border-radius: 7px; background: var(--surface-2); font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-all; }
 .sv-act { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+
+/* node disks */
+.dk.warn .rv-meter-bar span { background: var(--warn); }
+.dk.bad .rv-meter-bar span { background: var(--bad); }
+.dk.bad .rv-meter-top b { color: var(--bad); }
