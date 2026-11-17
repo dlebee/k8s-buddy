@@ -30,6 +30,8 @@ type Settings struct {
 	ClusterTags map[string][]string `json:"clusterTags"`
 	// usageHistorySet distinguishes "turned off" from "settings file older than the feature".
 	UsageHistorySet bool `json:"usageHistorySet,omitempty"`
+	// usageRetention14 marks settings past the move of the default retention from 7 to 14 days.
+	UsageRetention14 bool `json:"usageRetention14,omitempty"`
 	// Beta lists the beta features the user turned on (e.g. "cost"); everything else stays hidden.
 	Beta []string `json:"beta"`
 }
@@ -42,8 +44,9 @@ func Defaults() Settings {
 		ShowBubble:         true,
 		ShowCharacter:      true,
 		UsageHistory:       true,
-		UsageRetentionDays: 7,
+		UsageRetentionDays: 14,
 		UsageHistorySet:    true,
+		UsageRetention14:   true,
 	}
 }
 
@@ -64,6 +67,12 @@ func (s *Settings) normalize() {
 	}
 	if s.UsageRetentionDays <= 0 {
 		s.UsageRetentionDays = d.UsageRetentionDays
+	}
+	if !s.UsageRetention14 { // the default was 7 days: settings still on it move to the new 14
+		if s.UsageRetentionDays == 7 {
+			s.UsageRetentionDays = d.UsageRetentionDays
+		}
+		s.UsageRetention14 = true
 	}
 	s.UsageRetentionDays = min(s.UsageRetentionDays, 365)
 	switch s.NudgeLevel {
@@ -112,6 +121,7 @@ func Open(dir string) (*Store, error) {
 	case err != nil:
 		return nil, err
 	default:
+		st.s.UsageRetention14 = false // only files saved after the 14-day default carry it
 		if err := json.Unmarshal(b, &st.s); err != nil {
 			return nil, err
 		}

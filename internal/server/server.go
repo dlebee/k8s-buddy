@@ -275,6 +275,9 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag"), listParam(r, "cluster"), listParam(r, "ns")))
 	})
+	mux.HandleFunc("GET /api/optimizer", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.mgr.Optimize(listParam(r, "cluster")))
+	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()
 		if h == nil {

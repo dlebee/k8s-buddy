@@ -341,3 +341,59 @@ func pct(v []float64, p float64) float64 {
 	i := int(math.Ceil(p*float64(len(s)))) - 1
 	return s[max(0, min(i, len(s)-1))]
 }
+
+// Profile summarises one workload's usage per replica over a window, from the buckets that have
+// data only: time the app wasn't recording is skipped, not counted as zero.
+type Profile struct {
+	Namespace, Owner string
+	Buckets          int   // 5-minute buckets with data
+	First, Last      int64 // unix seconds of the first and last bucket
+	// Per replica, in millicores and bytes. Median and p95 of the typical (average) usage per
+	// bucket; Max is the highest single reading of any replica.
+	CPUMed, CPUP95, CPUMax float64
+	MemMed, MemP95, MemMax float64
+}
+
+// Profiles returns per-workload usage profiles of a cluster since `since`. kind is "pod" (owner
+// "Kind/name") or "container" (owner "Kind/name/container").
+func (s *Store) Profiles(cluster, kind string, since time.Time) ([]Profile, error) {
+	s.Flush() //nolint:errcheck
+	rows, err := s.db.Query(`SELECT se.ns, se.owner, sa.ts, AVG(sa.cpu_avg), MAX(sa.cpu_max), AVG(sa.mem_avg), MAX(sa.mem_max)
+		FROM samples sa JOIN series se ON se.id = sa.series
+		WHERE se.cluster = ? AND se.kind = ? AND se.owner != '' AND sa.ts >= ?
+		GROUP BY se.ns, se.owner, sa.ts ORDER BY se.ns, se.owner, sa.ts`, cluster, kind, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Profile
+	var cur *Profile
+	var cpu, mem []float64
+	done := func() {
+		if cur == nil {
+			return
+		}
+		cur.CPUMed, cur.CPUP95 = pct(cpu, .5), pct(cpu, .95)
+		cur.MemMed, cur.MemP95 = pct(mem, .5), pct(mem, .95)
+		out = append(out, *cur)
+		cpu, mem = cpu[:0], mem[:0]
+	}
+	for rows.Next() {
+		var ns, owner string
+		var ts int64
+		var ca, cm, ma, mm float64
+		if err := rows.Scan(&ns, &owner, &ts, &ca, &cm, &ma, &mm); err != nil {
+			return nil, err
+		}
+		if cur == nil || cur.Namespace != ns || cur.Owner != owner {
+			done()
+			cur = &Profile{Namespace: ns, Owner: owner, First: ts}
+		}
+		cur.Buckets++
+		cur.Last = ts
+		cur.CPUMax, cur.MemMax = max(cur.CPUMax, cm), max(cur.MemMax, mm)
+		cpu, mem = append(cpu, ca), append(mem, ma)
+	}
+	done()
+	return out, rows.Err()
+}

@@ -1,6 +1,7 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
 import { logsTab } from '/static/logs.js';
 import { costView } from '/static/cost.js';
+import { quotasView } from '/static/quotas.js';
 import { loadReleases, verSpan } from '/static/versions.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
@@ -9,7 +10,7 @@ import { openTagEditor } from '/static/tags.js';
 import { mountExposure } from '/static/exposure.js';
 
 const view = document.getElementById('view');
-const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'cost', 'settings'];
+const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'quotas', 'cost', 'settings'];
 const HEALTH_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
 const SEV_PILL = { critical: 'bad', warning: 'warn', notice: 'notice', info: '' };
 let current = null;
@@ -43,7 +44,7 @@ async function render() {
   closeDrawer();
   exposureHandle?.destroy(); exposureHandle = null;
   try {
-    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings, cost: costPage })[r.name](r.params);
+    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings, cost: costPage, quotas: quotasPage })[r.name](r.params);
   } catch (e) {
     view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
   }
@@ -829,6 +830,14 @@ async function loadBeta() {
 }
 loadBeta();
 
+async function quotasPage() {
+  const ov = clustersCache || await loadClusters();
+  if (current !== 'quotas') return;
+  const monitored = ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name);
+  pruneClusters(monitored);
+  await quotasView(view, { head, current: () => current, monitored, mountPickers, scopeChip, openWorkload: (r) => openRelated(KIND_IDS[r.kind] || 'pods', { cluster: r.cluster, namespace: r.namespace, name: r.workload }) });
+}
+
 async function costPage() {
   if (!(await loadBeta()).has('cost')) {
     view.innerHTML = `${head('Cost', 'A beta feature.')}<div class="card empty"><span class="big">🧪</span>Cost is a beta feature.<br><span class="muted">Turn it on in Settings → Beta features.</span><br><button class="btn sm" style="margin-top:10px" onclick="location.hash='#settings'">Open Settings</button></div>`;
@@ -917,7 +926,7 @@ async function settings() {
       <div class="row"><div class="lbl"><b>Usage history</b><span>Records node and pod CPU and memory once a minute in a local database on this computer, for graphs and cost optimization. Nothing is sent anywhere.</span></div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
           <label class="toggle" style="color:var(--text)"><input type="checkbox" id="usageHistory" ${s.usageHistory ? 'checked' : ''}> Record usage history</label>
-          <label class="toggle" style="color:var(--text)">Keep <select class="input" id="usageRetentionDays" style="width:auto">${[1, 3, 7, 14, 30, 60, 90, 180, 365].map((d) => `<option value="${d}" ${d === s.usageRetentionDays ? 'selected' : ''}>${d} day${d === 1 ? '' : 's'}${d === 7 ? ' (default)' : ''}</option>`).join('')}</select></label>
+          <label class="toggle" style="color:var(--text)">Keep <select class="input" id="usageRetentionDays" style="width:auto">${[1, 3, 7, 14, 30, 60, 90, 180, 365].map((d) => `<option value="${d}" ${d === s.usageRetentionDays ? 'selected' : ''}>${d} day${d === 1 ? '' : 's'}${d === 14 ? ' (default)' : ''}</option>`).join('')}</select></label>
           <span class="muted" id="usageStats" style="font-size:12px"></span></div></div>
       <div class="row"><div class="lbl"><b>Beta features</b><span>Early features you can try. They work, but may change or move.</span></div>
         <div><label class="toggle" style="color:var(--text)"><input type="checkbox" data-beta="cost" ${(s.beta || []).includes('cost') ? 'checked' : ''}> <b>Cost</b> <span class="beta-badge">beta</span></label>

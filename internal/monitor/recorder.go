@@ -87,6 +87,7 @@ func (c *cluster) usageSamples() map[history.Series]history.Sample {
 	out := map[history.Series]history.Sample{}
 	if pm, err := c.allPodMetrics(); err == nil {
 		pods, _ := c.pods.List(labels.Everything())
+		cm := c.containerMetrics()
 		for _, p := range pods {
 			u, ok := pm[p.Namespace+"/"+p.Name]
 			if !ok {
@@ -96,6 +97,21 @@ func (c *cluster) usageSamples() map[history.Series]history.Sample {
 			kind, name := workloadOf(p)
 			out[history.Series{Cluster: c.name, Kind: "pod", Namespace: p.Namespace, Name: p.Name, Owner: kind + "/" + name,
 				CPUReq: r.CPUReq, CPULim: r.CPULim, MemReq: r.MemReq, MemLim: r.MemLim}] = history.Sample{CPU: u.CPU, Mem: u.Memory}
+			// Pods with several containers: each container too (name "pod/container", owner
+			// "Kind/name/container"), so the optimizer can size each one.
+			if len(p.Spec.Containers) > 1 {
+				byC := cm[p.Namespace+"/"+p.Name]
+				for _, ct := range p.Spec.Containers {
+					cu, ok := byC[ct.Name]
+					if !ok {
+						continue
+					}
+					out[history.Series{Cluster: c.name, Kind: "container", Namespace: p.Namespace, Name: p.Name + "/" + ct.Name,
+						Owner:  kind + "/" + name + "/" + ct.Name,
+						CPUReq: quantity(ct.Resources.Requests, corev1.ResourceCPU, true), CPULim: quantity(ct.Resources.Limits, corev1.ResourceCPU, true),
+						MemReq: quantity(ct.Resources.Requests, corev1.ResourceMemory, false), MemLim: quantity(ct.Resources.Limits, corev1.ResourceMemory, false)}] = history.Sample{CPU: cu.CPU, Mem: cu.Memory}
+				}
+			}
 		}
 	}
 	if nm, err := c.allNodeMetrics(); err == nil {

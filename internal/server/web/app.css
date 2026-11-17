@@ -512,3 +512,39 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .conf-box li { margin: 2px 0; }
 .conf-box-low { border-color: var(--bad); }
 .conf-box-medium { border-color: var(--warn); }
+
+/* Resource Quotas Optimizer */
+.q-banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; margin-bottom: 14px; border-radius: 10px; background: var(--warn-soft); color: var(--text); font-size: 13px; border: 1px solid var(--warn); }
+.q-banner.ok { background: var(--ok-soft); border-color: transparent; }
+.q-stats { margin-bottom: 14px; }
+.q-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.q-tools .seg { display: inline-flex; }
+.q-tools .seg small { color: var(--faint); margin-left: 2px; }
+.q-tools #qFind { width: 220px; }
+.q-table { padding: 0; overflow-x: auto; }
+.q-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.q-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.q-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.q-table tbody tr[data-row] { cursor: pointer; }
+.q-table tbody tr[data-row]:hover { background: var(--surface-2); }
+.q-table tbody tr.on { background: var(--accent-soft); }
+.q-res { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.q-k { display: inline-block; width: 26px; color: var(--faint); font-size: 11px; }
+.q-none { color: var(--warn); font-style: italic; }
+.q-new { color: var(--accent); }
+.q-use { font-size: 11.5px; margin-top: 2px; white-space: nowrap; }
+.q-verdict { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.q-bad { background: var(--bad-soft); color: var(--bad); }
+.q-warn { background: var(--warn-soft); color: var(--warn); }
+.q-notice { background: var(--notice-soft); color: var(--notice); }
+.q-ok { background: var(--ok-soft); color: var(--ok); }
+.q-open > td { background: var(--surface-2); padding: 0; }
+.q-detail { padding: 6px 16px 14px; }
+.q-detail h4 { margin: 12px 0 6px; font-size: 12.5px; }
+.q-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 900px) { .q-grid { grid-template-columns: 1fr; } }
+.q-find { margin: 0 0 8px; padding-left: 18px; font-size: 12.5px; }
+.q-find li { margin: 3px 0; }
+.q-find .lv-bad { color: var(--bad); } .q-find .lv-warn { color: var(--warn); }
+.q-nums { font-size: 12px; }
+.q-detail .plan-cmds { margin-bottom: 10px; }

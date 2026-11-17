@@ -235,9 +235,10 @@ func cmpUsage(a, b *RowUsage, by string) int {
 }
 
 type metricsCacheEntry struct {
-	at   time.Time
-	pods map[string]ResourceNumbers // "ns/name" → summed usage
-	err  error
+	at         time.Time
+	pods       map[string]ResourceNumbers            // "ns/name" → summed usage
+	containers map[string]map[string]ResourceNumbers // "ns/name" → container → usage
+	err        error
 }
 
 const metricsTTL = 20 * time.Second
@@ -282,6 +283,7 @@ func (c *cluster) allPodMetrics() (map[string]ResourceNumbers, error) {
 			Items []struct {
 				Metadata   struct{ Namespace, Name string } `json:"metadata"`
 				Containers []struct {
+					Name  string                       `json:"name"`
 					Usage struct{ CPU, Memory string } `json:"usage"`
 				} `json:"containers"`
 			} `json:"items"`
@@ -290,18 +292,32 @@ func (c *cluster) allPodMetrics() (map[string]ResourceNumbers, error) {
 			e.err = err
 		} else {
 			e.pods = make(map[string]ResourceNumbers, len(l.Items))
+			e.containers = make(map[string]map[string]ResourceNumbers, len(l.Items))
 			for _, it := range l.Items {
 				var n ResourceNumbers
+				byC := make(map[string]ResourceNumbers, len(it.Containers))
 				for _, ct := range it.Containers {
 					cpu, _ := resource.ParseQuantity(firstNonEmpty(ct.Usage.CPU, "0"))
 					mem, _ := resource.ParseQuantity(firstNonEmpty(ct.Usage.Memory, "0"))
 					n.CPU += cpu.MilliValue()
 					n.Memory += mem.Value()
+					byC[ct.Name] = ResourceNumbers{CPU: cpu.MilliValue(), Memory: mem.Value()}
 				}
 				e.pods[it.Metadata.Namespace+"/"+it.Metadata.Name] = n
+				e.containers[it.Metadata.Namespace+"/"+it.Metadata.Name] = byC
 			}
 		}
 	}
 	c.metricsCache = e
 	return e.pods, e.err
+}
+
+// containerMetrics is the per-container usage from the last pod metrics read (see allPodMetrics).
+func (c *cluster) containerMetrics() map[string]map[string]ResourceNumbers {
+	c.metricsMu.Lock()
+	defer c.metricsMu.Unlock()
+	if c.metricsCache == nil {
+		return nil
+	}
+	return c.metricsCache.containers
 }

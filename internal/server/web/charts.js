@@ -30,7 +30,7 @@ function chart(points, key, ref, fmt, label, bucket) {
     <div class="uc-tip" hidden></div></div>`;
 }
 
-const WINDOWS = [[6, '6h'], [24, '24h'], [168, '7d']];
+const WINDOWS = [[6, '6h'], [24, '24h'], [168, '7d'], [336, '14d']];
 
 // mountHistory fills `el` with CPU and memory charts for a node, pod or workload.
 export async function mountHistory(el, { cluster, kind, namespace = '', name, allocatable = false }) {
