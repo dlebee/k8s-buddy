@@ -58,6 +58,7 @@ func main() {
 }
 
 func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir string) error {
+	privateFiles()
 	inheritLoginShellPath(log)
 
 	if dataDir == "" {
@@ -80,6 +81,7 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
+	monitor.SetDataDir(dataDir)
 	if kubeconfig != "" {
 		if err := settings.Update(func(s *config.Settings) { s.Kubeconfig = kubeconfig }); err != nil {
 			return err

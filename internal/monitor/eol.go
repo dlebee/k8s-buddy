@@ -55,8 +55,22 @@ type rawEOLEntry struct {
 	ReleaseDate string `json:"releaseDate"`
 }
 
+// dataDir is where the price and release caches go: the app's data directory (-data-dir).
+var dataDir string
+
+// SetDataDir points the on-disk caches at the app's data directory; until it's called they use
+// the default config directory.
+func SetDataDir(dir string) { dataDir = dir }
+
+func cacheDir() (string, error) {
+	if dataDir != "" {
+		return dataDir, nil
+	}
+	return config.Dir()
+}
+
 func eolFilePath() string {
-	d, err := config.Dir()
+	d, err := cacheDir()
 	if err != nil {
 		return ""
 	}
