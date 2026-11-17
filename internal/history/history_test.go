@@ -72,3 +72,28 @@ func TestProfilesSkipGapsAndAverageReplicas(t *testing.T) {
 		t.Fatalf("profile: %+v", p)
 	}
 }
+
+func TestOOMsDedupeAndPrune(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	at := time.Now().Add(-time.Hour).Truncate(time.Second)
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	ev := []OOM{{"c", "ns", "Deployment/web", "app", "web-1", at}, {"c", "ns", "Deployment/web", "app", "web-1", at}, // seen twice
+		{"c", "ns", "Deployment/web", "app", "web-2", at.Add(time.Minute)}, {"c", "ns", "Deployment/web", "app", "web-3", old}}
+	if err := s.AddOOMs(ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Prune(14 * 24 * time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.OOMs("c", time.Now().Add(-365*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := m["ns/Deployment/web/app"]; st.Count != 2 || !st.Last.Equal(at.Add(time.Minute)) {
+		t.Fatalf("ooms: %+v", m)
+	}
+}

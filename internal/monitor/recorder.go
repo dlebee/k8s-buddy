@@ -80,6 +80,33 @@ func (m *Manager) recordOnce(h *history.Store) {
 	if err := h.Add(now, obs); err != nil {
 		m.log.Warn("usage history write", "err", err)
 	}
+	var ooms []history.OOM
+	for _, c := range m.connected() {
+		if c.synced("pods") {
+			ooms = append(ooms, c.oomKills()...)
+		}
+	}
+	if err := h.AddOOMs(ooms); err != nil {
+		m.log.Warn("usage history OOM write", "err", err)
+	}
+}
+
+// oomKills lists containers whose last (or current) termination was an OOM kill. Kubernetes only
+// keeps the last one per container, so recording every minute builds up the history.
+func (c *cluster) oomKills() []history.OOM {
+	var out []history.OOM
+	pods, _ := c.pods.List(labels.Everything())
+	for _, p := range pods {
+		kind, name := workloadOf(p)
+		for _, cs := range p.Status.ContainerStatuses {
+			for _, t := range []*corev1.ContainerStateTerminated{cs.LastTerminationState.Terminated, cs.State.Terminated} {
+				if t != nil && t.Reason == "OOMKilled" && !t.FinishedAt.IsZero() {
+					out = append(out, history.OOM{Cluster: c.name, Namespace: p.Namespace, Owner: kind + "/" + name, Container: cs.Name, Pod: p.Name, At: t.FinishedAt.Time})
+				}
+			}
+		}
+	}
+	return out
 }
 
 // usageSamples collects one observation per running pod and per node of this cluster.

@@ -84,7 +84,11 @@ func Open(path string) (*Store, error) {
 			series INTEGER NOT NULL, ts INTEGER NOT NULL,
 			cpu_avg REAL NOT NULL, cpu_max REAL NOT NULL, mem_avg REAL NOT NULL, mem_max REAL NOT NULL,
 			PRIMARY KEY (series, ts)) WITHOUT ROWID;
-		CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);`); err != nil {
+		CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);
+		CREATE TABLE IF NOT EXISTS ooms (
+			cluster TEXT NOT NULL, ns TEXT NOT NULL, owner TEXT NOT NULL, container TEXT NOT NULL,
+			pod TEXT NOT NULL, ts INTEGER NOT NULL,
+			PRIMARY KEY (cluster, ns, pod, container, ts)) WITHOUT ROWID;`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("usage history: %w", err)
 	}
@@ -205,6 +209,9 @@ func (s *Store) resetBucket() { s.acc = map[int64]*accum{} }
 func (s *Store) Prune(retention time.Duration) error {
 	cut := time.Now().Add(-retention).Unix()
 	if _, err := s.db.Exec(`DELETE FROM samples WHERE ts < ?`, cut); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM ooms WHERE ts < ?`, cut); err != nil {
 		return err
 	}
 	_, err := s.db.Exec(`DELETE FROM series WHERE last_seen < ? AND id NOT IN (SELECT DISTINCT series FROM samples)`, cut)
@@ -395,5 +402,48 @@ func (s *Store) Profiles(cluster, kind string, since time.Time) ([]Profile, erro
 		cpu, mem = append(cpu, ca), append(mem, ma)
 	}
 	done()
+	return out, rows.Err()
+}
+
+// OOM is one container OOM kill: owner "Kind/name", ts when the container was terminated.
+type OOM struct {
+	Cluster, Namespace, Owner, Container, Pod string
+	At                                        time.Time
+}
+
+// AddOOMs records OOM kills; the same kill seen again is ignored.
+func (s *Store) AddOOMs(ev []OOM) error {
+	for _, e := range ev {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO ooms (cluster, ns, owner, container, pod, ts) VALUES (?, ?, ?, ?, ?, ?)`,
+			e.Cluster, e.Namespace, e.Owner, e.Container, e.Pod, e.At.Unix()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// OOMStat is how often one workload's container was OOM-killed in a window.
+type OOMStat struct {
+	Count int
+	Last  time.Time
+}
+
+// OOMs returns OOM kills per "ns/Kind/name/container" of a cluster since `since`.
+func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error) {
+	rows, err := s.db.Query(`SELECT ns, owner, container, COUNT(*), MAX(ts) FROM ooms WHERE cluster = ? AND ts >= ? GROUP BY ns, owner, container`, cluster, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]OOMStat{}
+	for rows.Next() {
+		var ns, owner, ct string
+		var n int
+		var last int64
+		if err := rows.Scan(&ns, &owner, &ct, &n, &last); err != nil {
+			return nil, err
+		}
+		out[ns+"/"+owner+"/"+ct] = OOMStat{Count: n, Last: time.Unix(last, 0)}
+	}
 	return out, rows.Err()
 }

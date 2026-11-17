@@ -551,3 +551,4 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .q-detail, .q-detail td { white-space: normal; }
 .q-detail .q-grid > div { min-width: 0; }
 .q-detail pre.code { white-space: pre-wrap; word-break: break-all; }
+.q-tag { display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; }

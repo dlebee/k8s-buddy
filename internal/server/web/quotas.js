@@ -12,7 +12,7 @@ const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; 
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
 const VERDICT = {
-  risk: ['At risk', 'bad', 'Use reaches a limit: OOM-killed (memory) or throttled (CPU) at peaks'],
+  risk: ['At risk', 'bad', 'OOM kills recorded, or CPU held at its limit (throttled)'],
   missing: ['Missing', 'warn', 'No requests or limits set'],
   under: ['Under-requested', 'warn', 'Typical memory use is above the request (allowed while under the limit): first to be evicted if the node runs short'],
   over: ['Over-provisioned', 'notice', 'Requests well above what it uses'],
@@ -20,9 +20,12 @@ const VERDICT = {
 };
 
 // pair shows current → suggested, highlighting a change.
+// exact: a suggested value as you'd write it in a spec (7Gi, 6400Mi, 250m, 1.75).
+const exactMem = (b) => (b >= 1 << 30 && b % (1 << 30) === 0 ? `${b / (1 << 30)}Gi` : `${Math.round(b / (1 << 20))}Mi`);
 function pair(cur, rec, fmt) {
   const changed = cur < 0 || Math.abs(cur - rec) / Math.max(rec, 1) > 0.25;
-  return `<span class="${cur < 0 ? 'q-none' : ''}">${cur < 0 ? 'none' : fmt(cur)}</span> → <b class="${changed ? 'q-new' : ''}">${fmt(rec)}</b>`;
+  const show = fmt === fmtMem ? exactMem : fmt;
+  return `<span class="${cur < 0 ? 'q-none' : ''}">${cur < 0 ? 'none' : fmt(cur)}</span> → <b class="${changed ? 'q-new' : ''}">${show(rec)}</b>`;
 }
 
 function resCell(r, fmt) {
@@ -30,12 +33,14 @@ function resCell(r, fmt) {
     <div class="q-res"><span class="q-k">lim</span>${pair(r.limit.current, r.limit.recommended, fmt)}</div>
     <div class="q-use muted">use ${fmt(r.median)} typical · ${fmt(r.max)} max</div>`;
 }
+const memTags = (x) => (x.ooms ? `<span class="q-tag q-bad" title="Last ${new Date(x.lastOom * 1000).toLocaleString()}">OOM-killed ×${x.ooms}</span>`
+  : x.fillsLimit ? '<span class="q-tag q-notice" title="Uses most of its memory limit without OOM kills: likely sizes itself to it (JVM, databases, caches)">fills its limit</span>' : '');
 
 function detail(r) {
   return `<div class="q-detail">
     <div class="q-grid">
       <div><h4>Why</h4><ul class="q-find">${r.findings.length ? r.findings.map((f) => `<li class="lv-${f.level}">${esc(f.text)}</li>`).join('') : '<li>Requests and limits are in line with what it uses.</li>'}</ul>
-        <p class="muted small">Per replica, from ${days(r.days)} of recorded data${r.spanDays - r.days >= 1 ? ` over ${days(r.spanDays)} (gaps skipped)` : ''}. Requests: median use + 20%. Limits: highest use + 30% CPU / + 25% memory. Rounded up: CPU to 25m steps (quarter cores above 1 core), memory in power-of-two steps (… 256, 320, 384, 448, 512Mi, 640Mi …).${r.podLevel ? ' This pod has several containers and per-container data is still being collected, so these figures are for the whole pod.' : ''}</p>
+        <p class="muted small">Per replica, from ${days(r.days)} of recorded data${r.spanDays - r.days >= 1 ? ` over ${days(r.spanDays)} (gaps skipped)` : ''}. Requests: median use + 20%. Limits: highest use + 30% CPU / + 25% memory. Rounded up: CPU to 25m steps (quarter cores above 1 core), memory to a multiple of 8Mi (8Mi steps under 1Gi, 128Mi up to 8Gi, 512Mi above).${r.podLevel ? ' This pod has several containers and per-container data is still being collected, so these figures are for the whole pod.' : ''}</p>
         <table class="ptable q-nums"><thead><tr><th></th><th>Typical (median)</th><th>p95</th><th>Max</th></tr></thead><tbody>
           <tr><td>CPU</td><td>${fmtCPU(r.cpu.median)}</td><td>${fmtCPU(r.cpu.p95)}</td><td>${fmtCPU(r.cpu.max)}</td></tr>
           <tr><td>Memory</td><td>${fmtMem(r.mem.median)}</td><td>${fmtMem(r.mem.p95)}</td><td>${fmtMem(r.mem.max)}</td></tr>
@@ -82,7 +87,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
       ${banner}
       <div class="stats q-stats">
         <div class="card stat"><div class="label">Containers analysed</div><div class="value">${base.length}</div><div class="foot">${r.collecting ? `${r.collecting} workload${r.collecting === 1 ? '' : 's'} still collecting (under 1 h)` : `in ${r.clusters.length} cluster${r.clusters.length === 1 ? '' : 's'}`}</div></div>
-        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">use reaching a limit</div></div>
+        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">OOM-killed, or CPU at its limit</div></div>
         <div class="card stat ${count('under') ? 'warn' : ''}"><div class="label">Under-requested</div><div class="value">${count('under')}</div><div class="foot">memory use above request, under limit</div></div>
         <div class="card stat ${count('missing') ? 'warn' : ''}"><div class="label">Missing requests/limits</div><div class="value">${count('missing')}</div><div class="foot">suggested from their use</div></div>
         <div class="card stat"><div class="label">Over-provisioned</div><div class="value">${count('over')}</div><div class="foot">could free ${fmtCPU(freeCPU)} CPU · ${fmtMem(freeMem)} requested</div></div>
@@ -101,7 +106,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
             <td class="mono small">${esc(x.container)}<div class="muted">×${x.replicas} replica${x.replicas === 1 ? '' : 's'}</div></td>
             <td><span class="conf conf-${x.confidence}" title="${x.confidence} confidence">${days(x.days)}</span>${x.days < GOOD_DAYS ? '<div class="muted small">wait for 7 d</div>' : ''}</td>
             <td>${resCell(x.cpu, fmtCPU)}</td>
-            <td>${resCell(x.mem, fmtMem)}</td>
+            <td>${resCell(x.mem, fmtMem)}${memTags(x)}</td>
           </tr>${open === id ? `<tr class="q-open"><td colspan="6">${detail(x)}</td></tr>` : ''}`; }).join('')}
       </tbody></table></div>` : `<div class="card empty">${base.length ? 'Nothing matches this filter.' : r.collecting ? 'Still collecting: workloads need at least an hour of recorded usage.' : 'No workloads with recorded usage in this selection.'}</div>`}`);
     mountPickers(view, monitored, nsNames);

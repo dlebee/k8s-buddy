@@ -60,7 +60,10 @@ type OptRow struct {
 	Command     string       `json:"command"`
 	FreeCPU     int64        `json:"freeCpu"` // requests freed across replicas (negative: more needed)
 	FreeMem     int64        `json:"freeMem"`
-	PodLevel    bool         `json:"podLevel"` // multi-container pod sized as a whole (per-container data still collecting)
+	OOMs        int          `json:"ooms"`       // OOM kills recorded in the window
+	LastOOM     int64        `json:"lastOom"`    // unix seconds of the latest
+	FillsLimit  bool         `json:"fillsLimit"` // uses most of its memory limit without OOM kills: sizes itself to it
+	PodLevel    bool         `json:"podLevel"`   // multi-container pod sized as a whole (per-container data still collecting)
 	HistoryKind string       `json:"historyKind"`
 	HistoryName string       `json:"historyName"`
 }
@@ -79,6 +82,7 @@ type OptReport struct {
 type optCacheEntry struct {
 	at        time.Time
 	pods, cts []history.Profile
+	ooms      map[string]history.OOMStat
 }
 
 var (
@@ -86,11 +90,11 @@ var (
 	optCache   = map[string]optCacheEntry{}
 )
 
-func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]history.Profile, []history.Profile) {
+func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]history.Profile, []history.Profile, map[string]history.OOMStat) {
 	optCacheMu.Lock()
 	defer optCacheMu.Unlock()
 	if e, ok := optCache[cluster]; ok && time.Since(e.at) < 5*time.Minute {
-		return e.pods, e.cts
+		return e.pods, e.cts, e.ooms
 	}
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	pods, err := h.Profiles(cluster, "pod", since)
@@ -98,8 +102,9 @@ func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]histor
 		m.log.Warn("optimizer profiles", "cluster", cluster, "err", err)
 	}
 	cts, _ := h.Profiles(cluster, "container", since)
-	optCache[cluster] = optCacheEntry{at: time.Now(), pods: pods, cts: cts}
-	return pods, cts
+	ooms, _ := h.OOMs(cluster, since)
+	optCache[cluster] = optCacheEntry{at: time.Now(), pods: pods, cts: cts, ooms: ooms}
+	return pods, cts, ooms
 }
 
 // Optimize builds recommendations for the given clusters (all when empty).
@@ -116,8 +121,8 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 			continue
 		}
 		rep.Clusters = append(rep.Clusters, c.name)
-		pods, cts := m.profiles(h, c.name, s.UsageRetentionDays)
-		rows, collecting := c.optimize(pods, cts)
+		pods, cts, ooms := m.profiles(h, c.name, s.UsageRetentionDays)
+		rows, collecting := c.optimize(pods, cts, ooms)
 		rep.Rows = append(rep.Rows, rows...)
 		rep.Collecting += collecting
 	}
@@ -135,7 +140,7 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 	return rep
 }
 
-func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile) ([]OptRow, int) {
+func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[string]history.OOMStat) ([]OptRow, int) {
 	byOwner := map[string]history.Profile{}
 	for _, p := range podProfiles {
 		byOwner[p.Namespace+"/"+p.Owner] = p
@@ -181,7 +186,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile) ([]OptRow,
 			Replicas: w.replicas, System: systemNamespace(p.Namespace), Helm: p.Labels["app.kubernetes.io/managed-by"] == "Helm",
 			HistoryKind: "workload", HistoryName: kind + "/" + name}
 		if len(p.Spec.Containers) == 1 {
-			rows = append(rows, optRow(base, p.Spec.Containers[0], prof, false))
+			rows = append(rows, optRow(base, p.Spec.Containers[0], prof, ooms[k+"/"+p.Spec.Containers[0].Name], false))
 			continue
 		}
 		// Several containers: per-container data when there is enough, else the pod as a whole.
@@ -193,13 +198,22 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile) ([]OptRow,
 		}
 		if all {
 			for _, ct := range p.Spec.Containers {
-				rows = append(rows, optRow(base, ct, byCt[k+"/"+ct.Name], false))
+				rows = append(rows, optRow(base, ct, byCt[k+"/"+ct.Name], ooms[k+"/"+ct.Name], false))
 			}
 			continue
 		}
 		whole := corev1.Container{Name: "(whole pod)", Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}}
 		r := podRequests(p)
-		row := optRow(base, whole, prof, true)
+		var podOOM history.OOMStat
+		for _, ct := range p.Spec.Containers {
+			if o := ooms[k+"/"+ct.Name]; o.Count > 0 {
+				podOOM.Count += o.Count
+				if o.Last.After(podOOM.Last) {
+					podOOM.Last = o.Last
+				}
+			}
+		}
+		row := optRow(base, whole, prof, podOOM, true)
 		row.CPU.Request.Current, row.CPU.Limit.Current = r.CPUReq, r.CPULim
 		row.Mem.Request.Current, row.Mem.Limit.Current = r.MemReq, r.MemLim
 		judge(&row)
@@ -208,7 +222,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile) ([]OptRow,
 	return rows, collecting
 }
 
-func optRow(row OptRow, ct corev1.Container, prof history.Profile, podLevel bool) OptRow {
+func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.OOMStat, podLevel bool) OptRow {
 	row.Container, row.PodLevel = ct.Name, podLevel
 	row.Days = float64(prof.Buckets) * history.Bucket.Hours() / 24
 	row.SpanDays = float64(prof.Last-prof.First)/86400 + history.Bucket.Hours()/24
@@ -223,7 +237,23 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, podLevel bool
 	cpuReq := roundCPU(prof.CPUMed * 1.2)
 	cpuLim := roundCPU(max(prof.CPUMax*1.3, float64(cpuReq)*1.5))
 	memReq := roundMem(max(prof.MemMed*1.2, 16<<20))
-	memLim := roundMem(max(prof.MemMax*1.25, float64(memReq)*1.25))
+	memLim := max(roundMem(prof.MemMax*1.25), memReq)
+	curMemLim := quantity(ct.Resources.Limits, corev1.ResourceMemory, false)
+	row.OOMs = oom.Count
+	if oom.Count > 0 {
+		row.LastOOM = oom.Last.Unix()
+	}
+	switch {
+	case oom.Count > 0 && curMemLim > 0:
+		// Usage can't be seen above the limit it was killed at: raise from the limit itself.
+		memLim = max(memLim, roundMem(float64(curMemLim)*1.25))
+	case curMemLim > 0 && prof.MemMax >= float64(curMemLim)*0.9:
+		// Uses most of its limit and was never OOM-killed: it likely sizes itself to the memory
+		// it's given (JVM heap, databases, caches). Keep the limit.
+		row.FillsLimit = true
+		memLim = curMemLim
+		memReq = min(memReq, curMemLim)
+	}
 	row.CPU = OptResource{Median: prof.CPUMed, P95: prof.CPUP95, Max: prof.CPUMax,
 		Request: OptValue{quantity(ct.Resources.Requests, corev1.ResourceCPU, true), cpuReq},
 		Limit:   OptValue{quantity(ct.Resources.Limits, corev1.ResourceCPU, true), cpuLim}}
@@ -245,11 +275,17 @@ func judge(r *OptRow) {
 			verdict = v
 		}
 	}
-	// At risk: use reaching a limit. Use can't go past a limit (memory is OOM-killed, CPU
-	// throttled), so a peak close to the limit is the sign.
-	if mem.Limit.Current >= 0 && mem.Max >= float64(mem.Limit.Current)*0.9 {
-		add("bad", "Memory peaked at %s, %.0f%% of its %s limit: at the limit the container is OOM-killed.", fmtBytes(int64(mem.Max)), 100*mem.Max/float64(max(mem.Limit.Current, 1)), fmtBytes(mem.Limit.Current))
+	// At risk: OOM kills actually recorded, or CPU held at its limit. Memory near its limit
+	// without OOM kills is often by design (software sizing itself to its limit).
+	switch {
+	case r.OOMs > 0 && mem.Limit.Current >= 0:
+		add("bad", "OOM-killed %d time(s) in the recorded period (last %s): its %s limit is too low. Usage can't show above the limit, so the suggestion raises the limit itself; raise further if kills continue.", r.OOMs, time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"), fmtBytes(mem.Limit.Current))
 		worse("risk")
+	case r.OOMs > 0:
+		add("bad", "OOM-killed %d time(s) in the recorded period (last %s) with no memory limit: its node ran out of memory. Set a request that reserves what it uses.", r.OOMs, time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"))
+		worse("risk")
+	case r.FillsLimit:
+		add("notice", "Uses up to %.0f%% of its %s memory limit and wasn't OOM-killed: it likely sizes itself to the memory it's given (JVM heap, databases, caches). The limit is kept; lowering it would shrink its cache rather than free memory it doesn't need.", 100*mem.Max/float64(max(mem.Limit.Current, 1)), fmtBytes(mem.Limit.Current))
 	}
 	if cpu.Limit.Current >= 0 && cpu.Max >= float64(cpu.Limit.Current)*0.95 {
 		add("warn", "CPU peaked at %s, at its %s limit: it gets throttled (slowed down) at its busiest.", fmtMilli(int64(cpu.Max)), fmtMilli(cpu.Limit.Current))
@@ -338,19 +374,18 @@ func roundCPU(m float64) int64 {
 	return int64(max(math.Ceil(m/step)*step, 25))
 }
 
-// roundMem rounds up in power-of-two increments that grow with the size, four per doubling:
-// … 256Mi, 320Mi, 384Mi, 448Mi, 512Mi, 640Mi … 1Gi, 1.25Gi … (at least 16Mi; never more than +25%).
+// roundMem rounds up to a multiple of 8Mi: 8Mi steps under 1Gi, 128Mi steps up to 8Gi, 512Mi
+// above (all multiples of 8Mi, at most a few percent added). At least 16Mi.
 func roundMem(b float64) int64 {
-	const minMem = 16 << 20
-	if b <= minMem {
-		return minMem
+	const mi = 1 << 20
+	step := float64(8 * mi)
+	switch {
+	case b > 8<<30:
+		step = 512 * mi
+	case b > 1<<30:
+		step = 128 * mi
 	}
-	pow := int64(minMem)
-	for float64(pow*2) <= b {
-		pow *= 2
-	}
-	step := max(pow/4, minMem)
-	return int64(math.Ceil(b/float64(step))) * step
+	return int64(max(math.Ceil(b/step)*step, 16*mi))
 }
 
 func cpuQty(m int64) string {
@@ -361,15 +396,18 @@ func cpuQty(m int64) string {
 }
 
 func memQty(b int64) string {
-	if b%(1<<30) == 0 {
+	if b >= 1<<30 && b%(1<<30) == 0 {
 		return fmt.Sprintf("%dGi", b>>30)
 	}
 	return fmt.Sprintf("%dMi", b>>20)
 }
 
 func fmtMilli(m int64) string {
-	if m >= 1000 {
-		return fmt.Sprintf("%.2g cores", float64(m)/1000)
+	if m == 1000 {
+		return "1 core"
+	}
+	if m > 1000 {
+		return fmt.Sprintf("%.3g cores", float64(m)/1000)
 	}
 	return fmt.Sprintf("%dm", m)
 }
