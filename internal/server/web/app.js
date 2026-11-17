@@ -53,7 +53,8 @@ document.addEventListener('click', (e) => { if (e.target.closest('[data-scope-cl
 
 // mountPickers fills toolbar placeholders with the shared cluster/namespace pickers.
 function mountPickers(root, clusterNames, namespaceNames, { namespaced = true } = {}) {
-  root.querySelector('[data-pick=clusters]')?.replaceWith(picker('clusters', clusterNames.map((value) => ({ value }))));
+  const tags = Object.fromEntries((clustersCache?.clusters || []).map((c) => [c.name, c.tags || []]));
+  root.querySelector('[data-pick=clusters]')?.replaceWith(picker('clusters', clusterNames.map((value) => ({ value, tags: tags[value] }))));
   root.querySelector('[data-pick=namespaces]')?.replaceWith(picker('namespaces', namespaceNames.map((value) => ({ value })),
     { disabled: !namespaced, note: 'This kind is cluster-wide, so the namespace filter doesn\'t apply' }));
 }
@@ -179,6 +180,7 @@ function clusterCard(c) {
   const podPct = active ? (s.podsRunning / active) * 100 : 0, badPct = active ? (s.podsProblem / active) * 100 : 0;
   return `<div class="card cluster h-${h}" data-name="${esc(c.name)}" data-status="${c.status}">
     <div class="top"><span class="dot ${c.status === 'connected' ? h : c.status}"></span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>${verSpan(c.version)}</div>
+    ${c.tags?.length ? `<div class="ctags">${c.tags.map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}</div>` : ''}
     ${s ? `<div class="metrics">
         <div><b class="${s.nodesReady < s.nodes ? 'bad' : ''}">${s.nodesReady}/${s.nodes}</b>nodes</div>
         <div title="${s.podsDone} completed job pods not counted"><b>${s.podsRunning}/${s.pods - s.podsDone}</b>pods${s.podsDone ? ` · ${s.podsDone} done` : ''}</div>
@@ -845,7 +847,9 @@ async function settings() {
         <div>
           <div class="toolbar"><button class="btn sm" id="selNone">Uncheck all</button><button class="btn sm" id="selAll">Check all</button><button class="btn sm danger" id="selBad">Uncheck unreachable</button></div>
           <div class="ctx-list">${ov.clusters.map((c) => `<label><input type="checkbox" data-ctx="${esc(c.name)}" ${s.excludedContexts.includes(c.name) ? '' : 'checked'}>
-            <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span>${c.version ? verSpan(c.version, 'ctx-ver') : ''}<span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span></label>`).join('')}</div>
+            <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span>${c.version ? verSpan(c.version, 'ctx-ver') : ''}<span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span>
+            <input class="input tag-in" data-tags="${esc(c.name)}" value="${esc((s.clusterTags?.[c.name] || []).join(', '))}" placeholder="tags: prod, eastus" title="Your own tags for this cluster, comma-separated. Stored only in k8s-buddy's settings, never in your kubeconfig." spellcheck="false" autocomplete="off"></label>`).join('')}</div>
+          <p class="muted" style="font-size:12px;margin:6px 0 0">Tags are yours: kept only in k8s-buddy's settings on this computer (never written to your kubeconfig). Use them to filter clusters, and in Cost optimization to group clusters that could share capacity.</p>
         </div></div>
       <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config.</span></div>
         <input class="input" id="kubeconfig" style="width:100%" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"></div>
@@ -897,6 +901,7 @@ async function settings() {
       snoozeHours: +view.querySelector('#snoozeHours').value,
       historySize: +view.querySelector('#historySize').value,
       usageHistory: view.querySelector('#usageHistory').checked,
+      clusterTags: Object.fromEntries([...view.querySelectorAll('[data-tags]')].map((i) => [i.dataset.tags, i.value.split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)]).filter(([, v]) => v.length)),
       usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };

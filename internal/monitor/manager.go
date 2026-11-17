@@ -170,12 +170,13 @@ func (m *Manager) Overview() Overview {
 	var wg sync.WaitGroup
 	for i, c := range contexts {
 		if s.IsExcluded(c.Name) || clusters[i] == nil {
-			ov.Clusters[i] = ClusterInfo{Name: c.Name, Server: c.Server, Status: StatusExcluded}
+			ov.Clusters[i] = ClusterInfo{Name: c.Name, Server: c.Server, Status: StatusExcluded, Tags: s.ClusterTags[c.Name]}
 			continue
 		}
 		wg.Go(func() {
 			ci := clusters[i].info()
 			ci.Alerts = counts[c.Name]
+			ci.Tags = s.ClusterTags[c.Name]
 			ov.Clusters[i] = ci
 		})
 	}

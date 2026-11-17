@@ -59,6 +59,7 @@ function open(anchor, kind, options) {
   pop.innerHTML = `
     <input class="ms-search" placeholder="Filter ${NOUN[kind]}s…" spellcheck="false">
     <div class="ms-actions"><button type="button" data-all>All ${NOUN[kind]}s</button><span class="ms-count"></span></div>
+    <div class="ms-tags"></div>
     <div class="ms-list"></div>
     <div class="ms-foot"><button type="button" class="btn sm" data-cancel>Cancel</button><button type="button" class="btn sm primary" data-apply>Apply</button></div>`;
   document.body.appendChild(pop);
@@ -67,18 +68,32 @@ function open(anchor, kind, options) {
   pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8))}px`;
 
   const listEl = pop.querySelector('.ms-list');
+  // Tags (your own labels per cluster, from Settings) select every cluster that carries them.
+  const tagsEl = pop.querySelector('.ms-tags');
+  const tagMap = new Map();
+  for (const o of all) for (const t of o.tags || []) { if (!tagMap.has(t)) tagMap.set(t, []); tagMap.get(t).push(o.value); }
+  const drawTags = () => {
+    tagsEl.hidden = !tagMap.size;
+    tagsEl.innerHTML = [...tagMap].sort().map(([t, vs]) => `<button type="button" class="ms-tag ${vs.every((v) => draft.has(v)) ? 'on' : ''}" data-tag="${esc(t)}" title="${esc(vs.join(', '))}">#${esc(t)} <small>${vs.length}</small></button>`).join('');
+    tagsEl.querySelectorAll('[data-tag]').forEach((b) => b.onclick = () => {
+      const vs = tagMap.get(b.dataset.tag);
+      if (vs.every((v) => draft.has(v))) vs.forEach((v) => draft.delete(v)); else vs.forEach((v) => draft.add(v));
+      draw();
+    });
+  };
   const search = pop.querySelector('.ms-search');
   const count = () => { pop.querySelector('.ms-count').textContent = draft.size ? `${draft.size} selected` : 'showing all'; };
   const draw = () => {
     const q = search.value.toLowerCase();
-    const shown = all.filter((o) => !q || o.value.toLowerCase().includes(q));
+    const shown = all.filter((o) => !q || o.value.toLowerCase().includes(q) || (o.tags || []).some((t) => t.includes(q.replace(/^#/, ''))));
     listEl.innerHTML = shown.length ? shown.map((o) => `
       <label class="ms-item ${o.sub === 'not in this view' ? 'dim' : ''}">
         <input type="checkbox" value="${esc(o.value)}" ${draft.has(o.value) ? 'checked' : ''}>
-        <span class="ms-name" title="${esc(o.value)}">${esc(o.value)}</span>${o.sub ? `<small>${esc(o.sub)}</small>` : ''}
+        <span class="ms-name" title="${esc(o.value)}">${esc(o.value)}</span>${(o.tags || []).map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}${o.sub ? `<small>${esc(o.sub)}</small>` : ''}
         <button type="button" class="ms-only" data-only="${esc(o.value)}">only</button>
       </label>`).join('') : `<div class="ms-empty">No ${NOUN[kind]}s match</div>`;
-    listEl.querySelectorAll('input').forEach((cb) => cb.onchange = () => { cb.checked ? draft.add(cb.value) : draft.delete(cb.value); count(); });
+    listEl.querySelectorAll('input').forEach((cb) => cb.onchange = () => { cb.checked ? draft.add(cb.value) : draft.delete(cb.value); count(); drawTags(); });
+    drawTags();
     listEl.querySelectorAll('[data-only]').forEach((b) => b.onclick = (e) => { e.preventDefault(); draft.clear(); draft.add(b.dataset.only); apply(); });
     count();
   };

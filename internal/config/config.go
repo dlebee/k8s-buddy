@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
 )
 
@@ -23,6 +25,9 @@ type Settings struct {
 	// UsageHistory records node/pod CPU and memory locally (SQLite) for graphs and cost optimization.
 	UsageHistory       bool `json:"usageHistory"`
 	UsageRetentionDays int  `json:"usageRetentionDays"`
+	// ClusterTags are the user's own labels per kubeconfig context ("prod", "eastus"…), used to
+	// filter and to group clusters for cost optimization. Kept here, never in the kubeconfig.
+	ClusterTags map[string][]string `json:"clusterTags"`
 	// usageHistorySet distinguishes "turned off" from "settings file older than the feature".
 	UsageHistorySet bool `json:"usageHistorySet,omitempty"`
 }
@@ -64,6 +69,7 @@ func (s *Settings) normalize() {
 	default:
 		s.NudgeLevel = d.NudgeLevel
 	}
+	s.ClusterTags = normalizeTags(s.ClusterTags)
 	for _, l := range []*[]string{&s.ExcludedContexts, &s.IgnoredNamespaces, &s.MutedKeys} {
 		if *l == nil {
 			*l = []string{}
@@ -159,4 +165,26 @@ func (st *Store) Update(fn func(*Settings)) error {
 		fn(next)
 	}
 	return nil
+}
+
+var tagChars = regexp.MustCompile(`[^a-z0-9._:-]+`)
+
+// normalizeTags lowercases tags, keeps a safe character set, drops empties and duplicates.
+func normalizeTags(in map[string][]string) map[string][]string {
+	out := map[string][]string{}
+	for cluster, tags := range in {
+		var clean []string
+		for _, t := range tags {
+			t = strings.Trim(tagChars.ReplaceAllString(strings.ToLower(strings.TrimSpace(t)), "-"), "-")
+			if t != "" && len(t) <= 40 {
+				clean = append(clean, t)
+			}
+		}
+		slices.Sort(clean)
+		clean = slices.Compact(clean)
+		if len(clean) > 0 && cluster != "" {
+			out[cluster] = clean[:min(len(clean), 20)]
+		}
+	}
+	return out
 }

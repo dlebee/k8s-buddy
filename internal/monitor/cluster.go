@@ -67,6 +67,7 @@ type ClusterInfo struct {
 	ResourceErrors map[string]string `json:"resourceErrors,omitempty"`
 	Stats          *Stats            `json:"stats,omitempty"`
 	Alerts         int               `json:"alerts"`
+	Tags           []string          `json:"tags,omitempty"`
 }
 
 type resourceErr struct {

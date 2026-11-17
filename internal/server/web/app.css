@@ -366,3 +366,13 @@ td.uc i u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(-
 td.dkc { font-variant-numeric: tabular-nums; }
 td.dkc.warn { color: var(--warn); font-weight: 600; }
 td.dkc.bad { color: var(--bad); font-weight: 600; }
+
+/* cluster tags */
+.ms-tags { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 10px 8px; border-bottom: 1px solid var(--border); }
+.ms-tag { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 2px 9px; font-size: 12px; cursor: pointer; }
+.ms-tag small { color: var(--muted); margin-left: 2px; }
+.ms-tag.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.ms-chip { display: inline-block; font-size: 10.5px; padding: 0 6px; margin-left: 5px; border-radius: 999px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.ctags { margin: -2px 0 6px; }
+.ctags .ms-chip:first-child { margin-left: 0; }
+.ctx-list label .tag-in { margin-left: auto; width: 190px; height: 26px; font-size: 12px; padding: 0 8px; }
