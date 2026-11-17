@@ -19,7 +19,7 @@ import (
 
 const (
 	optGoodDays   = 7.0 // below this much recorded data, recommendations carry a warning
-	optMinBuckets = 12  // an hour of data before anything is suggested
+	optMinMinutes = 60  // an hour of readings before anything is suggested
 )
 
 type OptValue struct {
@@ -176,7 +176,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 	collecting := 0
 	for k, w := range ws {
 		prof, ok := byOwner[k]
-		if !ok || prof.Buckets < optMinBuckets {
+		if !ok || prof.Minutes < optMinMinutes {
 			collecting++
 			continue
 		}
@@ -192,7 +192,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 		// Several containers: per-container data when there is enough, else the pod as a whole.
 		all := true
 		for _, ct := range p.Spec.Containers {
-			if cp, ok := byCt[k+"/"+ct.Name]; !ok || cp.Buckets < optMinBuckets {
+			if cp, ok := byCt[k+"/"+ct.Name]; !ok || cp.Minutes < optMinMinutes {
 				all = false
 			}
 		}
@@ -224,8 +224,8 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 
 func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.OOMStat, podLevel bool) OptRow {
 	row.Container, row.PodLevel = ct.Name, podLevel
-	row.Days = float64(prof.Buckets) * history.Bucket.Hours() / 24
-	row.SpanDays = float64(prof.Last-prof.First)/86400 + history.Bucket.Hours()/24
+	row.Days = float64(prof.Minutes) / 1440
+	row.SpanDays = float64(prof.Last-prof.First) / 86400
 	switch {
 	case row.Days >= optGoodDays:
 		row.Confidence = "high"

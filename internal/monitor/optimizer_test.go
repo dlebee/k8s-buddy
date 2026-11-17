@@ -22,7 +22,7 @@ func TestOptimizerRounding(t *testing.T) {
 		}
 	}
 	// The case from a live cluster: typical 5.2Gi, max 5.5Gi → request 6.25Gi, limit 6.875Gi (not 7Gi/10Gi).
-	big := history.Profile{Buckets: 2400, Last: 8 * 86400, CPUMed: 147, CPUMax: 1260, MemMed: 5.2 * (1 << 30), MemMax: 5.5 * (1 << 30)}
+	big := history.Profile{Minutes: 12000, Last: 8 * 86400, CPUMed: 147, CPUMax: 1260, MemMed: 5.2 * (1 << 30), MemMax: 5.5 * (1 << 30)}
 	r := optRow(OptRow{Kind: "StatefulSet", Workload: "rpc", Replicas: 2}, corev1.Container{Name: "rpc"}, big, history.OOMStat{}, false)
 	if r.Mem.Request.Recommended != 6400<<20 || r.Mem.Limit.Recommended != 7040<<20 || r.CPU.Request.Recommended != 200 || r.CPU.Limit.Recommended != 1750 {
 		t.Errorf("big: mem %d/%d MiB cpu %d/%d", r.Mem.Request.Recommended>>20, r.Mem.Limit.Recommended>>20, r.CPU.Request.Recommended, r.CPU.Limit.Recommended)
@@ -33,7 +33,7 @@ func TestOptimizerRounding(t *testing.T) {
 }
 
 func TestOptimizerRecommendations(t *testing.T) {
-	week := history.Profile{Buckets: 8 * 288, First: 0, Last: 8 * 86400, // 8 days, no gaps
+	week := history.Profile{Minutes: 8 * 1440, First: 0, Last: 8 * 86400, // 8 days, no gaps
 		CPUMed: 40, CPUP95: 90, CPUMax: 200, MemMed: 100 << 20, MemP95: 120 << 20, MemMax: 180 << 20}
 	base := OptRow{Cluster: "c", Namespace: "web", Kind: "Deployment", Workload: "api", Replicas: 3}
 
@@ -84,7 +84,7 @@ func TestOptimizerRecommendations(t *testing.T) {
 
 	// Two days of data over a five-day span: medium confidence, a wait warning, and the gap noted.
 	short := week
-	short.Buckets, short.Last = 2*288, 5*86400
+	short.Minutes, short.Last = 2*1440, 5*86400
 	r = optRow(base, ct, short, history.OOMStat{}, false)
 	text := ""
 	for _, f := range r.Findings {

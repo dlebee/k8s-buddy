@@ -1,4 +1,4 @@
-// Usage-over-time charts from the local history: average line, peak band, request (dashed) and
+// Usage-over-time charts from the local history: median line, min–max band, request (dashed) and
 // limit/allocatable (solid) lines. Plain SVG, no library.
 import { api, esc } from '/static/common.js';
 
@@ -8,16 +8,17 @@ const fmtMem = (b) => { const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']; let i = 0; whil
 
 function chart(points, key, ref, fmt, label, bucket) {
   if (!points.length) return '';
-  const avg = points.map((p) => p[key]), peak = points.map((p) => p[key + 'Max']);
+  const avg = points.map((p) => p[key]), peak = points.map((p) => p[key + 'Max']), low = points.map((p) => p[key + 'Min'] ?? p[key]);
+  const gapAt = (i) => i > 0 && points[i].t - points[i - 1].t > (points[i - 1].step || bucket) * 2.5;
   const t0 = points[0].t, t1 = Math.max(points.at(-1).t, t0 + bucket);
   const top = Math.max(...peak, ref.req > 0 ? ref.req : 0, ref.lim > 0 ? ref.lim : 0, 1) * 1.1;
   const x = (t) => PAD.l + ((t - t0) / (t1 - t0 || 1)) * (W - PAD.l - PAD.r);
   const y = (v) => PAD.t + (1 - v / top) * (H - PAD.t - PAD.b);
   // Break lines where buckets are missing (history off, cluster unreachable) instead of bridging.
-  const segs = (vals) => { let d = '', prev = null; points.forEach((p, i) => { const gap = prev != null && p.t - prev > bucket * 2.5; d += `${!i || gap ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(vals[i]).toFixed(1)}`; prev = p.t; }); return d; };
+  const segs = (vals) => { let d = ''; points.forEach((p, i) => { d += `${!i || gapAt(i) ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(vals[i]).toFixed(1)}`; }); return d; };
   let band = '';
-  { let run = []; const flush = () => { if (run.length) { band += `<path class="band" d="M${run.map((i) => `${x(points[i].t).toFixed(1)},${y(peak[i]).toFixed(1)}`).join('L')}L${run.slice().reverse().map((i) => `${x(points[i].t).toFixed(1)},${y(avg[i]).toFixed(1)}`).join('L')}Z"/>`; } run = []; };
-    points.forEach((p, i) => { if (i && p.t - points[i - 1].t > bucket * 2.5) flush(); run.push(i); }); flush(); }
+  { let run = []; const flush = () => { if (run.length) { band += `<path class="band" d="M${run.map((i) => `${x(points[i].t).toFixed(1)},${y(peak[i]).toFixed(1)}`).join('L')}L${run.slice().reverse().map((i) => `${x(points[i].t).toFixed(1)},${y(low[i]).toFixed(1)}`).join('L')}Z"/>`; } run = []; };
+    points.forEach((p, i) => { if (gapAt(i)) flush(); run.push(i); }); flush(); }
   const hline = (v, cls, txt) => v > 0 ? `<line class="${cls}" x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(v)}" y2="${y(v)}"/><text class="lbl ${cls}" x="${W - PAD.r - 2}" y="${y(v) - 3}" text-anchor="end">${esc(txt)} ${esc(fmt(v))}</text>` : '';
   const ticks = [0, top / 2, top / 1.1].map((v) => `<text class="ax" x="${PAD.l - 6}" y="${y(v) + 3}" text-anchor="end">${esc(fmt(v))}</text><line class="grid" x1="${PAD.l}" x2="${W - PAD.r}" y1="${y(v)}" y2="${y(v)}"/>`).join('');
   const span = t1 - t0, tf = (t) => new Date(t * 1000).toLocaleString([], span > 2 * 86400 ? { month: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -48,7 +49,7 @@ export async function mountHistory(el, { cluster, kind, namespace = '', name, al
       ? chart(r.points, 'cpu', { req: i.cpuReq, lim: i.cpuLim, limLabel: allocatable ? 'allocatable' : 'limit' }, fmtCPU, 'CPU', r.bucketSeconds)
         + chart(r.points, 'mem', { req: i.memReq, lim: i.memLim, limLabel: allocatable ? 'allocatable' : 'limit' }, fmtMem, 'Memory', r.bucketSeconds)
       : '<p class="muted">No samples yet for this window. History is recorded once a minute while the app runs; graphs fill in as it goes.</p>';
-    el.innerHTML = `${seg}${body}<p class="muted rv-small">Recorded locally every minute, kept ${r.retentionDays} days · line = average, band = peak${i.pods > 1 ? ` · summed over ${i.pods} pods` : ''}</p>`;
+    el.innerHTML = `${seg}${body}<p class="muted rv-small">Recorded locally every minute, kept ${r.retentionDays} days · 1-minute detail for 6 h, then 5-minute to 2 days, then 15-minute · line = median, band = min to max${i.pods > 1 ? ` · summed over ${i.pods} pods` : ''}</p>`;
     el.querySelectorAll('[data-h]').forEach((b) => b.onclick = () => { hours = +b.dataset.h; el.dataset.hours = hours; draw(); });
     el.querySelectorAll('.uc-chart').forEach((c) => hover(c, r.points, c.dataset.key === 'cpu' ? fmtCPU : fmtMem));
   };

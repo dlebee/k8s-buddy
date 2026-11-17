@@ -149,10 +149,14 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 
 	go mgr.Run(ctx)
 	// Usage history lives in a local SQLite file next to the settings; it never leaves the machine.
-	if h, err := history.Open(filepath.Join(dataDir, "usage.db")); err != nil {
+	// usage.db held the first (5-minute, uncompressed) format: replaced, not migrated.
+	for _, old := range []string{"usage.db", "usage.db-wal", "usage.db-shm"} {
+		_ = os.Remove(filepath.Join(dataDir, old))
+	}
+	if h, err := history.Open(filepath.Join(dataDir, "usage-v2.db")); err != nil {
 		log.Warn("usage history unavailable", "err", err)
 	} else {
-		_ = os.Chmod(filepath.Join(dataDir, "usage.db"), 0o600)
+		_ = os.Chmod(filepath.Join(dataDir, "usage-v2.db"), 0o600)
 		go mgr.RunRecorder(ctx, h)
 		defer h.Close()
 	}

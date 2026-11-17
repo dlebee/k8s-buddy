@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/dlebee/k8s-buddy/internal/history"
 	"io/fs"
 	"net"
 	"net/http"
@@ -264,7 +263,7 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]any{"enabled": true, "points": pts, "info": info, "bucketSeconds": int(history.Bucket.Seconds()),
+		writeJSON(w, map[string]any{"enabled": true, "points": pts, "info": info, "bucketSeconds": 60,
 			"retentionDays": s.settings.Get().UsageRetentionDays})
 	})
 	// Node-removal scenarios for the clusters carrying every picked tag (simulation only).

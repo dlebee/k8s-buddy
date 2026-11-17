@@ -184,7 +184,7 @@ func (c *cluster) costCluster(peaks map[string]history.Peak, hours float64) Cost
 		}
 		w.pods++
 		w.reqCPU, w.reqMem = max(w.reqCPU, cpu), max(w.reqMem, mem)
-		if hasPeak && pk.Buckets >= 12 { // at least an hour of samples
+		if hasPeak && pk.Minutes >= 60 { // at least an hour of readings
 			w.known++
 			w.p95CPU, w.p95Mem = max(w.p95CPU, pk.CPU95), max(w.p95Mem, pk.Mem95)
 			w.maxCPU, w.maxMem = max(w.maxCPU, pk.CPUMax), max(w.maxMem, pk.MemMax)
