@@ -54,7 +54,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
 wix build (Join-Path $root 'packaging\windows\k8s-buddy.wxs') `
 	-arch $Arch `
 	-ext $uiDll `
-	-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" `
+	-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" -d "IconFile=$(Join-Path $root 'packaging\windows\k8s-buddy.ico')" `
 	-o $Out
 if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
 # WiX writes a debug database next to the MSI; it isn't something to ship.

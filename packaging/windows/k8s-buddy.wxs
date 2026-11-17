@@ -8,6 +8,9 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of k8s-buddy is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- The buddy: in Settings → Apps and on the Start menu shortcut. -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/dlebee/k8s-buddy" />
     <Property Id="ARPHELPLINK" Value="https://github.com/dlebee/k8s-buddy/issues" />
     <Property Id="ARPNOMODIFY" Value="0" />
@@ -34,7 +37,7 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
         <Shortcut Id="AppShortcut" Name="k8s-buddy" Description="Watch your Kubernetes clusters"
-                  Target="[INSTALLFOLDER]k8s-buddy.exe" Arguments="--open" WorkingDirectory="INSTALLFOLDER" />
+                  Target="[INSTALLFOLDER]k8s-buddy.exe" Arguments="--open" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon.ico" />
         <RegistryValue Root="HKMU" Key="Software\k8s-buddy" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Regenerates the app icons from app-icon.svg (needs rsvg-convert: `brew install librsvg`).
+# Regenerates the app icons (needs rsvg-convert: `brew install librsvg`, plus iconutil and python3):
+#   app-icon.svg       → packaging/macos/AppIcon.icns (macOS: the buddy on a rounded tile)
+#   app-icon-small.svg → packaging/windows/k8s-buddy.ico (Windows: the buddy alone, readable at 16 px)
 # The results are committed, so release builds don't need this.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -11,4 +13,12 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$SET" -o ../macos/AppIcon.icns
 rsvg-convert -w 1024 -h 1024 app-icon.svg -o app-icon-1024.png
-echo "wrote packaging/macos/AppIcon.icns and packaging/icon/app-icon-1024.png"
+
+ICO="$(mktemp -d)"
+pngs=()
+for s in 16 20 24 32 40 48 64 256; do
+	rsvg-convert -w "$s" -h "$s" app-icon-small.svg -o "$ICO/$s.png"
+	pngs+=("$ICO/$s.png")
+done
+python3 make-ico.py ../windows/k8s-buddy.ico "${pngs[@]}"
+echo "wrote packaging/macos/AppIcon.icns, packaging/windows/k8s-buddy.ico and packaging/icon/app-icon-1024.png"
