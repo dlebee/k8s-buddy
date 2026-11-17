@@ -12,6 +12,11 @@ permissions:
   pull-requests: write
   statuses: write
 
+# One signature write at a time: concurrent runs would race on signatures/cla.json.
+concurrency:
+  group: cla
+  cancel-in-progress: false
+
 jobs:
   cla:
     runs-on: ubuntu-latest
