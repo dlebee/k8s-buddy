@@ -116,7 +116,7 @@ function open(anchor, kind, options) {
   const extra = [...draft].filter((v) => !options.some((o) => o.value === v)).map((value) => ({ value, sub: 'not in this view' }));
   const all = [...extra, ...options];
   pop = document.createElement('div');
-  pop.className = 'ms-pop';
+  pop.className = `ms-pop ms-pop-${kind}`;
   pop.innerHTML = `
     <input class="ms-search" placeholder="Filter ${NOUN[kind]}s…" spellcheck="false">
     <div class="ms-actions"><button type="button" data-all>All ${NOUN[kind]}s</button><span class="ms-count"></span></div>
@@ -150,7 +150,8 @@ function open(anchor, kind, options) {
     listEl.innerHTML = shown.length ? shown.map((o) => `
       <label class="ms-item ${o.sub === 'not in this view' ? 'dim' : ''}">
         <input type="checkbox" value="${esc(o.value)}" ${draft.has(o.value) ? 'checked' : ''}>
-        <span class="ms-name" title="${esc(o.value)}">${esc(o.value)}</span>${(o.tags || []).map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}${o.sub ? `<small>${esc(o.sub)}</small>` : ''}
+        <span class="ms-main"><span class="ms-name" title="${esc(o.value)}">${esc(o.value)}</span>${o.sub ? `<small>${esc(o.sub)}</small>` : ''}
+          ${(o.tags || []).length ? `<span class="ms-meta">${o.tags.map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}</span>` : ''}</span>
         <button type="button" class="ms-only" data-only="${esc(o.value)}">only</button>
       </label>`).join('') : `<div class="ms-empty">No ${NOUN[kind]}s match</div>`;
     listEl.querySelectorAll('input').forEach((cb) => cb.onchange = () => { cb.checked ? draft.add(cb.value) : draft.delete(cb.value); count(); drawTags(); });

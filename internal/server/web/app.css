@@ -486,3 +486,13 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .sc-ns { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
 .ns-menu { left: 0; right: auto; min-width: 300px; }
 .ns-menu label { display: flex; align-items: center; gap: 6px; }
+
+/* Cluster picker: wide and tall, the full name on its own line with its tags beneath. */
+.ms-pop-clusters { width: 560px; }
+.ms-pop-clusters .ms-list { max-height: min(560px, calc(100vh - 220px)); }
+.ms-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 3px; }
+.ms-main .ms-name { flex: 0 1 auto; white-space: normal; overflow-wrap: anywhere; font-weight: 500; }
+.ms-meta { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px; }
+.ms-meta .ms-chip { margin-left: 0; }
+.ms-item { align-items: flex-start; }
+.ms-item input[type=checkbox], .ms-item .ms-only { margin-top: 2px; }
