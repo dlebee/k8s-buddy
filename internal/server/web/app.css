@@ -429,3 +429,30 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .tag-sug:hover { border-color: var(--accent); color: var(--accent); }
 .tag-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--border); }
 .tag-hint { font-size: 12px; }
+
+/* cost tabs + plans */
+.cost-tabs { width: max-content; margin-bottom: 12px; }
+.cost-tabs .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; line-height: 17px; text-align: center; }
+.plans-intro { font-size: 12.5px; margin: 0 0 12px; }
+.plan { padding: 0; margin-bottom: 12px; }
+.plan > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 14px 16px; }
+.plan > summary::-webkit-details-marker { display: none; }
+.plan-title { font-size: 14px; }
+.plan-sub { grid-column: 1; font-size: 12.5px; }
+.plan-save { grid-column: 2; grid-row: 1 / span 2; align-self: center; white-space: nowrap; }
+.plan[open] > summary { border-bottom: 1px solid var(--border); }
+.plan > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.plan h4 { margin: 14px 16px 6px; font-size: 12.5px; }
+.plan-warn { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; }
+.ptable { width: calc(100% - 32px); border-collapse: collapse; font-size: 12.5px; }
+.ptable th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); }
+.ptable td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ptable td.warn { color: var(--warn); font-weight: 600; } .ptable td.bad { color: var(--bad); font-weight: 600; }
+.ptable .small, .plan .small { font-size: 11.5px; }
+.ptable .arrow { color: var(--faint); line-height: 1.1; }
+.pbar { display: inline-block; width: 60px; height: 6px; border-radius: 3px; background: var(--surface-2); vertical-align: middle; overflow: hidden; margin-right: 4px; }
+.pbar i { display: block; height: 100%; background: var(--accent); }
+.plan-more { margin: 8px 16px 0; font-size: 12.5px; }
+.plan-more summary { cursor: pointer; color: var(--muted); }
+.plan-notes { margin: 0 16px; padding-left: 18px; font-size: 12.5px; }
+.plan-cmds { margin: 0 16px 16px; }

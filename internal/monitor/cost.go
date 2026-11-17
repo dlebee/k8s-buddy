@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -104,6 +105,7 @@ type CostReport struct {
 	History        bool            `json:"history"`
 	Clusters       []CostCluster   `json:"clusters"`
 	Consolidations []Consolidation `json:"consolidations"`
+	Plans          []CostPlan      `json:"plans"`
 }
 
 // systemNamespace: platform pieces every cluster runs for itself; not worth moving between clusters.
@@ -115,7 +117,7 @@ func (m *Manager) CostReport(windowHours int) CostReport {
 	s := m.settings.Get()
 	h := m.History()
 	rep := CostReport{Generated: time.Now(), WindowHours: windowHours, History: h != nil && s.UsageHistory,
-		Clusters: []CostCluster{}, Consolidations: []Consolidation{}}
+		Clusters: []CostCluster{}, Consolidations: []Consolidation{}, Plans: []CostPlan{}}
 	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
 	type full struct {
 		cc   CostCluster
@@ -137,8 +139,10 @@ func (m *Manager) CostReport(windowHours int) CostReport {
 			}
 			cc, work := c.costCluster(peaks, hours)
 			cc.Tags = s.ClusterTags[c.name]
+			plans := c.poolPlans(cc.Pools)
 			mu.Lock()
 			all = append(all, full{cc, work, c})
+			rep.Plans = append(rep.Plans, plans...)
 			mu.Unlock()
 		})
 	}
@@ -154,7 +158,10 @@ func (m *Manager) CostReport(windowHours int) CostReport {
 			byTag[t] = append(byTag[t], i)
 		}
 	}
-	for tag, idx := range byTag {
+	seenPair := map[string]int{} // from/into → index in rep.Plans, so a pair sharing several tags shows once
+	tagNames := slices.Sorted(maps.Keys(byTag))
+	for _, tag := range tagNames {
+		idx := byTag[tag]
 		if len(idx) < 2 {
 			continue
 		}
@@ -170,11 +177,34 @@ func (m *Manager) CostReport(windowHours int) CostReport {
 				}
 			}
 			if best != nil {
-				rep.Consolidations = append(rep.Consolidations, *best)
+				// Totals say it fits; the simulation decides, replica by replica, with disk limits.
+				var into *cluster
+				var intoCost CostCluster
+				for _, f := range all {
+					if f.cc.Cluster == best.Into {
+						into, intoCost = f.c, f.cc
+					}
+				}
+				pair := best.From + "/" + best.Into
+				if i, dup := seenPair[pair]; dup {
+					rep.Plans[i].Tag += ", " + tag
+					continue
+				}
+				if plan, ok := movePlan(tag, all[a].c, into, all[a].cc, intoCost); ok {
+					rep.Consolidations = append(rep.Consolidations, *best)
+					seenPair[pair] = len(rep.Plans)
+					rep.Plans = append(rep.Plans, *plan)
+				}
 			}
 		}
 	}
 	slices.SortFunc(rep.Consolidations, func(a, b Consolidation) int { return int(b.Savings - a.Savings) })
+	slices.SortFunc(rep.Plans, func(a, b CostPlan) int {
+		if d := cmpF(b.Savings, a.Savings); d != 0 {
+			return d
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
 	return rep
 }
 

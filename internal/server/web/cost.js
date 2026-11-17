@@ -52,38 +52,96 @@ function workloadRows(ws) {
     <p class="muted rv-small">Suggested = 95th percentile of recorded usage + 30% (memory never below the recorded peak + 15%). Per pod.</p></details>`;
 }
 
-export async function costView(view, head, current) {
+// ---------- plans ----------
+const bar2 = (used, cap, cls = '') => `<span class="pbar ${cls}"><i style="width:${Math.min(100, pct(used, cap))}%"></i></span>`;
+const toneDisks = (d, l) => (l > 0 ? (d >= l ? 'bad' : d >= l * 0.8 ? 'warn' : '') : '');
+
+function planCard(p, open) {
+  const shrink = p.type === 'shrink-pool';
+  const title = shrink
+    ? `Shrink <b>${esc(p.pool)}</b> in <b>${esc(p.cluster)}</b> from ${p.nodesFrom} to ${p.nodesTo} node${p.nodesTo === 1 ? '' : 's'}`
+    : `Move <b>${esc(p.cluster)}</b>'s workloads into <b>${esc(p.target)}</b> and retire ${esc(p.cluster)}`;
+  const replicas = p.moves.reduce((a, m) => a + m.replicas, 0), disks = p.moves.reduce((a, m) => a + m.disks, 0);
+  const vols = p.moves.flatMap((m) => (m.volumes || []).map((v) => ({ ...v, ns: m.namespace, wl: `${m.kind}/${m.name}` })));
+  return `<details class="card plan" ${open ? 'open' : ''}>
+    <summary><div class="plan-title">${shrink ? '🔻' : '🔀'} ${title}${p.tag ? p.tag.split(', ').map((t) => ` <span class="ms-chip">#${esc(t)}</span>`).join('') : ''}</div>
+      <div class="plan-sub muted">${replicas} replica${replicas === 1 ? '' : 's'} of ${p.moves.length} workload${p.moves.length === 1 ? '' : 's'} move${disks ? ` · ${disks} disk${disks === 1 ? '' : 's'} re-attach` : ''}${!shrink && vols.length ? ` · ${vols.length} volume${vols.length === 1 ? '' : 's'} to migrate` : ''}${shrink && p.sku ? ` · ${esc(p.sku)}` : ''}</div>
+      <div class="plan-save">${p.priced ? `<b class="ok">≈ ${usd(p.savings)}/mo</b> ${EST}` : '<span class="muted">no price</span>'}</div></summary>
+    ${p.notes.filter((n) => n.startsWith('⚠')).map((n) => `<div class="plan-warn">${esc(n)}</div>`).join('')}
+    ${shrink ? `<h4>1 · Drain ${p.drain.length === 1 ? 'this node' : `these ${p.drain.length} nodes`}</h4>
+      <table class="ptable"><thead><tr><th>Node</th><th>Pods to move</th><th>Disks attached</th></tr></thead><tbody>
+      ${p.drain.map((d) => `<tr><td class="mono">${esc(d.name)}</td><td>${d.pods}</td><td>${d.disks}</td></tr>`).join('')}</tbody></table>` : ''}
+    <h4>${shrink ? '2 · ' : ''}What moves</h4>
+    <table class="ptable"><thead><tr><th>Workload</th><th>Replicas</th><th>Per replica</th><th>Disks</th><th>From → to</th></tr></thead><tbody>
+    ${p.moves.map((m) => `<tr><td><b>${esc(m.name)}</b><div class="muted">${esc(m.kind)} · ${esc(m.namespace)}</div></td>
+      <td><b>${m.replicas}</b> of ${m.totalReplicas}${m.replicas === m.totalReplicas && m.totalReplicas === 1 ? '<div class="muted">brief outage</div>' : ''}</td>
+      <td>${fmtCPU(m.cpu)} · ${fmtMem(m.mem)}</td>
+      <td>${m.disks || '–'}</td>
+      <td class="mono small">${m.from.map(esc).join('<br>')}<div class="arrow">↓</div>${m.to.map(esc).join('<br>')}</td></tr>`).join('')}
+    </tbody></table>
+    ${vols.length ? `<h4>${shrink ? 'Disks that follow their pods' : 'Volumes with data to migrate'}</h4>
+      <table class="ptable"><thead><tr><th>Claim</th><th>Workload</th><th>Size</th><th>Storage class</th></tr></thead><tbody>
+      ${vols.map((v) => `<tr><td class="mono">${esc(v.claim)}</td><td class="muted">${esc(v.ns)} · ${esc(v.wl)}</td><td>${esc(v.size || '?')}</td><td>${esc(v.storageClass || '–')}${v.disk ? ' <span class="muted">disk</span>' : ''}</td></tr>`).join('')}</tbody></table>` : ''}
+    <h4>${shrink ? '3 · Remaining nodes afterwards' : `${esc(p.target)} nodes afterwards`}</h4>
+    <table class="ptable"><thead><tr><th>Node</th><th>Receives</th><th>CPU requested</th><th>Memory requested</th><th>Disks</th></tr></thead><tbody>
+    ${p.after.map((a) => `<tr><td class="mono">${esc(a.name)}</td><td>${a.gains ? `+${a.gains} pod${a.gains === 1 ? '' : 's'}` : '–'}</td>
+      <td>${bar2(a.cpu, a.allocCpu)} ${pct(a.cpu, a.allocCpu)}% <span class="muted">${fmtCPU(a.cpu)} / ${fmtCPU(a.allocCpu)}</span></td>
+      <td>${bar2(a.mem, a.allocMem)} ${pct(a.mem, a.allocMem)}% <span class="muted">${fmtMem(a.mem)} / ${fmtMem(a.allocMem)}</span></td>
+      <td class="${toneDisks(a.disks, a.diskLimit)}">${a.disks}${a.diskLimit >= 0 ? ` / ${a.diskLimit}` : ''}</td></tr>`).join('')}
+    </tbody></table>
+    ${p.alreadyThere?.length ? `<details class="plan-more"><summary>${p.alreadyThere.length} workload${p.alreadyThere.length === 1 ? '' : 's'} already run in ${esc(p.target)} (not moved)</summary><div class="mono small">${p.alreadyThere.map(esc).join('<br>')}</div></details>` : ''}
+    ${p.skipped?.length ? `<details class="plan-more"><summary>${p.skipped.length} system workload${p.skipped.length === 1 ? '' : 's'} not moved (DaemonSets, kube-*/…-system)</summary><div class="mono small">${p.skipped.map(esc).join('<br>')}</div></details>` : ''}
+    <h4>Notes</h4><ul class="plan-notes">${p.notes.filter((n) => !n.startsWith('⚠')).map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+    <h4>Commands <span class="muted">(suggested; nothing runs from here)</span></h4>
+    <div class="plan-cmds">${p.commands.map((c) => `<div class="cmd"><pre class="code">${esc(c)}</pre><button class="btn sm" data-copy="${esc(c)}">Copy</button></div>`).join('')}</div>
+  </details>`;
+}
+
+function plansHTML(rep) {
+  const plans = rep.plans.filter((p) => inScope('clusters', p.cluster));
+  if (!plans.length) return `<div class="card empty"><span class="big">✨</span>No plan saves anything right now: every pool needs its nodes once pods are packed with headroom and disk limits.${rep.consolidations.length ? '' : '<br><span class="muted">Tag clusters (# Tags) to also check whether one cluster could fold into another.</span>'}</div>`;
+  const shrink = plans.filter((p) => p.type === 'shrink-pool'), move = plans.filter((p) => p.type === 'move-cluster');
+  return `<p class="muted plans-intro">Each plan is simulated on the pods running now: every replica and every attached disk gets a place, within 15% headroom and each VM's disk-attach limit. Plans are independent; after doing one, re-check the others.</p>
+    ${shrink.length ? `<div class="section-title">Remove spare nodes <span class="muted">${shrink.length}</span></div>${shrink.map((p, i) => planCard(p, i === 0)).join('')}` : ''}
+    ${move.length ? `<div class="section-title">Fold a cluster into another with the same tag <span class="muted">${move.length}</span></div>${move.map((p) => planCard(p, false)).join('')}` : ''}`;
+}
+
+export async function costView(view, head, current, params) {
+  const tab = params?.get('tab') === 'plans' ? 'plans' : 'capacity';
   view.innerHTML = `${head('Cost optimization', 'Capacity vs what pods request and really use, per node pool. Advice only: nothing is changed.')}<div class="card empty">Working it out…</div>`;
   const rep = await api('/api/cost');
   if (current() !== 'cost') return;
+  const nPlans = rep.plans.filter((p) => inScope('clusters', p.cluster)).length;
+  const planSave = rep.plans.filter((p) => inScope('clusters', p.cluster) && p.type === 'shrink-pool').reduce((a, p) => a + p.savings, 0);
+  const tabs = `<div class="seg cost-tabs"><button data-tab="capacity" class="${tab === 'capacity' ? 'on' : ''}">Capacity</button><button data-tab="plans" class="${tab === 'plans' ? 'on' : ''}">Plans${nPlans ? ` <span class="count">${nPlans}</span>` : ''}</button></div>`;
+  const body = tab === 'plans' ? plansHTML(rep) : capacityHTML(rep);
+  view.innerHTML = `
+    ${head('Cost optimization', 'Capacity vs what pods request and really use, per node pool. Advice only: nothing is changed.', '<span data-pick="clusters"></span>')}
+    ${tabs}
+    <div class="cost-note">💡 Dollar amounts are <b>estimates</b> from public pay-as-you-go list prices for each node's VM size and region (Azure and Linode today). Reservations, savings plans, spot, discounts, disks and networking aren't included, so your bill will differ.${tab === 'capacity' && planSave > 0 ? ` <a href="#cost?tab=plans">See ${nPlans} plan${nPlans === 1 ? '' : 's'} →</a>` : ''}</div>
+    ${body}`;
+  view.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { location.hash = b.dataset.tab === 'plans' ? '#cost?tab=plans' : '#cost'; });
+  return rep;
+}
+
+function capacityHTML(rep) {
   const clusters = rep.clusters.filter((c) => inScope('clusters', c.cluster));
   const tot = clusters.reduce((a, c) => ({ monthly: a.monthly + c.monthly, savings: a.savings + c.savings, savingsU: a.savingsU + c.savingsByUsage, nodes: a.nodes + c.nodes, priced: a.priced && c.priced }), { monthly: 0, savings: 0, savingsU: 0, nodes: 0, priced: true });
   const hours = Math.max(0, ...clusters.map((c) => c.historyHours));
-  const cons = rep.consolidations.filter((c) => inScope('clusters', c.from));
   const order = [...clusters].sort((a, b) => b.savings - a.savings || b.savingsByUsage - a.savingsByUsage || a.cluster.localeCompare(b.cluster));
-  view.innerHTML = `
-    ${head('Cost optimization', 'Capacity vs what pods request and really use, per node pool. Advice only: nothing is changed.', '<span data-pick="clusters"></span>')}
-    <div class="cost-note">💡 Dollar amounts are <b>estimates</b> from public pay-as-you-go list prices for each node's VM size and region (Azure and Linode today). Reservations, savings plans, spot, discounts, disks and networking aren't included, so your bill will differ.
-      ${!rep.history ? '<br>Usage history is off, so this uses requests only. Turn it on in Settings to compare against real usage.' : hours < 24 ? `<br>Based on ${hours < 1 ? 'less than an hour' : `${Math.round(hours)} hours`} of usage history; usage-based advice gets reliable after a day or more of recording.` : `<br>Usage is the 95th percentile over the last ${Math.round(hours / 24)} days of recorded history.`}</div>
+  return `
+    <p class="muted plans-intro">${!rep.history ? 'Usage history is off, so this uses requests only. Turn it on in Settings to compare against real usage.' : hours < 24 ? `Based on ${hours < 1 ? 'less than an hour' : `${Math.round(hours)} hours`} of usage history; usage-based advice gets reliable after a day or more of recording.` : `Usage is the 95th percentile over the last ${Math.round(hours / 24)} days of recorded history.`}</p>
     <div class="stats">
       <div class="card stat"><div class="label">Nodes</div><div class="value">${tot.nodes}</div><div class="foot">in ${clusters.length} clusters</div></div>
       <div class="card stat"><div class="label">Est. monthly ${EST}</div><div class="value">${usd(tot.monthly)}</div><div class="foot">${tot.priced ? 'node list prices' : 'some nodes unpriced'}</div></div>
       <div class="card stat"><div class="label">Could save now ${EST}</div><div class="value ${tot.savings > 0 ? 'ok' : ''}">${usd(tot.savings)}/mo</div><div class="foot">by removing spare nodes</div></div>
       <div class="card stat"><div class="label">After right-sizing ${EST}</div><div class="value">${usd(tot.savingsU)}/mo</div><div class="foot">if requests matched usage</div></div>
     </div>
-    ${cons.length ? `<div class="section-title">Across tagged clusters</div>${cons.map((c) => `<div class="card cons">
-      <div><b>${esc(c.from)}</b> → <b>${esc(c.into)}</b> <span class="ms-chip">#${esc(c.tag)}</span>${c.priced ? `<span class="spacer"></span><b class="ok">≈ ${usd(c.savings)}/mo ${EST}</b>` : ''}</div>
-      <div class="muted">${c.workloads} workload${c.workloads === 1 ? '' : 's'} (${fmtCPU(c.moveCpu)}, ${fmtMem(c.moveMem)} requested) fit in ${esc(c.into)}'s spare ${fmtCPU(c.spareCpu)} / ${fmtMem(c.spareMem)}${c.alreadyThere ? ` · ${c.alreadyThere} already run there` : ''}. Retiring ${esc(c.from)} would save its nodes.</div>
-      ${c.withVolumes.length ? `<div class="cons-flag warn">💾 ${c.withVolumes.length} with volumes: data must be migrated (${c.withVolumes.slice(0, 4).map(esc).join(', ')}${c.withVolumes.length > 4 ? ', …' : ''})</div>` : ''}
-      ${c.pinned.length ? `<div class="cons-flag">📌 ${c.pinned.length} pinned to specific nodes (selectors/affinity/hostPath): check ${esc(c.into)} has matching nodes (${c.pinned.slice(0, 4).map(esc).join(', ')}${c.pinned.length > 4 ? ', …' : ''})</div>` : ''}
-    </div>`).join('')}` : ''}
     ${order.map((c) => `<div class="card ccluster">
       <div class="ccluster-head"><b>${esc(c.cluster)}</b>${(c.tags || []).map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}<span class="muted">${esc(c.provider || 'unknown provider')} · ${c.nodes} node${c.nodes === 1 ? '' : 's'}</span><span class="spacer"></span>
         ${c.monthly ? `≈ ${usd(c.monthly)}/mo ${EST}` : ''}${c.savings > 0 ? ` <b class="ok">· save ≈ ${usd(c.savings)}</b>` : ''}</div>
       ${c.pools.map((p) => poolRow(p, rep.history && c.historyHours >= 1)).join('')}
       ${workloadRows(c.workloads)}
     </div>`).join('')}
-    ${!Object.keys(rep.clusters).length ? '<div class="card empty">No connected clusters yet.</div>' : ''}
-    <p class="muted rv-small">Tip: tag clusters in Settings (e.g. <code>prod</code>, <code>eastus</code>) to get suggestions for folding one cluster into another with spare capacity.</p>`;
-  return rep;
+    ${!rep.clusters.length ? '<div class="card empty">No connected clusters yet.</div>' : ''}`;
 }
