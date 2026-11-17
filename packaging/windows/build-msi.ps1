@@ -32,31 +32,43 @@ if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
 	if ($LASTEXITCODE -ne 0) { throw 'wix install failed' }
 	$env:PATH += ";$env:USERPROFILE\.dotnet\tools"
 }
-$uiExt = Join-Path $feed 'ui-ext'
-Expand-Archive (Join-Path $feed "wixtoolset.ui.wixext.$wixVersion.nupkg") -DestinationPath $uiExt -Force
-$uiDll = Get-ChildItem $uiExt -Filter WixToolset.UI.wixext.dll -Recurse | Select-Object -First 1 -ExpandProperty FullName
-if (-not $uiDll) { throw 'WixToolset.UI.wixext.dll not found' }
+# A wix that was already on PATH must be the pinned version too.
+$haveWix = (wix --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $haveWix -notlike "$wixVersion*") { throw "wix $wixVersion is required (found '$haveWix'): dotnet tool update --global wix --version $wixVersion" }
 
-# MSI versions are numeric: 1.2.3-rc.1 installs as 1.2.3.
-$msiVersion = ($Version -replace '^(\d+\.\d+\.\d+).*$', '$1')
-if ($msiVersion -notmatch '^\d+\.\d+\.\d+$') { $msiVersion = '0.0.0' }
+# Everything extracted or generated goes into a fresh folder of its own, removed afterwards, so
+# nothing left in the shared temp folder by an earlier run (or anyone else) can be picked up.
+$work = Join-Path ([IO.Path]::GetTempPath()) "k8s-buddy-msi-$([guid]::NewGuid())"
+New-Item -ItemType Directory -Path $work | Out-Null
+try {
+	$uiExt = Join-Path $work 'ui-ext'
+	Expand-Archive (Join-Path $feed "wixtoolset.ui.wixext.$wixVersion.nupkg") -DestinationPath $uiExt -Force
+	$uiDll = Get-ChildItem $uiExt -Filter WixToolset.UI.wixext.dll -Recurse | Select-Object -First 1 -ExpandProperty FullName
+	if (-not $uiDll) { throw 'WixToolset.UI.wixext.dll not found' }
 
-# The license dialog needs RTF; derive it from LICENSE so the two never drift apart.
-$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$text = Get-Content (Join-Path $root 'LICENSE') -Raw
-$escaped = $text.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}') -replace "`r?`n", "\par`n"
-$rtf = Join-Path ([IO.Path]::GetTempPath()) 'k8s-buddy-license.rtf'
-"{\rtf1\ansi\deff0{\fonttbl{\f0 Consolas;}}\f0\fs16 $escaped}" | Set-Content -Path $rtf -Encoding ascii
+	# MSI versions are numeric: 1.2.3-rc.1 installs as 1.2.3.
+	$msiVersion = ($Version -replace '^(\d+\.\d+\.\d+).*$', '$1')
+	if ($msiVersion -notmatch '^\d+\.\d+\.\d+$') { $msiVersion = '0.0.0' }
 
-foreach ($f in 'LICENSE', 'NOTICE') { Copy-Item (Join-Path $root $f) (Join-Path $BinDir $f) -Force }
-New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
+	# The license dialog needs RTF; derive it from LICENSE so the two never drift apart.
+	$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+	$text = Get-Content (Join-Path $root 'LICENSE') -Raw
+	$escaped = $text.Replace('\', '\\').Replace('{', '\{').Replace('}', '\}') -replace "`r?`n", "\par`n"
+	$rtf = Join-Path $work 'k8s-buddy-license.rtf'
+	"{\rtf1\ansi\deff0{\fonttbl{\f0 Consolas;}}\f0\fs16 $escaped}" | Set-Content -Path $rtf -Encoding ascii
 
-wix build (Join-Path $root 'packaging\windows\k8s-buddy.wxs') `
-	-arch $Arch `
-	-ext $uiDll `
-	-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" -d "IconFile=$(Join-Path $root 'packaging\windows\k8s-buddy.ico')" `
-	-o $Out
-if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
-# WiX writes a debug database next to the MSI; it isn't something to ship.
-Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.wixpdb'))
-Write-Host "built $Out (MSI version $msiVersion)"
+	foreach ($f in 'LICENSE', 'NOTICE') { Copy-Item (Join-Path $root $f) (Join-Path $BinDir $f) -Force }
+	New-Item -ItemType Directory -Force -Path (Split-Path $Out) | Out-Null
+
+	wix build (Join-Path $root 'packaging\windows\k8s-buddy.wxs') `
+		-arch $Arch `
+		-ext $uiDll `
+		-d "Version=$msiVersion" -d "BinDir=$BinDir" -d "LicenseRtf=$rtf" -d "IconFile=$(Join-Path $root 'packaging\windows\k8s-buddy.ico')" `
+		-o $Out
+	if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+	# WiX writes a debug database next to the MSI; it isn't something to ship.
+	Remove-Item -Force -ErrorAction SilentlyContinue ([IO.Path]::ChangeExtension($Out, '.wixpdb'))
+	Write-Host "built $Out (MSI version $msiVersion)"
+} finally {
+	Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $work
+}

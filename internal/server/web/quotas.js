@@ -67,7 +67,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
     ${head('Resource Quotas Optimizer', 'Suggested requests and limits for every container, from the CPU and memory it actually used: requests from its typical (median) use, limits from its highest use, each with headroom.', '<span data-pick="clusters"></span><span data-pick="namespaces"></span>')}
     ${scopeChip(monitored.length)}${body}`;
   if (!r.available) {
-    view.innerHTML = shell(`<div class="card empty"><span class="big">📈</span>Usage history is off, so there's nothing to learn from.<br><span class="muted">Turn on "Usage history" in Settings; suggestions appear once a few days are recorded.</span><br><button class="btn sm" style="margin-top:10px" onclick="location.hash='#settings'">Open Settings</button></div>`);
+    view.innerHTML = shell(`<div class="card empty"><span class="big">📈</span>Usage history is off, so there's nothing to learn from.<br><span class="muted">Turn on "Usage history" in Settings; suggestions appear once a few days are recorded.</span><br><a class="btn sm" style="margin-top:10px" href="#settings">Open Settings</a></div>`);
     mountPickers(view, monitored, []);
     return;
   }

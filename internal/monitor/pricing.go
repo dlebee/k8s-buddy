@@ -14,13 +14,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-
-	"github.com/dlebee/k8s-buddy/internal/config"
 )
 
 // Node list prices for cost estimates. Only public, login-free price lists are used (Azure Retail
-// Prices API, Linode's public types API), looked up by VM size and region — no cluster data is
-// sent — and cached on disk for a week. Prices are pay-as-you-go Linux list prices: reservations,
+// Prices API, Linode's public types API) and cached on disk for a week. Azure lookups send the
+// node's VM size and region (checked against safeSKU) and nothing else; Linode's whole price list
+// is downloaded, so nothing is sent. The Cost tab says so. Prices are pay-as-you-go Linux list prices: reservations,
 // savings plans, spot and negotiated discounts aren't known, so every figure is an estimate.
 
 type NodeSKU struct {
@@ -64,7 +63,7 @@ var (
 )
 
 func pricePath() string {
-	d, err := config.Dir()
+	d, err := cacheDir()
 	if err != nil {
 		return ""
 	}

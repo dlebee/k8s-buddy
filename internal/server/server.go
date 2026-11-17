@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -40,7 +41,13 @@ type Server struct {
 	mgr      *monitor.Manager
 	actions  Actions
 	forwards *forwarder
+
+	codesMu sync.Mutex
+	codes   map[string]time.Time // one-time page codes → expiry, see BrowserURL
 }
+
+// A code from BrowserURL must be redeemed this soon.
+const codeTTL = 2 * time.Minute
 
 func New(store *alert.Store, settings *config.Store, mgr *monitor.Manager) *Server {
 	var b [24]byte
@@ -62,8 +69,40 @@ func (s *Server) Listen() (net.Listener, error) {
 	return ln, nil
 }
 
+// URL is a page URL carrying the API token, for the app's own web views (they keep no history).
 func (s *Server) URL(page string) string {
 	return "http://" + s.addr + "/" + page + "?t=" + s.token
+}
+
+// BrowserURL is a page URL for the user's default browser. Browsers keep visited URLs in their
+// history (and extensions can read them), so it carries a one-time code that the page swaps for
+// the token, instead of the token itself.
+func (s *Server) BrowserURL(page string) string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	code := hex.EncodeToString(b[:])
+	now := time.Now()
+	s.codesMu.Lock()
+	if s.codes == nil {
+		s.codes = map[string]time.Time{}
+	}
+	for c, exp := range s.codes {
+		if now.After(exp) {
+			delete(s.codes, c)
+		}
+	}
+	s.codes[code] = now.Add(codeTTL)
+	s.codesMu.Unlock()
+	return "http://" + s.addr + "/" + page + "?c=" + code
+}
+
+// redeem uses up a code from BrowserURL; it reports whether the code was valid.
+func (s *Server) redeem(code string) bool {
+	s.codesMu.Lock()
+	defer s.codesMu.Unlock()
+	exp, ok := s.codes[code]
+	delete(s.codes, code)
+	return ok && time.Now().Before(exp)
 }
 
 func (s *Server) Handler() http.Handler {
@@ -90,6 +129,19 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", files))
 
+	// Swaps a one-time code from BrowserURL for the token. The only API that works without the token.
+	mux.HandleFunc("POST /api/session", func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" && o != "http://"+s.addr {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var req struct{ Code string }
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil || req.Code == "" || !s.redeem(req.Code) {
+			http.Error(w, "this link has expired: open k8s-buddy again", http.StatusForbidden)
+			return
+		}
+		writeJSON(w, map[string]string{"token": s.token})
+	})
 	mux.HandleFunc("GET /api/summary", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.summary()) })
 	mux.HandleFunc("GET /api/alerts", func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -367,7 +419,9 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		// Static files and the three page shells hold no data, so they load without the token (the
 		// pages drop it from the address bar and keep it in session storage); every API needs it.
-		public := strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/overview" || r.URL.Path == "/panel" || r.URL.Path == "/character"
+		// /api/session checks its own one-time code.
+		public := strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/overview" || r.URL.Path == "/panel" || r.URL.Path == "/character" ||
+			(r.URL.Path == "/api/session" && r.Method == http.MethodPost)
 		if !public && subtle.ConstantTimeCompare([]byte(tok), []byte(s.token)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return

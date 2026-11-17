@@ -840,7 +840,7 @@ async function quotasPage() {
 
 async function costPage() {
   if (!(await loadBeta()).has('cost')) {
-    view.innerHTML = `${head('Cost', 'A beta feature.')}<div class="card empty"><span class="big">🧪</span>Cost is a beta feature.<br><span class="muted">Turn it on in Settings → Beta features.</span><br><button class="btn sm" style="margin-top:10px" onclick="location.hash='#settings'">Open Settings</button></div>`;
+    view.innerHTML = `${head('Cost', 'A beta feature.')}<div class="card empty"><span class="big">🧪</span>Cost is a beta feature.<br><span class="muted">Turn it on in Settings → Beta features.</span><br><a class="btn sm" style="margin-top:10px" href="#settings">Open Settings</a></div>`;
     return;
   }
   await costView(view, head, () => current);

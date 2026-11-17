@@ -1,20 +1,31 @@
-// The API token arrives once in the page URL. Keep it in this tab's session storage and take it out
-// of the address bar so it never lands in browser history, then send it as a header.
-function takeToken() {
+// The API token arrives once in the page URL: as the token itself in the app's own web views, or
+// as a one-time code (?c=) in a regular browser, swapped here for the token so the token never
+// lands in browser history. Keep it in this tab's session storage, take it out of the address bar,
+// then send it as a header.
+async function redeem(code) {
+  try {
+    const r = await fetch('/api/session', { method: 'POST', body: JSON.stringify({ code }) });
+    return r.ok ? (await r.json()).token || '' : '';
+  } catch { return ''; }
+}
+
+async function takeToken() {
   const params = new URLSearchParams(location.search);
   let token = params.get('t') || '';
+  if (!token && params.get('c')) token = await redeem(params.get('c'));
   try {
     if (token) sessionStorage.setItem('buddyToken', token);
     else token = sessionStorage.getItem('buddyToken') || '';
   } catch { /* storage unavailable: keep it in memory only */ }
-  if (params.has('t')) {
+  if (params.has('t') || params.has('c')) {
     params.delete('t');
+    params.delete('c');
     const qs = params.toString();
     history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
   }
   return token;
 }
-export const TOKEN = takeToken();
+export const TOKEN = await takeToken();
 
 export async function api(path, opts = {}) {
   const r = await fetch(new URL(path, location.origin), { ...opts, headers: { ...(opts.headers || {}), 'X-Buddy-Token': TOKEN } });

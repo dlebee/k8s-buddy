@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -53,4 +55,27 @@ func claimInstance(dataDir, url string) func() {
 			os.Remove(path)
 		}
 	}
+}
+
+// askToShowOverview asks the instance serving overviewURL to show its overview.
+func askToShowOverview(overviewURL string) error {
+	u, err := url.Parse(overviewURL)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://"+u.Host+"/api/action/overview", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Buddy-Token", u.Query().Get("t"))
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("running instance answered %s", resp.Status)
+	}
+	return nil
 }
