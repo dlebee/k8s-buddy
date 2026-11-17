@@ -51,6 +51,32 @@ func (r APIResource) path(namespace, name string) string {
 	return p
 }
 
+// objectPath is the API path of exactly one object. The REST client cleans "." and ".." out of
+// absolute paths, so an unchecked name could walk to another resource ("../../secrets"), and an
+// empty one would fetch the whole collection — a SecretList is not redacted object by object.
+func (r APIResource) objectPath(namespace, name string) (string, error) {
+	if !validPathName(name) {
+		return "", fmt.Errorf("invalid name %q", name)
+	}
+	if r.Namespaced {
+		if !validObjectName(namespace) {
+			return "", fmt.Errorf("invalid namespace %q", namespace)
+		}
+	} else {
+		namespace = ""
+	}
+	return r.path(namespace, name), nil
+}
+
+// singleObject refuses list responses: the detail views only ever show one object, which always
+// has a name (lists don't).
+func singleObject(obj map[string]any) error {
+	if k := str(obj["kind"]); strings.HasSuffix(k, "List") || str(dig(obj, "metadata", "name")) == "" {
+		return fmt.Errorf("expected one object, got %s", firstNonEmpty(k, "something else"))
+	}
+	return nil
+}
+
 type genericKind struct {
 	label string
 	res   APIResource
@@ -462,14 +488,21 @@ func (m *Manager) genericDetail(clusterName, kind string, g genericKind, ns, nam
 	if !ok {
 		return ResourceDetail{}, fmt.Errorf("%s not served by %s", g.res.Resource, clusterName)
 	}
+	p, err := res.objectPath(ns, name)
+	if err != nil {
+		return ResourceDetail{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath(res.path(ns, name)).DoRaw(ctx)
+	raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath(p).DoRaw(ctx)
 	if err != nil {
 		return ResourceDetail{}, err
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ResourceDetail{}, err
+	}
+	if err := singleObject(obj); err != nil {
 		return ResourceDetail{}, err
 	}
 	redactObject(obj)
