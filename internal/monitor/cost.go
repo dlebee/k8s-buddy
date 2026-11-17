@@ -108,9 +108,27 @@ type CostReport struct {
 	Plans          []CostPlan      `json:"plans"`
 }
 
-// systemNamespace: platform pieces every cluster runs for itself; not worth moving between clusters.
+// systemNamespace: platform pieces and cluster add-ons every cluster runs once for itself
+// (cert-manager, ingress controllers, monitoring, operators…). Folding one cluster into another
+// doesn't move or scale these: the target already has its own.
 func systemNamespace(ns string) bool {
-	return strings.HasPrefix(ns, "kube-") || strings.HasSuffix(ns, "-system") || ns == "gatekeeper-system" || ns == "tigera-operator"
+	if strings.HasPrefix(ns, "kube-") || strings.HasSuffix(ns, "-system") || strings.HasPrefix(ns, "aks-") || strings.HasPrefix(ns, "azure-") {
+		return true
+	}
+	n := strings.ToLower(ns)
+	for _, a := range addOnNamespaces {
+		if strings.Contains(n, a) {
+			return true
+		}
+	}
+	return false
+}
+
+var addOnNamespaces = []string{
+	"cert-manager", "ingress", "external-dns", "keda", "velero", "snapscheduler", "monitoring", "prometheus", "grafana",
+	"loki", "tempo", "jaeger", "opentelemetry", "argocd", "argo-cd", "flux", "istio", "linkerd", "cilium", "calico", "tigera",
+	"metallb", "longhorn", "rook-ceph", "metacontroller", "sealed-secrets", "secrets-store", "external-secrets", "kyverno",
+	"gatekeeper", "reloader", "cluster-autoscaler", "kured", "datadog", "newrelic", "dynatrace", "octopus-agent", "logging",
 }
 
 func (m *Manager) CostReport(windowHours int) CostReport {
@@ -468,8 +486,9 @@ func pinnedPod(p *corev1.Pod) bool {
 	return a != nil && a.NodeAffinity != nil && a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil
 }
 
-// consolidate checks whether `from`'s movable workloads fit in `into`'s spare capacity. Workloads
-// that already run in `into` (same namespace, kind and name) don't need to move.
+// consolidate checks whether `from`'s workloads fit in `into`'s spare capacity. A workload that also
+// runs in `into` still brings all its replicas: they serve `from`'s load today, so the target's copy
+// has to scale up by that much (counted in Already).
 func consolidate(tag string, from CostCluster, fw map[string]wlFootprint, into CostCluster, iw map[string]wlFootprint) *Consolidation {
 	con := Consolidation{Tag: tag, From: from.Cluster, Into: into.Cluster, WithVolumes: []string{}, Pinned: []string{}}
 	for key, w := range fw {
@@ -478,7 +497,6 @@ func consolidate(tag string, from CostCluster, fw map[string]wlFootprint, into C
 		}
 		if _, ok := iw[key]; ok {
 			con.Already++
-			continue
 		}
 		con.Workloads++
 		con.MoveCPU += w.cpu

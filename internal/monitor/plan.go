@@ -52,6 +52,10 @@ type PlanMove struct {
 	From          []string     `json:"from"`
 	To            []string     `json:"to"` // target node per moving replica
 	Volumes       []PlanVolume `json:"volumes,omitempty"`
+	// TargetReplicas: replicas the same workload already runs in the target cluster (move plans).
+	// The moving replicas are added on top: the target's copy scales from TargetReplicas to
+	// TargetReplicas+Replicas, because those replicas carry the source cluster's load.
+	TargetReplicas int `json:"targetReplicas,omitempty"`
 }
 
 type PlanNodeAfter struct {
@@ -84,7 +88,7 @@ type CostPlan struct {
 	Drain     []PlanDrain     `json:"drain"`
 	Moves     []PlanMove      `json:"moves"`
 	After     []PlanNodeAfter `json:"after"`
-	Already   []string        `json:"alreadyThere,omitempty"`
+	Merged    []string        `json:"merged,omitempty"`  // workloads that also run in the target: scaled up there, not dropped
 	Skipped   []string        `json:"skipped,omitempty"` // system workloads not moved
 	Savings   float64         `json:"savings"`
 	Priced    bool            `json:"priced"`
@@ -404,8 +408,12 @@ func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (
 		present[p.ns+"/"+p.kind+"/"+p.workload] = true
 	}
 	plan := &CostPlan{ID: "move/" + from.name + "/" + into.name, Type: "move-cluster", Cluster: from.name, Target: into.name, Tag: tag,
-		NodesFrom: fromCost.Nodes, Drain: []PlanDrain{}, After: []PlanNodeAfter{}, Already: []string{}, Skipped: []string{}, Notes: []string{}}
-	seenAlready, seenSkipped := map[string]bool{}, map[string]bool{}
+		NodesFrom: fromCost.Nodes, Drain: []PlanDrain{}, After: []PlanNodeAfter{}, Merged: []string{}, Skipped: []string{}, Notes: []string{}}
+	seenMerged, seenSkipped := map[string]bool{}, map[string]bool{}
+	inTarget := map[string]int{}
+	for _, p := range dstPods {
+		inTarget[p.ns+"/"+p.kind+"/"+p.workload]++
+	}
 	var moving []*planPod
 	pinned := 0
 	for _, p := range srcPods {
@@ -416,12 +424,13 @@ func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (
 				seenSkipped[key] = true
 				plan.Skipped = append(plan.Skipped, key)
 			}
-		case present[key]:
-			if !seenAlready[key] {
-				seenAlready[key] = true
-				plan.Already = append(plan.Already, key)
-			}
 		default:
+			// Every replica moves, including those of workloads that also run in the target: they
+			// carry this cluster's load, so the target's copy must grow by that many.
+			if present[key] && !seenMerged[key] {
+				seenMerged[key] = true
+				plan.Merged = append(plan.Merged, key)
+			}
 			moving = append(moving, p)
 			if p.pinned {
 				pinned++
@@ -437,6 +446,10 @@ func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (
 		return nil, false
 	}
 	plan.Moves = groupMoves(moving, where, srcPods)
+	for i := range plan.Moves {
+		m := &plan.Moves[i]
+		m.TargetReplicas = inTarget[m.Namespace+"/"+m.Kind+"/"+m.Name]
+	}
 	gains := map[*planNode]int{}
 	for _, n := range where {
 		gains[n]++
@@ -449,7 +462,7 @@ func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (
 			Disks: n.disks, DiskLimit: n.diskLimit, Gains: gains[n]})
 	}
 	slices.SortFunc(plan.After, func(a, b PlanNodeAfter) int { return strings.Compare(a.Name, b.Name) })
-	slices.Sort(plan.Already)
+	slices.Sort(plan.Merged)
 	slices.Sort(plan.Skipped)
 	if fromCost.Priced {
 		plan.Savings, plan.Priced = fromCost.Monthly, true
@@ -459,6 +472,9 @@ func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (
 		vols += len(m.Volumes)
 	}
 	plan.Notes = append(plan.Notes, "Replicas are placed on "+into.name+"'s current nodes with 15% headroom, within each VM's disk-attach limit.")
+	if len(plan.Merged) > 0 {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("%d workload(s) also run in %s: they keep every replica. Scale %s's copy up by the replicas moving (shown per workload), since those replicas serve %s's load today — and check the copies are configured the same before merging them.", len(plan.Merged), into.name, into.name, from.name))
+	}
 	if vols > 0 {
 		plan.Notes = append(plan.Notes, fmt.Sprintf("%d volume(s) hold data: copy it to new volumes in %s (backup/restore or a migration tool) before switching over.", vols, into.name))
 	}

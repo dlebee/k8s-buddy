@@ -36,7 +36,8 @@ func TestConsolidate(t *testing.T) {
 	}
 	iw := map[string]wlFootprint{"shared/Deployment/ing": {}}
 	c := consolidate("prod", from, fw, into, iw)
-	if c == nil || c.Workloads != 2 || c.Already != 1 || len(c.WithVolumes) != 1 || c.Savings != 300 {
+	// The shared workload still needs room in the target: its replicas carry a's load.
+	if c == nil || c.Workloads != 3 || c.Already != 1 || c.MoveCPU != 1700 || len(c.WithVolumes) != 1 || c.Savings != 300 {
 		t.Fatalf("got %+v", c)
 	}
 	// Too big to fit.
@@ -52,5 +53,14 @@ func TestPinnedPod(t *testing.T) {
 	}
 	if !pinnedPod(&corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"agentpool": "gpu"}}}) {
 		t.Fatal("pool selector pins")
+	}
+}
+
+func TestSystemNamespace(t *testing.T) {
+	for ns, want := range map[string]bool{"kube-system": true, "cert-manager": true, "nginx-ingress": true, "monitoring": true,
+		"backube-snapscheduler": true, "metacontroller": true, "rpc-gateway": false, "creditcoin": false, "sro": false} {
+		if systemNamespace(ns) != want {
+			t.Errorf("%s: got %v want %v", ns, !want, want)
+		}
 	}
 }

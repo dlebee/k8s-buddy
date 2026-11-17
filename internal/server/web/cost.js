@@ -74,7 +74,7 @@ function planCard(p, open) {
     <h4>${shrink ? '2 · ' : ''}What moves</h4>
     <table class="ptable"><thead><tr><th>Workload</th><th>Replicas</th><th>Per replica</th><th>Disks</th><th>From → to</th></tr></thead><tbody>
     ${p.moves.map((m) => `<tr><td><b>${esc(m.name)}</b><div class="muted">${esc(m.kind)} · ${esc(m.namespace)}</div></td>
-      <td><b>${m.replicas}</b> of ${m.totalReplicas}${m.replicas === m.totalReplicas && m.totalReplicas === 1 ? '<div class="muted">brief outage</div>' : ''}</td>
+      <td><b>${m.replicas}</b> of ${m.totalReplicas}${m.targetReplicas ? `<div class="merge">${esc(p.target)} runs ${m.targetReplicas}: scale it to <b>${m.targetReplicas + m.replicas}</b></div>` : ''}${shrink && m.replicas === m.totalReplicas && m.totalReplicas === 1 ? '<div class="muted">brief outage</div>' : ''}</td>
       <td>${fmtCPU(m.cpu)} · ${fmtMem(m.mem)}</td>
       <td>${m.disks || '–'}</td>
       <td class="mono small">${m.from.map(esc).join('<br>')}<div class="arrow">↓</div>${m.to.map(esc).join('<br>')}</td></tr>`).join('')}
@@ -89,8 +89,8 @@ function planCard(p, open) {
       <td>${bar2(a.mem, a.allocMem)} ${pct(a.mem, a.allocMem)}% <span class="muted">${fmtMem(a.mem)} / ${fmtMem(a.allocMem)}</span></td>
       <td class="${toneDisks(a.disks, a.diskLimit)}">${a.disks}${a.diskLimit >= 0 ? ` / ${a.diskLimit}` : ''}</td></tr>`).join('')}
     </tbody></table>
-    ${p.alreadyThere?.length ? `<details class="plan-more"><summary>${p.alreadyThere.length} workload${p.alreadyThere.length === 1 ? '' : 's'} already run in ${esc(p.target)} (not moved)</summary><div class="mono small">${p.alreadyThere.map(esc).join('<br>')}</div></details>` : ''}
-    ${p.skipped?.length ? `<details class="plan-more"><summary>${p.skipped.length} system workload${p.skipped.length === 1 ? '' : 's'} not moved (DaemonSets, kube-*/…-system)</summary><div class="mono small">${p.skipped.map(esc).join('<br>')}</div></details>` : ''}
+    ${p.merged?.length ? `<details class="plan-more"><summary>${p.merged.length} workload${p.merged.length === 1 ? '' : 's'} also run in ${esc(p.target)}: kept at full size and merged (target scales up)</summary><div class="mono small">${p.merged.map(esc).join('<br>')}</div></details>` : ''}
+    ${p.skipped?.length ? `<details class="plan-more"><summary>${p.skipped.length} system workload${p.skipped.length === 1 ? '' : 's'} and cluster add-ons not moved: ${esc(p.target)} runs its own (DaemonSets, kube-*, cert-manager, ingress, monitoring…)</summary><div class="mono small">${p.skipped.map(esc).join('<br>')}</div></details>` : ''}
     <h4>Notes</h4><ul class="plan-notes">${p.notes.filter((n) => !n.startsWith('⚠')).map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
     <h4>Commands <span class="muted">(suggested; nothing runs from here)</span></h4>
     <div class="plan-cmds">${p.commands.map((c) => `<div class="cmd"><pre class="code">${esc(c)}</pre><button class="btn sm" data-copy="${esc(c)}">Copy</button></div>`).join('')}</div>
