@@ -312,7 +312,7 @@ function serviceSummary(o, ctx) {
     ${actionsBar([tcp.length && btnForward])}
     ${facts([
       ['Type', esc(spec.type || 'ClusterIP'), spec.sessionAffinity && spec.sessionAffinity !== 'None' ? `affinity ${esc(spec.sessionAffinity)}` : ''],
-      ['Cluster IP', esc(spec.clusterIP || '–'), arr(spec.ipFamilies).join(', ')],
+      ['Cluster IP', esc(spec.clusterIP || '–'), esc(arr(spec.ipFamilies).join(', '))],
       spec.type === 'LoadBalancer' || ext.length ? ['External', ext.length ? esc(ext.join(', ')) : '<span class="pill warn">pending</span>', spec.loadBalancerClass ? esc(spec.loadBalancerClass) : '', ext.length ? '' : 'warn'] : null,
       spec.type === 'ExternalName' ? ['External name', esc(spec.externalName)] : null,
       hasSel ? ['Endpoints', `${readyPods}<small> / ${pods.length}</small>`, 'ready pods selected', pods.length === 0 ? 'bad' : readyPods < pods.length ? 'warn' : ''] : ['Endpoints', '<span class="muted">manual</span>', 'no selector'],
@@ -447,7 +447,7 @@ function gatewaySummary(o, ctx) {
       const bad = arr(st.conditions).find((c) => c.status === 'False' && ['Accepted', 'Programmed', 'ResolvedRefs'].includes(c.type));
       return `<div class="rv-route"><div class="rv-host ${l.protocol === 'HTTPS' || l.protocol === 'TLS' ? 'tls' : ''}">${l.protocol === 'HTTPS' || l.protocol === 'TLS' ? '<span title="TLS">🔒</span>' : '<span class="muted">○</span>'}<span>${esc(l.hostname || '*')}</span></div>
         <div class="rv-paths"><div class="rv-path"><code>${esc(l.name)}</code><span class="muted rv-ptype">${esc(l.protocol)} :${esc(l.port)}</span>
-          <span class="muted rv-small">${st.attachedRoutes != null ? plural(st.attachedRoutes, 'route') : ''}</span>${bad ? `<span class="pill bad" title="${esc(bad.message || '')}">${esc(bad.reason || bad.type)}</span>` : ''}</div></div></div>`;
+          <span class="muted rv-small">${st.attachedRoutes != null ? esc(plural(st.attachedRoutes, 'route')) : ''}</span>${bad ? `<span class="pill bad" title="${esc(bad.message || '')}">${esc(bad.reason || bad.type)}</span>` : ''}</div></div></div>`;
     }).join('') || '<p class="muted">No listeners.</p>'}</div>`)}
     ${section('Conditions', condPills(status.conditions))}
     ${warnings(ctx.events)}
@@ -717,7 +717,7 @@ function certSummary(o, ctx) {
       ['Secret', esc(spec.secretName || '–')],
       ['Expires', na ? esc(new Date(na).toLocaleDateString()) : '–', na ? until(status.notAfter) : ''],
       ['Renewal', rn ? esc(new Date(rn).toLocaleDateString()) : '–', rn ? until(status.renewalTime) : ''],
-      status.revision ? ['Revision', String(status.revision)] : null,
+      status.revision ? ['Revision', esc(String(status.revision))] : null,
     ])}
     ${section('DNS names', arr(spec.dnsNames).length || spec.commonName ? `<div class="rv-chips">${[spec.commonName, ...arr(spec.dnsNames)].filter((x, i, a) => x && a.indexOf(x) === i).map((d) => chip(d)).join('')}</div>` : '<span class="muted">none</span>')}
     ${warnings(ctx.events)}
