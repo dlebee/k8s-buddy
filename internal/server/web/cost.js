@@ -60,7 +60,9 @@ function planCard(p, open) {
   const shrink = p.type === 'shrink-pool';
   const title = shrink
     ? `Shrink <b>${esc(p.pool)}</b> in <b>${esc(p.cluster)}</b> from ${p.nodesFrom} to ${p.nodesTo} node${p.nodesTo === 1 ? '' : 's'}`
-    : `Move <b>${esc(p.cluster)}</b>'s workloads into <b>${esc(p.target)}</b> and retire ${esc(p.cluster)}`;
+    : p.retire?.length
+      ? `Keep <b>${esc(p.target)}</b>, retire ${p.retire.map((r) => `<b>${esc(r)}</b>`).join(', ')}`
+      : `Move <b>${esc(p.cluster)}</b>'s workloads into <b>${esc(p.target)}</b> and retire ${esc(p.cluster)}`;
   const replicas = p.moves.reduce((a, m) => a + m.replicas, 0), disks = p.moves.reduce((a, m) => a + m.disks, 0);
   const vols = p.moves.flatMap((m) => (m.volumes || []).map((v) => ({ ...v, ns: m.namespace, wl: `${m.kind}/${m.name}` })));
   return `<details class="card plan" ${open ? 'open' : ''}>
@@ -73,7 +75,7 @@ function planCard(p, open) {
       ${p.drain.map((d) => `<tr><td class="mono">${esc(d.name)}</td><td>${d.pods}</td><td>${d.disks}</td></tr>`).join('')}</tbody></table>` : ''}
     <h4>${shrink ? '2 · ' : ''}What moves</h4>
     <table class="ptable"><thead><tr><th>Workload</th><th>Replicas</th><th>Per replica</th><th>Disks</th><th>From → to</th></tr></thead><tbody>
-    ${p.moves.map((m) => `<tr><td><b>${esc(m.name)}</b><div class="muted">${esc(m.kind)} · ${esc(m.namespace)}</div></td>
+    ${p.moves.map((m) => `<tr><td><b>${esc(m.name)}</b><div class="muted">${esc(m.kind)} · ${esc(m.namespace)}${m.source ? ` · from <b>${esc(m.source)}</b>` : ''}</div></td>
       <td><b>${m.replicas}</b> of ${m.totalReplicas}${m.targetReplicas ? `<div class="merge">${esc(p.target)} runs ${m.targetReplicas}: scale it to <b>${m.targetReplicas + m.replicas}</b></div>` : ''}${shrink && m.replicas === m.totalReplicas && m.totalReplicas === 1 ? '<div class="muted">brief outage</div>' : ''}</td>
       <td>${fmtCPU(m.cpu)} · ${fmtMem(m.mem)}</td>
       <td>${m.disks || '–'}</td>
@@ -97,13 +99,22 @@ function planCard(p, open) {
   </details>`;
 }
 
-function plansHTML(rep) {
-  const plans = rep.plans.filter((p) => inScope('clusters', p.cluster));
-  if (!plans.length) return `<div class="card empty"><span class="big">✨</span>No plan saves anything right now: every pool needs its nodes once pods are packed with headroom and disk limits.${rep.consolidations.length ? '' : '<br><span class="muted">Tag clusters (# Tags) to also check whether one cluster could fold into another.</span>'}</div>`;
-  const shrink = plans.filter((p) => p.type === 'shrink-pool'), move = plans.filter((p) => p.type === 'move-cluster');
-  return `<p class="muted plans-intro">Each plan is simulated on the pods running now: every replica and every attached disk gets a place, within 15% headroom and each VM's disk-attach limit. Plans are independent; after doing one, re-check the others.</p>
-    ${shrink.length ? `<div class="section-title">Remove spare nodes <span class="muted">${shrink.length}</span></div>${shrink.map((p, i) => planCard(p, i === 0)).join('')}` : ''}
-    ${move.length ? `<div class="section-title">Fold a cluster into another with the same tag <span class="muted">${move.length}</span></div>${move.map((p) => planCard(p, false)).join('')}` : ''}`;
+function plansHTML(rep, fold) {
+  const shrink = rep.plans.filter((p) => p.type === 'shrink-pool' && inScope('clusters', p.cluster));
+  const tags = Object.entries(fold.tags || {}).sort(([a], [b]) => a.localeCompare(b));
+  const foldPlans = fold.plans || [];
+  return `<p class="muted plans-intro">Every plan is simulated on the pods running now: each replica and attached disk gets a place, within 15% headroom and each VM's disk-attach limit. Plans are independent; after doing one, re-check the others.</p>
+    <div class="section-title">Remove spare nodes <span class="muted">${shrink.length}</span></div>
+    ${shrink.length ? shrink.map((p, i) => planCard(p, i === 0 && !fold.tag)).join('') : '<div class="card empty">No pool has a spare node: every one needs its nodes once pods are packed with headroom and disk limits.</div>'}
+    <div class="section-title">Fold clusters together</div>
+    <div class="card fold-pick">
+      ${tags.length ? `<div class="fold-q">Which clusters could share? Pick a tag to see the alternatives:</div>
+        <div class="fold-tags">${tags.map(([t, cs]) => `<button class="ms-tag ${fold.tag === t ? 'on' : ''}" data-fold="${esc(t)}" title="${esc(cs.join(', '))}">#${esc(t)} <small>${cs.length}</small></button>`).join('')}</div>`
+        : `<div class="fold-q">Tag clusters that could share capacity (same environment, team or region) to compare folding them together.</div><button class="btn sm" data-tag-edit="">Tag clusters…</button>`}
+    </div>
+    ${fold.tag ? (foldPlans.length
+      ? `<p class="muted plans-intro">${foldPlans.length} alternative${foldPlans.length === 1 ? '' : 's'} for <b>#${esc(fold.tag)}</b>, one per cluster you could keep. Each keeps every app replica (shared workloads scale up) and adds the retired clusters one by one while they still fit. Best saving first.</p>${foldPlans.map((p, i) => planCard(p, i === 0)).join('')}`
+      : `<div class="card empty">None of the <b>#${esc(fold.tag)}</b> clusters can absorb another: there isn't enough room once every replica and disk is placed.</div>`) : ''}`;
 }
 
 export async function costView(view, head, current, params) {
@@ -111,16 +122,24 @@ export async function costView(view, head, current, params) {
   view.innerHTML = `${head('Cost optimization', 'Capacity vs what pods request and really use, per node pool. Advice only: nothing is changed.')}<div class="card empty">Working it out…</div>`;
   const rep = await api('/api/cost');
   if (current() !== 'cost') return;
-  const nPlans = rep.plans.filter((p) => inScope('clusters', p.cluster)).length;
+  const nPlans = rep.plans.filter((p) => p.type === 'shrink-pool' && inScope('clusters', p.cluster)).length;
   const planSave = rep.plans.filter((p) => inScope('clusters', p.cluster) && p.type === 'shrink-pool').reduce((a, p) => a + p.savings, 0);
   const tabs = `<div class="seg cost-tabs"><button data-tab="capacity" class="${tab === 'capacity' ? 'on' : ''}">Capacity</button><button data-tab="plans" class="${tab === 'plans' ? 'on' : ''}">Plans${nPlans ? ` <span class="count">${nPlans}</span>` : ''}</button></div>`;
-  const body = tab === 'plans' ? plansHTML(rep) : capacityHTML(rep);
+  const foldTag = params?.get('fold') || '';
+  const fold = tab === 'plans' ? await api('/api/cost/fold?' + new URLSearchParams({ tag: foldTag })).catch(() => ({ tags: {}, plans: [] })) : null;
+  if (current() !== 'cost') return;
+  const body = tab === 'plans' ? plansHTML(rep, fold) : capacityHTML(rep);
   view.innerHTML = `
     ${head('Cost optimization', 'Capacity vs what pods request and really use, per node pool. Advice only: nothing is changed.', '<span data-pick="clusters"></span>')}
     ${tabs}
     <div class="cost-note">💡 Dollar amounts are <b>estimates</b> from public pay-as-you-go list prices for each node's VM size and region (Azure and Linode today). Reservations, savings plans, spot, discounts, disks and networking aren't included, so your bill will differ.${tab === 'capacity' && planSave > 0 ? ` <a href="#cost?tab=plans">See ${nPlans} plan${nPlans === 1 ? '' : 's'} →</a>` : ''}</div>
     ${body}`;
   view.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { location.hash = b.dataset.tab === 'plans' ? '#cost?tab=plans' : '#cost'; });
+  if (foldTag) view.querySelector('.fold-pick')?.scrollIntoView({ block: 'start' });
+  view.querySelectorAll('[data-fold]').forEach((b) => b.onclick = () => {
+    const t = b.dataset.fold === foldTag ? '' : b.dataset.fold;
+    location.hash = '#cost?' + new URLSearchParams({ tab: 'plans', ...(t ? { fold: t } : {}) });
+  });
   return rep;
 }
 

@@ -203,15 +203,13 @@ func (m *Manager) CostReport(windowHours int) CostReport {
 						into, intoCost = f.c, f.cc
 					}
 				}
+				// Fold plans are built per tag on request (FoldPlans); here we only note that a fold
+				// is possible so Capacity can point to it.
+				_, _ = into, intoCost
 				pair := best.From + "/" + best.Into
-				if i, dup := seenPair[pair]; dup {
-					rep.Plans[i].Tag += ", " + tag
-					continue
-				}
-				if plan, ok := movePlan(tag, all[a].c, into, all[a].cc, intoCost); ok {
+				if _, dup := seenPair[pair]; !dup {
+					seenPair[pair] = len(rep.Consolidations)
 					rep.Consolidations = append(rep.Consolidations, *best)
-					seenPair[pair] = len(rep.Plans)
-					rep.Plans = append(rep.Plans, *plan)
 				}
 			}
 		}

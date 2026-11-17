@@ -55,7 +55,8 @@ type PlanMove struct {
 	// TargetReplicas: replicas the same workload already runs in the target cluster (move plans).
 	// The moving replicas are added on top: the target's copy scales from TargetReplicas to
 	// TargetReplicas+Replicas, because those replicas carry the source cluster's load.
-	TargetReplicas int `json:"targetReplicas,omitempty"`
+	TargetReplicas int    `json:"targetReplicas,omitempty"`
+	Source         string `json:"source,omitempty"` // fold plans: the cluster these replicas come from
 }
 
 type PlanNodeAfter struct {
@@ -89,6 +90,7 @@ type CostPlan struct {
 	Moves     []PlanMove      `json:"moves"`
 	After     []PlanNodeAfter `json:"after"`
 	Merged    []string        `json:"merged,omitempty"`  // workloads that also run in the target: scaled up there, not dropped
+	Retire    []string        `json:"retire,omitempty"`  // fold plans: clusters retired into Target
 	Skipped   []string        `json:"skipped,omitempty"` // system workloads not moved
 	Savings   float64         `json:"savings"`
 	Priced    bool            `json:"priced"`
@@ -396,101 +398,6 @@ func shrinkCommands(cluster string, p CostPool, plan *CostPlan) []string {
 		cmds = append(cmds, fmt.Sprintf("# then reduce node pool %q to %d nodes in your provider (or its autoscaler minimum)", p.Name, plan.NodesTo))
 	}
 	return cmds
-}
-
-// movePlan simulates moving `from`'s workloads onto `into`'s nodes. System workloads and workloads
-// already running in `into` stay put; every other replica, with its disks, must find room.
-func movePlan(tag string, from, into *cluster, fromCost, intoCost CostCluster) (*CostPlan, bool) {
-	_, srcPods := from.planState()
-	dstNodes, dstPods := into.planState()
-	present := map[string]bool{}
-	for _, p := range dstPods {
-		present[p.ns+"/"+p.kind+"/"+p.workload] = true
-	}
-	plan := &CostPlan{ID: "move/" + from.name + "/" + into.name, Type: "move-cluster", Cluster: from.name, Target: into.name, Tag: tag,
-		NodesFrom: fromCost.Nodes, Drain: []PlanDrain{}, After: []PlanNodeAfter{}, Merged: []string{}, Skipped: []string{}, Notes: []string{}}
-	seenMerged, seenSkipped := map[string]bool{}, map[string]bool{}
-	inTarget := map[string]int{}
-	for _, p := range dstPods {
-		inTarget[p.ns+"/"+p.kind+"/"+p.workload]++
-	}
-	var moving []*planPod
-	pinned := 0
-	for _, p := range srcPods {
-		key := p.ns + "/" + p.kind + "/" + p.workload
-		switch {
-		case p.ds || systemNamespace(p.ns):
-			if !seenSkipped[key] {
-				seenSkipped[key] = true
-				plan.Skipped = append(plan.Skipped, key)
-			}
-		default:
-			// Every replica moves, including those of workloads that also run in the target: they
-			// carry this cluster's load, so the target's copy must grow by that many.
-			if present[key] && !seenMerged[key] {
-				seenMerged[key] = true
-				plan.Merged = append(plan.Merged, key)
-			}
-			moving = append(moving, p)
-			if p.pinned {
-				pinned++
-			}
-		}
-	}
-	if len(moving) == 0 {
-		return nil, false
-	}
-	targets := cloneNodes(dstNodes)
-	where, ok := placeAll(moving, targets)
-	if !ok {
-		return nil, false
-	}
-	plan.Moves = groupMoves(moving, where, srcPods)
-	for i := range plan.Moves {
-		m := &plan.Moves[i]
-		m.TargetReplicas = inTarget[m.Namespace+"/"+m.Kind+"/"+m.Name]
-	}
-	gains := map[*planNode]int{}
-	for _, n := range where {
-		gains[n]++
-	}
-	for _, n := range targets {
-		if gains[n] == 0 {
-			continue
-		}
-		plan.After = append(plan.After, PlanNodeAfter{Name: n.name, CPU: n.usedCPU, Mem: n.usedMem, AllocCPU: n.allocCPU, AllocMem: n.allocMem,
-			Disks: n.disks, DiskLimit: n.diskLimit, Gains: gains[n]})
-	}
-	slices.SortFunc(plan.After, func(a, b PlanNodeAfter) int { return strings.Compare(a.Name, b.Name) })
-	slices.Sort(plan.Merged)
-	slices.Sort(plan.Skipped)
-	if fromCost.Priced {
-		plan.Savings, plan.Priced = fromCost.Monthly, true
-	}
-	vols := 0
-	for _, m := range plan.Moves {
-		vols += len(m.Volumes)
-	}
-	plan.Notes = append(plan.Notes, "Replicas are placed on "+into.name+"'s current nodes with 15% headroom, within each VM's disk-attach limit.")
-	if len(plan.Merged) > 0 {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("%d workload(s) also run in %s: they keep every replica. Scale %s's copy up by the replicas moving (shown per workload), since those replicas serve %s's load today — and check the copies are configured the same before merging them.", len(plan.Merged), into.name, into.name, from.name))
-	}
-	if vols > 0 {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("%d volume(s) hold data: copy it to new volumes in %s (backup/restore or a migration tool) before switching over.", vols, into.name))
-	}
-	if pinned > 0 {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("%d pod(s) use hostPath or are pinned to a node: check they can run on %s's nodes.", pinned, into.name))
-	}
-	plan.Notes = append(plan.Notes, "Recreate config the workloads need in "+into.name+" (secrets, config maps, ingresses, DNS) before retiring "+from.name+".")
-	if fr, ir := regionOf(fromCost), regionOf(intoCost); fr != "" && ir != "" && fr != ir {
-		plan.Notes = append([]string{fmt.Sprintf("⚠ %s runs in %s and %s in %s: a second region is often there on purpose (redundancy, latency, data residency). Merging gives that up.", from.name, fr, into.name, ir)}, plan.Notes...)
-	}
-	plan.Commands = []string{
-		"# 1. export the workloads' manifests (or redeploy them from your GitOps/Helm source) into " + into.name,
-		"# 2. migrate volume data, deploy into " + into.name + ", then move traffic (DNS / ingress)",
-		"# 3. once " + into.name + " serves everything, scale down or delete " + from.name,
-	}
-	return plan, true
 }
 
 func regionOf(c CostCluster) string {
