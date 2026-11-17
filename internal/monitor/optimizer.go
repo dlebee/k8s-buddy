@@ -53,7 +53,7 @@ type OptRow struct {
 	Days        float64      `json:"days"`     // recorded data (gaps skipped)
 	SpanDays    float64      `json:"spanDays"` // first to last reading
 	Confidence  string       `json:"confidence"`
-	Verdict     string       `json:"verdict"` // missing | risk | over | ok
+	Verdict     string       `json:"verdict"` // risk | missing | under | over | ok
 	CPU         OptResource  `json:"cpu"`
 	Mem         OptResource  `json:"mem"`
 	Findings    []OptFinding `json:"findings"`
@@ -64,6 +64,8 @@ type OptRow struct {
 	HistoryKind string       `json:"historyKind"`
 	HistoryName string       `json:"historyName"`
 }
+
+var verdictOrder = map[string]int{"risk": 0, "missing": 1, "under": 2, "over": 3, "ok": 4}
 
 type OptReport struct {
 	Available     bool     `json:"available"` // usage history on
@@ -122,7 +124,7 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 	for _, r := range rep.Rows {
 		rep.Days = max(rep.Days, r.Days)
 	}
-	order := map[string]int{"risk": 0, "missing": 1, "over": 2, "ok": 3}
+	order := verdictOrder
 	slices.SortFunc(rep.Rows, func(a, b OptRow) int {
 		if d := order[a.Verdict] - order[b.Verdict]; d != 0 {
 			return d
@@ -239,28 +241,28 @@ func judge(r *OptRow) {
 	cpu, mem := r.CPU, r.Mem
 	verdict := "ok"
 	worse := func(v string) {
-		if map[string]int{"risk": 0, "missing": 1, "over": 2, "ok": 3}[v] < map[string]int{"risk": 0, "missing": 1, "over": 2, "ok": 3}[verdict] {
+		if verdictOrder[v] < verdictOrder[verdict] {
 			verdict = v
 		}
 	}
-	if mem.Limit.Current >= 0 && float64(mem.Limit.Current) < mem.Max {
-		add("bad", "Memory limit %s is below the highest recorded use %s: it was likely OOM-killed or close to it.", fmtBytes(mem.Limit.Current), fmtBytes(int64(mem.Max)))
-		worse("risk")
-	} else if mem.Limit.Current >= 0 && float64(mem.Limit.Current) < mem.Max*1.1 {
-		add("warn", "Memory limit %s leaves under 10%% above the highest recorded use %s.", fmtBytes(mem.Limit.Current), fmtBytes(int64(mem.Max)))
-		worse("risk")
-	}
-	if cpu.Limit.Current >= 0 && float64(cpu.Limit.Current) < cpu.Max {
-		add("warn", "CPU limit %s is below the highest recorded use %s: it gets throttled at peaks.", fmtMilli(cpu.Limit.Current), fmtMilli(int64(cpu.Max)))
+	// At risk: use reaching a limit. Use can't go past a limit (memory is OOM-killed, CPU
+	// throttled), so a peak close to the limit is the sign.
+	if mem.Limit.Current >= 0 && mem.Max >= float64(mem.Limit.Current)*0.9 {
+		add("bad", "Memory peaked at %s, %.0f%% of its %s limit: at the limit the container is OOM-killed.", fmtBytes(int64(mem.Max)), 100*mem.Max/float64(max(mem.Limit.Current, 1)), fmtBytes(mem.Limit.Current))
 		worse("risk")
 	}
+	if cpu.Limit.Current >= 0 && cpu.Max >= float64(cpu.Limit.Current)*0.95 {
+		add("warn", "CPU peaked at %s, at its %s limit: it gets throttled (slowed down) at its busiest.", fmtMilli(int64(cpu.Max)), fmtMilli(cpu.Limit.Current))
+		worse("risk")
+	}
+	// Under-requested: typical use above the request but under the limit. Allowed (that's what
+	// Burstable pods do), with side effects worth knowing.
 	if mem.Request.Current >= 0 && float64(mem.Request.Current) < mem.Median {
-		add("warn", "Memory request %s is below typical use %s: the pod is among the first evicted under memory pressure.", fmtBytes(mem.Request.Current), fmtBytes(int64(mem.Median)))
-		worse("risk")
+		add("warn", "Typically uses %s of memory, above its %s request (fine while under the limit). If the node runs short of memory, pods using the most beyond their request are evicted first, and the scheduler counts only the request, so its node can end up fuller than Kubernetes thinks.", fmtBytes(int64(mem.Median)), fmtBytes(mem.Request.Current))
+		worse("under")
 	}
 	if cpu.Request.Current >= 0 && float64(cpu.Request.Current) < cpu.Median {
-		add("notice", "CPU request %s is below typical use %s: the scheduler may pack it onto a busy node.", fmtMilli(cpu.Request.Current), fmtMilli(int64(cpu.Median)))
-		worse("risk")
+		add("info", "Typically uses %s of CPU, above its %s request: fine, it uses spare CPU; when the node is busy it's held to roughly its request share.", fmtMilli(int64(cpu.Median)), fmtMilli(cpu.Request.Current))
 	}
 	if cpu.Request.Current < 0 || mem.Request.Current < 0 {
 		add("warn", "No %s set: the scheduler doesn't reserve room for it.", missingWord(cpu.Request.Current < 0, mem.Request.Current < 0, "CPU request", "memory request"))

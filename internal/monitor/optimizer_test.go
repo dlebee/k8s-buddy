@@ -24,12 +24,26 @@ func TestOptimizerRecommendations(t *testing.T) {
 		t.Fatalf("command: %s", r.Command)
 	}
 
-	// Memory limit under the recorded max: at risk.
+	// Memory peak near the limit: at risk.
 	ct := corev1.Container{Name: "api", Resources: corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("128Mi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("150Mi")}}}
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("190Mi")}}}
 	if r := optRow(base, ct, week, false); r.Verdict != "risk" {
 		t.Fatalf("risk: %+v", r.Findings)
+	}
+
+	// Typical memory above the request but well under the limit: under-requested, not at risk.
+	ct.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("64Mi")
+	ct.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	if r := optRow(base, ct, week, false); r.Verdict != "under" {
+		t.Fatalf("under: %s %+v", r.Verdict, r.Findings)
+	}
+
+	// CPU above its request only: a note, the verdict stays fine.
+	ct.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("20m")
+	ct.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
+	if r := optRow(base, ct, week, false); r.Verdict != "ok" {
+		t.Fatalf("cpu above request: %s %+v", r.Verdict, r.Findings)
 	}
 
 	// Requests far above use: over-provisioned, and freed requests count every replica.

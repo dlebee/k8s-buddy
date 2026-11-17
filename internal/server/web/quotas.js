@@ -12,8 +12,9 @@ const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; 
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
 const VERDICT = {
-  risk: ['At risk', 'bad', 'A limit or request is below what it really uses'],
+  risk: ['At risk', 'bad', 'Use reaches a limit: OOM-killed (memory) or throttled (CPU) at peaks'],
   missing: ['Missing', 'warn', 'No requests or limits set'],
+  under: ['Under-requested', 'warn', 'Typical memory use is above the request (allowed while under the limit): first to be evicted if the node runs short'],
   over: ['Over-provisioned', 'notice', 'Requests well above what it uses'],
   ok: ['Fits', 'ok', 'Within range of its use'],
 };
@@ -81,7 +82,8 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
       ${banner}
       <div class="stats q-stats">
         <div class="card stat"><div class="label">Containers analysed</div><div class="value">${base.length}</div><div class="foot">${r.collecting ? `${r.collecting} workload${r.collecting === 1 ? '' : 's'} still collecting (under 1 h)` : `in ${r.clusters.length} cluster${r.clusters.length === 1 ? '' : 's'}`}</div></div>
-        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">limits or requests below real use</div></div>
+        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">use reaching a limit</div></div>
+        <div class="card stat ${count('under') ? 'warn' : ''}"><div class="label">Under-requested</div><div class="value">${count('under')}</div><div class="foot">memory use above request, under limit</div></div>
         <div class="card stat ${count('missing') ? 'warn' : ''}"><div class="label">Missing requests/limits</div><div class="value">${count('missing')}</div><div class="foot">suggested from their use</div></div>
         <div class="card stat"><div class="label">Over-provisioned</div><div class="value">${count('over')}</div><div class="foot">could free ${fmtCPU(freeCPU)} CPU · ${fmtMem(freeMem)} requested</div></div>
       </div>

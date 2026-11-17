@@ -548,3 +548,6 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .q-find .lv-bad { color: var(--bad); } .q-find .lv-warn { color: var(--warn); }
 .q-nums { font-size: 12px; }
 .q-detail .plan-cmds { margin-bottom: 10px; }
+.q-detail, .q-detail td { white-space: normal; }
+.q-detail .q-grid > div { min-width: 0; }
+.q-detail pre.code { white-space: pre-wrap; word-break: break-all; }
