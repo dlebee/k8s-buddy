@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/dlebee/k8s-buddy/internal/history"
 	"log/slog"
 	"net/http"
 	"os"
@@ -147,6 +148,14 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	})
 
 	go mgr.Run(ctx)
+	// Usage history lives in a local SQLite file next to the settings; it never leaves the machine.
+	if h, err := history.Open(filepath.Join(dataDir, "usage.db")); err != nil {
+		log.Warn("usage history unavailable", "err", err)
+	} else {
+		_ = os.Chmod(filepath.Join(dataDir, "usage.db"), 0o600)
+		go mgr.RunRecorder(ctx, h)
+		defer h.Close()
+	}
 	go store.Maintain(ctx, historyPath, func(err error) { log.Warn("save history", "err", err) })
 	go updateTray(ctx, store, mgr, driver)
 

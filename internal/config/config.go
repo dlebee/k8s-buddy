@@ -20,15 +20,23 @@ type Settings struct {
 	NudgeLevel        string   `json:"nudgeLevel"`
 	ShowBubble        bool     `json:"showBubble"`
 	ShowCharacter     bool     `json:"showCharacter"`
+	// UsageHistory records node/pod CPU and memory locally (SQLite) for graphs and cost optimization.
+	UsageHistory       bool `json:"usageHistory"`
+	UsageRetentionDays int  `json:"usageRetentionDays"`
+	// usageHistorySet distinguishes "turned off" from "settings file older than the feature".
+	UsageHistorySet bool `json:"usageHistorySet,omitempty"`
 }
 
 func Defaults() Settings {
 	return Settings{
-		HistorySize:   1000,
-		SnoozeHours:   4,
-		NudgeLevel:    "notice",
-		ShowBubble:    true,
-		ShowCharacter: true,
+		HistorySize:        1000,
+		SnoozeHours:        4,
+		NudgeLevel:         "notice",
+		ShowBubble:         true,
+		ShowCharacter:      true,
+		UsageHistory:       true,
+		UsageRetentionDays: 7,
+		UsageHistorySet:    true,
 	}
 }
 
@@ -44,6 +52,13 @@ func (s *Settings) normalize() {
 	if s.SnoozeHours <= 0 {
 		s.SnoozeHours = d.SnoozeHours
 	}
+	if !s.UsageHistorySet { // settings saved before usage history existed: on by default
+		s.UsageHistory, s.UsageHistorySet = true, true
+	}
+	if s.UsageRetentionDays <= 0 {
+		s.UsageRetentionDays = d.UsageRetentionDays
+	}
+	s.UsageRetentionDays = min(s.UsageRetentionDays, 365)
 	switch s.NudgeLevel {
 	case "info", "notice", "warning", "critical":
 	default:

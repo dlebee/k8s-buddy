@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"github.com/dlebee/k8s-buddy/internal/history"
 	"log/slog"
 	"slices"
 	"strings"
@@ -35,6 +36,7 @@ type Manager struct {
 	kick     chan struct{}
 	doc      doctor
 	az       azureState
+	hist     *history.Store
 }
 
 func NewManager(settings *config.Store, store *alert.Store, log *slog.Logger) *Manager {

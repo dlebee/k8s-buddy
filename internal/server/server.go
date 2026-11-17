@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/dlebee/k8s-buddy/internal/history"
 	"io/fs"
 	"net"
 	"net/http"
@@ -246,6 +247,39 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"releases": rel, "fetchedAt": at})
 	})
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	// Usage over time from the local history: kind is node, pod, or workload (name "Kind/name").
+	mux.HandleFunc("GET /api/usage/history", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		h := s.mgr.History()
+		if h == nil || !s.settings.Get().UsageHistory {
+			writeJSON(w, map[string]any{"enabled": false, "points": []any{}})
+			return
+		}
+		hours, _ := strconv.Atoi(q.Get("hours"))
+		if hours <= 0 {
+			hours = 24
+		}
+		pts, info, err := h.Query(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"), time.Now().Add(-time.Duration(hours)*time.Hour))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"enabled": true, "points": pts, "info": info, "bucketSeconds": int(history.Bucket.Seconds()),
+			"retentionDays": s.settings.Get().UsageRetentionDays})
+	})
+	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
+		h := s.mgr.History()
+		if h == nil {
+			writeJSON(w, map[string]any{"available": false})
+			return
+		}
+		series, samples, oldest, err := h.Stats()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"available": true, "series": series, "samples": samples, "oldest": oldest, "bytes": h.Size()})
+	})
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		rep, err := s.mgr.Usage(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))

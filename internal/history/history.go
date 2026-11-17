@@ -1,0 +1,281 @@
+// Package history keeps node and pod CPU/memory usage over time in a local SQLite file, as
+// 5-minute buckets (average and peak). Nothing leaves the machine.
+package history
+
+import (
+	"database/sql"
+	"fmt"
+	"sync"
+	"time"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite: no cgo, so every platform builds the same way
+)
+
+const Bucket = 5 * time.Minute
+
+// Series identifies one thing we sample: a node, or a pod (with its owning workload).
+type Series struct {
+	Cluster, Kind, Namespace, Name string
+	Owner                          string // pods: "Deployment/web"; nodes: node pool
+	CPUReq, CPULim, MemReq, MemLim int64  // pods: summed container values; nodes: allocatable in CPULim/MemLim
+}
+
+// Sample is one observation: CPU in millicores, memory in bytes.
+type Sample struct {
+	CPU, Mem int64
+}
+
+// Point is one bucket in a query result.
+type Point struct {
+	T      int64   `json:"t"` // bucket start, unix seconds
+	CPU    float64 `json:"cpu"`
+	CPUMax float64 `json:"cpuMax"`
+	Mem    float64 `json:"mem"`
+	MemMax float64 `json:"memMax"`
+}
+
+type Store struct {
+	db   *sql.DB
+	mu   sync.Mutex
+	ids  map[string]int64 // series key → id
+	meta map[int64]metaSeen
+	acc  map[int64]*accum // samples of the current bucket
+	cur  int64            // current bucket start
+}
+
+// metaSeen is what we last wrote for a series, so unchanged pods aren't rewritten every minute.
+type metaSeen struct {
+	owner          string
+	cpuReq, cpuLim int64
+	memReq, memLim int64
+	at             int64
+}
+
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+type accum struct {
+	n              int
+	cpuSum, memSum int64
+	cpuMax, memMax int64
+}
+
+func Open(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // one writer; reads are quick
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS series (
+			id INTEGER PRIMARY KEY,
+			cluster TEXT NOT NULL, kind TEXT NOT NULL, ns TEXT NOT NULL, name TEXT NOT NULL,
+			owner TEXT NOT NULL DEFAULT '',
+			cpu_req INTEGER NOT NULL DEFAULT -1, cpu_lim INTEGER NOT NULL DEFAULT -1,
+			mem_req INTEGER NOT NULL DEFAULT -1, mem_lim INTEGER NOT NULL DEFAULT -1,
+			last_seen INTEGER NOT NULL DEFAULT 0,
+			UNIQUE (cluster, kind, ns, name));
+		CREATE INDEX IF NOT EXISTS series_owner ON series (cluster, kind, ns, owner);
+		CREATE TABLE IF NOT EXISTS samples (
+			series INTEGER NOT NULL, ts INTEGER NOT NULL,
+			cpu_avg REAL NOT NULL, cpu_max REAL NOT NULL, mem_avg REAL NOT NULL, mem_max REAL NOT NULL,
+			PRIMARY KEY (series, ts)) WITHOUT ROWID;
+		CREATE INDEX IF NOT EXISTS samples_ts ON samples (ts);`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("usage history: %w", err)
+	}
+	return &Store{db: db, ids: map[string]int64{}, meta: map[int64]metaSeen{}, acc: map[int64]*accum{}}, nil
+}
+
+func (s *Store) Close() error {
+	s.Flush()
+	return s.db.Close()
+}
+
+func key(c, k, ns, n string) string { return c + "\x00" + k + "\x00" + ns + "\x00" + n }
+
+func (s *Store) seriesID(q execer, sr Series, now int64) (int64, error) {
+	k := key(sr.Cluster, sr.Kind, sr.Namespace, sr.Name)
+	id, ok := s.ids[k]
+	if !ok {
+		err := q.QueryRow(`INSERT INTO series (cluster, kind, ns, name) VALUES (?, ?, ?, ?)
+			ON CONFLICT (cluster, kind, ns, name) DO UPDATE SET name = excluded.name RETURNING id`,
+			sr.Cluster, sr.Kind, sr.Namespace, sr.Name).Scan(&id)
+		if err != nil {
+			return 0, err
+		}
+		s.ids[k] = id
+	}
+	m := metaSeen{sr.Owner, sr.CPUReq, sr.CPULim, sr.MemReq, sr.MemLim, now}
+	if prev, ok := s.meta[id]; ok && prev.owner == m.owner && prev.cpuReq == m.cpuReq && prev.cpuLim == m.cpuLim &&
+		prev.memReq == m.memReq && prev.memLim == m.memLim && now-prev.at < 300 {
+		return id, nil
+	}
+	_, err := q.Exec(`UPDATE series SET owner = ?, cpu_req = ?, cpu_lim = ?, mem_req = ?, mem_lim = ?, last_seen = ? WHERE id = ?`,
+		sr.Owner, sr.CPUReq, sr.CPULim, sr.MemReq, sr.MemLim, now, id)
+	if err == nil {
+		s.meta[id] = m
+	}
+	return id, err
+}
+
+// Add records a batch of observations taken at `at`. When `at` falls in a new bucket the previous
+// one is written to disk first.
+func (s *Store) Add(at time.Time, obs map[Series]Sample) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := at.Truncate(Bucket).Unix()
+	if s.cur != 0 && b != s.cur {
+		if err := s.flushLocked(); err != nil {
+			return err
+		}
+		s.resetBucket()
+	}
+	s.cur = b
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // committed below on success
+	for sr, v := range obs {
+		id, err := s.seriesID(tx, sr, at.Unix())
+		if err != nil {
+			return err
+		}
+		a := s.acc[id]
+		if a == nil {
+			a = &accum{}
+			s.acc[id] = a
+		}
+		a.n++
+		a.cpuSum += v.CPU
+		a.memSum += v.Mem
+		a.cpuMax = max(a.cpuMax, v.CPU)
+		a.memMax = max(a.memMax, v.Mem)
+	}
+	return tx.Commit()
+}
+
+// Flush writes the current partial bucket (e.g. on shutdown, or so queries include it).
+func (s *Store) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushLocked()
+}
+
+func (s *Store) flushLocked() error {
+	if len(s.acc) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO samples (series, ts, cpu_avg, cpu_max, mem_avg, mem_max) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (series, ts) DO UPDATE SET cpu_avg = excluded.cpu_avg, cpu_max = max(cpu_max, excluded.cpu_max),
+		mem_avg = excluded.mem_avg, mem_max = max(mem_max, excluded.mem_max)`)
+	if err != nil {
+		tx.Rollback() //nolint:errcheck
+		return err
+	}
+	for id, a := range s.acc {
+		if _, err := stmt.Exec(id, s.cur, float64(a.cpuSum)/float64(a.n), float64(a.cpuMax), float64(a.memSum)/float64(a.n), float64(a.memMax)); err != nil {
+			tx.Rollback() //nolint:errcheck
+			return err
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Keep the running bucket's accumulators when flushing mid-bucket (queries call Flush); a
+	// rollover in Add clears them because the next bucket starts fresh.
+	return nil
+}
+
+// resetBucket starts an empty bucket after a rollover (flushLocked keeps accumulators so a
+// mid-bucket flush for a query doesn't lose the samples gathered so far).
+func (s *Store) resetBucket() { s.acc = map[int64]*accum{} }
+
+// Prune deletes samples older than the retention, and series with nothing left.
+func (s *Store) Prune(retention time.Duration) error {
+	cut := time.Now().Add(-retention).Unix()
+	if _, err := s.db.Exec(`DELETE FROM samples WHERE ts < ?`, cut); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM series WHERE last_seen < ? AND id NOT IN (SELECT DISTINCT series FROM samples)`, cut)
+	if err == nil {
+		s.mu.Lock()
+		s.ids = map[string]int64{} // ids may have been deleted; re-resolve lazily
+		s.meta = map[int64]metaSeen{}
+		s.mu.Unlock()
+	}
+	return err
+}
+
+// SeriesInfo is the latest requests/limits recorded for a series.
+type SeriesInfo struct {
+	CPUReq int64 `json:"cpuReq"`
+	CPULim int64 `json:"cpuLim"`
+	MemReq int64 `json:"memReq"`
+	MemLim int64 `json:"memLim"`
+	Pods   int   `json:"pods,omitempty"` // workloads: how many pods contributed
+}
+
+// Query returns buckets since `since` for a node, a pod, or a workload (kind "workload" with
+// name "Kind/name": the sum over its pods per bucket).
+func (s *Store) Query(cluster, kind, ns, name string, since time.Time) ([]Point, SeriesInfo, error) {
+	s.Flush() //nolint:errcheck // include the bucket in progress
+	var info SeriesInfo
+	var where string
+	args := []any{cluster}
+	switch kind {
+	case "workload":
+		where = `cluster = ? AND kind = 'pod' AND ns = ? AND owner = ?`
+		args = append(args, ns, name)
+	default:
+		where = `cluster = ? AND kind = ? AND ns = ? AND name = ?`
+		args = append(args, kind, ns, name)
+	}
+	// Requests/limits: the most recently seen series (summed for a workload's current pods).
+	row := s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN cpu_req >= 0 THEN cpu_req END), -1), COALESCE(SUM(CASE WHEN cpu_lim >= 0 THEN cpu_lim END), -1),
+		COALESCE(SUM(CASE WHEN mem_req >= 0 THEN mem_req END), -1), COALESCE(SUM(CASE WHEN mem_lim >= 0 THEN mem_lim END), -1), COUNT(*)
+		FROM series WHERE `+where+` AND last_seen >= (SELECT MAX(last_seen) FROM series WHERE `+where+`) - 600`, append(args, args...)...)
+	if err := row.Scan(&info.CPUReq, &info.CPULim, &info.MemReq, &info.MemLim, &info.Pods); err != nil && err != sql.ErrNoRows {
+		return nil, info, err
+	}
+	rows, err := s.db.Query(`SELECT ts, SUM(cpu_avg), SUM(cpu_max), SUM(mem_avg), SUM(mem_max) FROM samples
+		WHERE ts >= ? AND series IN (SELECT id FROM series WHERE `+where+`) GROUP BY ts ORDER BY ts`, append([]any{since.Unix()}, args...)...)
+	if err != nil {
+		return nil, info, err
+	}
+	defer rows.Close()
+	pts := []Point{}
+	for rows.Next() {
+		var p Point
+		if err := rows.Scan(&p.T, &p.CPU, &p.CPUMax, &p.Mem, &p.MemMax); err != nil {
+			return nil, info, err
+		}
+		pts = append(pts, p)
+	}
+	return pts, info, rows.Err()
+}
+
+// Stats summarises what's stored, for Settings.
+func (s *Store) Stats() (series, samples int64, oldest time.Time, err error) {
+	var o sql.NullInt64
+	err = s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM series), (SELECT COUNT(*) FROM samples), (SELECT MIN(ts) FROM samples)`).Scan(&series, &samples, &o)
+	if o.Valid {
+		oldest = time.Unix(o.Int64, 0)
+	}
+	return
+}
+
+// Size is the database's size on disk in bytes (main file plus write-ahead log).
+func (s *Store) Size() int64 {
+	var pages, size int64
+	_ = s.db.QueryRow(`SELECT page_count, page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&pages, &size)
+	return pages * size
+}

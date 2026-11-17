@@ -2,6 +2,7 @@
 // (from /api/object) and returns HTML; actions (shell, port-forward, open related) are bound after.
 import { esc, ago, api } from '/static/common.js';
 import { describeCron, nextRuns } from '/static/cron.js';
+import { mountHistory } from '/static/charts.js';
 import { verSpan, versionCardHTML } from '/static/versions.js';
 import { pickForward, pickShell, forwardsFor, openForward } from '/static/forwards.js';
 
@@ -243,6 +244,7 @@ function podSummary(o, ctx) {
     ])}
     ${section(`Containers <span class="muted">${arr(spec.containers).length}</span>`, arr(spec.containers).map((c) => containerCard(c, byName[c.name])).join(''))}
     ${status.phase === 'Running' || status.phase === 'Pending' ? section('Resources', '<div data-usage="1"><p class="muted">Loading usage…</p></div>') : ''}
+    ${section('Usage over time', '<div class="uc" data-hist="pod"><p class="muted">Loading…</p></div>')}
     ${arr(spec.initContainers).length ? `<details class="rv-details" ${initDone ? '' : 'open'}><summary>Init containers <span class="muted">${arr(spec.initContainers).length}${initDone ? ' · all completed' : ''}</span></summary>
       ${arr(spec.initContainers).map((c) => containerCard(c, initBy[c.name], true)).join('')}</details>` : ''}
     ${section('Conditions', conditionChips(status.conditions))}
@@ -287,6 +289,7 @@ function workloadSummary(kind) {
       </div>
       ${section('Images', `<div class="rv-images">${arr(tpl.containers).map((c) => `<div class="rv-img-row"><span class="rv-c-name">${esc(c.name)}</span>${image(c.image)}</div>`).join('')}</div>`)}
       ${pods.length ? section('Resources', '<div data-usage="0"><p class="muted">Loading usage…</p></div>') : ''}
+      ${section('Usage over time <span class="muted">all pods</span>', '<div class="uc" data-hist="workload"><p class="muted">Loading…</p></div>')}
       ${section(`Pods <span class="muted">${pods.length}</span>`, podDots(pods, ctx), pods.length ? `<span class="rv-pod-sum">${['ok', 'warn', 'bad'].map((h) => { const n = pods.filter((p) => p.health === h).length; return n ? `<span><span class="dot ${h}"></span>${n}</span>` : ''; }).join('')}</span>` : '')}
       ${section('Selector', chips(obj(spec.selector).matchLabels))}
       ${conds.length ? section('Conditions', conditionChips(conds)) : ''}
@@ -636,6 +639,7 @@ function nodeSummary(o, ctx) {
       ${ctx.podCount != null ? meter('Pods', ctx.podCount, qty(alloc.pods), (n) => String(Math.round(n)), 'scheduled of allocatable') : ''}
       ${cap['ephemeral-storage'] ? meter('Ephemeral storage', qty(alloc['ephemeral-storage']), qty(cap['ephemeral-storage']), bytes) : ''}
     </div>`)}
+    ${section('Usage over time', '<div class="uc" data-hist="node"><p class="muted">Loading…</p></div>')}
     ${ctx.disks ? section(`Disks <span class="muted">${ctx.disks.limit >= 0 ? `${ctx.disks.attached} of ${ctx.disks.limit} attachable` : `${ctx.disks.attached} attached`}</span>`, diskHTML(ctx.disks)) : ''}
     ${section('Conditions', conditionChips(status.conditions, ['MemoryPressure', 'DiskPressure', 'PIDPressure', 'NetworkUnavailable']))}
     ${section(`Taints <span class="muted">${arr(spec.taints).length}</span>`, arr(spec.taints).length ? `<div class="rv-chips">${arr(spec.taints).map((t) => `<span class="rv-chip taint ${t.effect === 'NoExecute' ? 'bad' : ''}"><i>${esc(t.key)}${t.value ? '=' + esc(t.value) : ''}</i>${esc(t.effect)}</span>`).join('')}</div>` : '<span class="muted">none</span>')}
@@ -781,6 +785,13 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
         root.querySelectorAll('[data-act="shell"]').forEach((b) => b.onclick = () => pickShell(b, ctx.base, ctx.shell));
       };
       wire();
+      const hb = root.querySelector('[data-hist]');
+      if (hb && !hb.dataset.mounted) {
+        hb.dataset.mounted = '1';
+        const WK = { deployments: 'Deployment', statefulsets: 'StatefulSet', daemonsets: 'DaemonSet', jobs: 'Job' };
+        const k = hb.dataset.hist;
+        mountHistory(hb, { cluster: d.cluster, kind: k, namespace: k === 'node' ? '' : d.namespace, name: k === 'workload' ? `${WK[d.kind]}/${d.name}` : d.name, allocatable: k === 'node' });
+      }
       const ub = root.querySelector('[data-usage]');
       if (ub) {
         const q = new URLSearchParams({ cluster: d.cluster, kind: d.kind, namespace: d.namespace || '', name: d.name });

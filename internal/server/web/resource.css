@@ -274,3 +274,21 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .dk.warn .rv-meter-bar span { background: var(--warn); }
 .dk.bad .rv-meter-bar span { background: var(--bad); }
 .dk.bad .rv-meter-top b { color: var(--bad); }
+
+/* usage over time */
+.uc .uc-win { width: max-content; margin-bottom: 8px; }
+.uc-chart { position: relative; margin-bottom: 10px; }
+.uc-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; margin-bottom: 2px; }
+.uc-chart svg { width: 100%; height: 150px; display: block; overflow: visible; }
+.uc-chart .avg { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.uc-chart .band { fill: var(--accent); opacity: .15; }
+.uc-chart .grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.uc-chart .req { stroke: var(--muted); stroke-dasharray: 4 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.uc-chart .lim { stroke: var(--bad); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.uc-chart text { font: 10px -apple-system, sans-serif; }
+.uc-chart text.ax { fill: var(--faint); }
+.uc-chart text.lbl.req { fill: var(--muted); stroke: none; }
+.uc-chart text.lbl.lim { fill: var(--bad); stroke: none; }
+.uc-chart .cross { stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.uc-tip { position: absolute; top: 22px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow); padding: 4px 8px; font-size: 11.5px; white-space: nowrap; pointer-events: none; }
+.uc-chart .dot { fill: var(--accent); }

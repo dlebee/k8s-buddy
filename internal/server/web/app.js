@@ -256,7 +256,7 @@ function renderSubnav(active) {
 }
 
 // ---------- CPU / memory cells (pods) ----------
-const fmtCPU = (m) => (m >= 1000 ? `${+(m / 1000).toFixed(m >= 10000 ? 0 : 1)} cores` : `${m}m`);
+const fmtCPU = (m) => (m >= 1000 ? `${+(m / 1000).toFixed(m >= 10000 ? 0 : 1)} core${m === 1000 ? '' : 's'}` : `${m}m`);
 const fmtMem = (b) => { const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)}${u[i]}`; };
 function usageCell(used, req, lim, fmt, isMem) {
   const has = used >= 0;
@@ -858,6 +858,11 @@ async function settings() {
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
           <label class="toggle" style="color:var(--text)">Snooze for <input class="input" type="number" id="snoozeHours" min="1" max="168" value="${s.snoozeHours}" style="width:80px"> hours</label>
           <label class="toggle" style="color:var(--text)">Keep <input class="input" type="number" id="historySize" min="50" max="20000" value="${s.historySize}" style="width:100px"> alerts</label></div></div>
+      <div class="row"><div class="lbl"><b>Usage history</b><span>Records node and pod CPU and memory once a minute in a local database on this computer, for graphs and cost optimization. Nothing is sent anywhere.</span></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+          <label class="toggle" style="color:var(--text)"><input type="checkbox" id="usageHistory" ${s.usageHistory ? 'checked' : ''}> Record usage history</label>
+          <label class="toggle" style="color:var(--text)">Keep <select class="input" id="usageRetentionDays" style="width:auto">${[1, 3, 7, 14, 30, 60, 90, 180, 365].map((d) => `<option value="${d}" ${d === s.usageRetentionDays ? 'selected' : ''}>${d} day${d === 1 ? '' : 's'}${d === 7 ? ' (default)' : ''}</option>`).join('')}</select></label>
+          <span class="muted" id="usageStats" style="font-size:12px"></span></div></div>
       <div class="row"><div class="lbl"><b>Ignored namespaces</b><span>One per line. Globs work, e.g. <code>preview-*</code>.</span></div>
         <textarea class="input" id="ignoredNamespaces" placeholder="kube-system">${esc(s.ignoredNamespaces.join('\n'))}</textarea></div>
       <div class="row"><div class="lbl"><b>Muted alerts</b><span>Alerts you chose to never see again.</span></div>
@@ -871,6 +876,13 @@ async function settings() {
   view.querySelector('#selAll').onclick = () => { boxes().forEach((b) => (b.checked = true)); dirty(); };
   view.querySelector('#selNone').onclick = () => { boxes().forEach((b) => (b.checked = false)); dirty(); };
   view.querySelector('#selBad').onclick = () => { boxes().forEach((b) => { if (byName[b.dataset.ctx]?.status === 'error') b.checked = false; }); dirty(); };
+  view.querySelector('#usageRetentionDays').onchange = dirty;
+  api('/api/usage/stats').then((st) => {
+    const el = view.querySelector('#usageStats');
+    if (!el || !st.available) return;
+    const mb = (st.bytes / 1048576).toFixed(st.bytes > 10485760 ? 0 : 1);
+    el.textContent = st.samples ? `${mb} MB · since ${new Date(st.oldest).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'nothing recorded yet';
+  }).catch(() => {});
   let nudgeLevel = s.nudgeLevel;
   view.querySelectorAll('#nudge button').forEach((b) => b.onclick = () => { nudgeLevel = b.dataset.v; view.querySelectorAll('#nudge button').forEach((x) => x.classList.toggle('on', x === b)); dirty(); });
   let muted = [...s.mutedKeys];
@@ -884,6 +896,8 @@ async function settings() {
       showCharacter: view.querySelector('#showCharacter').checked,
       snoozeHours: +view.querySelector('#snoozeHours').value,
       historySize: +view.querySelector('#historySize').value,
+      usageHistory: view.querySelector('#usageHistory').checked,
+      usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
