@@ -1,5 +1,6 @@
 import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
 import { logsTab } from '/static/logs.js';
+import { costView } from '/static/cost.js';
 import { loadReleases, verSpan } from '/static/versions.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
@@ -7,7 +8,7 @@ import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from 
 import { mountExposure } from '/static/exposure.js';
 
 const view = document.getElementById('view');
-const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'settings'];
+const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'cost', 'settings'];
 const HEALTH_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
 const SEV_PILL = { critical: 'bad', warning: 'warn', notice: 'notice', info: '' };
 let current = null;
@@ -41,7 +42,7 @@ async function render() {
   closeDrawer();
   exposureHandle?.destroy(); exposureHandle = null;
   try {
-    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings })[r.name](r.params);
+    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings, cost: costPage })[r.name](r.params);
   } catch (e) {
     view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
   }
@@ -786,6 +787,12 @@ async function alertsView(scope) {
 let doctorPoll;
 // Finding groups start collapsed; remember the ones the user opened across re-renders and re-runs.
 const doctorOpen = new Set();
+async function costPage() {
+  const ov = clustersCache || await loadClusters();
+  await costView(view, head, () => current);
+  if (current === 'cost') mountPickers(view, ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name), []);
+}
+
 async function doctor() {
   const rep = await api('/api/doctor');
   if (current !== 'doctor') return;

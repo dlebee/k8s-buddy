@@ -376,3 +376,30 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .ctags { margin: -2px 0 6px; }
 .ctags .ms-chip:first-child { margin-left: 0; }
 .ctx-list label .tag-in { margin-left: auto; width: 190px; height: 26px; font-size: 12px; padding: 0 8px; }
+
+/* cost optimization */
+.cost-est { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 3px; cursor: help; vertical-align: 1px; }
+.cost-note { background: var(--notice-soft); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
+.stat .value.ok, b.ok { color: var(--ok); }
+.stats { margin-bottom: 16px; }
+.ccluster, .cons { padding: 14px 16px; margin-bottom: 12px; }
+.ccluster-head, .cpool-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ccluster-head b { font-size: 15px; }
+.cpool { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; }
+.cpool-bars { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 18px; margin: 8px 0; }
+.cbar-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.cbar-track { position: relative; height: 8px; border-radius: 4px; background: var(--surface-2); margin-top: 4px; overflow: hidden; }
+.cbar-track span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.cbar-track .req { background: var(--accent); opacity: .35; }
+.cbar-track .use { background: var(--accent); }
+.cpool-advice { font-size: 13px; }
+.cpool-advice .muted { font-size: 12px; margin-top: 2px; }
+.cwl { margin-top: 12px; }
+.cwl summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.cwl table { width: 100%; margin-top: 8px; font-size: 12.5px; border-collapse: collapse; }
+.cwl th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); }
+.cwl td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.cwl tr.under td:first-child b { color: var(--warn); }
+.cons > div:first-child { display: flex; align-items: center; gap: 6px; }
+.cons-flag { font-size: 12.5px; margin-top: 4px; }
+.cons-flag.warn { color: var(--warn); }

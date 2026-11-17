@@ -5,6 +5,8 @@ package history
 import (
 	"database/sql"
 	"fmt"
+	"math"
+	"slices"
 	"sync"
 	"time"
 
@@ -278,4 +280,64 @@ func (s *Store) Size() int64 {
 	var pages, size int64
 	_ = s.db.QueryRow(`SELECT page_count, page_size FROM pragma_page_count(), pragma_page_size()`).Scan(&pages, &size)
 	return pages * size
+}
+
+// Peak summarises one pod's recorded usage over a window: the 95th percentile and the maximum of
+// its 5-minute peaks.
+type Peak struct {
+	CPU95, Mem95   float64
+	CPUMax, MemMax float64
+	Buckets        int
+}
+
+// PodPeaks returns usage peaks per pod ("namespace/name") of a cluster since `since`, and how many
+// hours of history the cluster has in that window.
+func (s *Store) PodPeaks(cluster string, since time.Time) (map[string]Peak, float64, error) {
+	s.Flush() //nolint:errcheck
+	rows, err := s.db.Query(`SELECT se.ns, se.name, sa.ts, sa.cpu_max, sa.mem_max FROM samples sa JOIN series se ON se.id = sa.series
+		WHERE se.cluster = ? AND se.kind = 'pod' AND sa.ts >= ? ORDER BY se.id`, cluster, since.Unix())
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	type acc struct{ cpu, mem []float64 }
+	by := map[string]*acc{}
+	var lo, hi int64
+	for rows.Next() {
+		var ns, name string
+		var ts int64
+		var cpu, mem float64
+		if err := rows.Scan(&ns, &name, &ts, &cpu, &mem); err != nil {
+			return nil, 0, err
+		}
+		k := ns + "/" + name
+		if by[k] == nil {
+			by[k] = &acc{}
+		}
+		by[k].cpu = append(by[k].cpu, cpu)
+		by[k].mem = append(by[k].mem, mem)
+		if lo == 0 || ts < lo {
+			lo = ts
+		}
+		hi = max(hi, ts)
+	}
+	out := make(map[string]Peak, len(by))
+	for k, a := range by {
+		out[k] = Peak{CPU95: pct(a.cpu, .95), Mem95: pct(a.mem, .95), CPUMax: pct(a.cpu, 1), MemMax: pct(a.mem, 1), Buckets: len(a.cpu)}
+	}
+	hours := 0.0
+	if hi > 0 {
+		hours = float64(hi-lo+int64(Bucket.Seconds())) / 3600
+	}
+	return out, hours, rows.Err()
+}
+
+func pct(v []float64, p float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := slices.Clone(v)
+	slices.Sort(s)
+	i := int(math.Ceil(p*float64(len(s)))) - 1
+	return s[max(0, min(i, len(s)-1))]
 }

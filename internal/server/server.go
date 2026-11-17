@@ -267,6 +267,13 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"enabled": true, "points": pts, "info": info, "bucketSeconds": int(history.Bucket.Seconds()),
 			"retentionDays": s.settings.Get().UsageRetentionDays})
 	})
+	mux.HandleFunc("GET /api/cost", func(w http.ResponseWriter, r *http.Request) {
+		hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
+		if hours <= 0 {
+			hours = s.settings.Get().UsageRetentionDays * 24
+		}
+		writeJSON(w, s.mgr.CostReport(hours))
+	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()
 		if h == nil {
