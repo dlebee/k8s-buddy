@@ -87,17 +87,18 @@ type ScenarioReport struct {
 	Picked     []string            `json:"picked"`
 	Namespaces []NamespaceInfo     `json:"namespaces"` // in the studied clusters
 	Studied    []string            `json:"studiedNamespaces"`
-	Tags       map[string][]string `json:"tags"`     // every tag → its connected clusters
-	Clusters   []string            `json:"clusters"` // clusters carrying all picked tags
+	Tags       map[string][]string `json:"tags"`      // every tag → its connected clusters
+	Available  []string            `json:"available"` // every connected cluster (to pick by name)
+	Clusters   []string            `json:"clusters"`  // clusters studied: picked by name, or carrying all picked tags
 	Scenarios  []Scenario          `json:"scenarios"`
 	Considered int                 `json:"considered"` // feasible scenarios before the top-10 cut
 }
 
-// CostScenarios studies the clusters carrying every picked tag. Only pods in `namespaces` are
+// CostScenarios studies the clusters picked by name or, with none, those carrying every picked tag. Only pods in `namespaces` are
 // simulated; with none given, every app namespace (system and add-on namespaces left out).
-func (m *Manager) CostScenarios(picked, namespaces []string) ScenarioReport {
+func (m *Manager) CostScenarios(picked, byName, namespaces []string) ScenarioReport {
 	s := m.settings.Get()
-	rep := ScenarioReport{Picked: picked, Tags: map[string][]string{}, Clusters: []string{}, Scenarios: []Scenario{},
+	rep := ScenarioReport{Picked: picked, Tags: map[string][]string{}, Available: []string{}, Clusters: []string{}, Scenarios: []Scenario{},
 		Namespaces: []NamespaceInfo{}, Studied: []string{}}
 	type member struct {
 		c     *cluster
@@ -111,16 +112,24 @@ func (m *Manager) CostScenarios(picked, namespaces []string) ScenarioReport {
 		for _, t := range tags {
 			rep.Tags[t] = append(rep.Tags[t], c.name)
 		}
-		if len(picked) == 0 || !c.synced("pods") || !c.synced("nodes") {
+		rep.Available = append(rep.Available, c.name)
+		if !c.synced("pods") || !c.synced("nodes") {
 			continue
 		}
-		if !slices.ContainsFunc(picked, func(t string) bool { return !slices.Contains(tags, t) }) {
+		if len(byName) > 0 {
+			if slices.Contains(byName, c.name) {
+				members = append(members, &member{c: c})
+			}
+			continue
+		}
+		if len(picked) > 0 && !slices.ContainsFunc(picked, func(t string) bool { return !slices.Contains(tags, t) }) {
 			members = append(members, &member{c: c})
 		}
 	}
 	for t := range rep.Tags {
 		slices.Sort(rep.Tags[t])
 	}
+	slices.Sort(rep.Available)
 	var wg sync.WaitGroup
 	for _, mb := range members {
 		wg.Go(func() {

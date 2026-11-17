@@ -273,7 +273,7 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, "Cost is a beta feature: turn it on in Settings → Beta features", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag"), listParam(r, "ns")))
+		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag"), listParam(r, "cluster"), listParam(r, "ns")))
 	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()

@@ -1,4 +1,4 @@
-// Cost: pick tags; the clusters carrying all of them are studied for worker nodes that could be
+// Cost: pick clusters by name, or tags (the clusters carrying all of them); those are studied for worker nodes that could be
 // removed by moving their replicas onto other worker nodes. Up to 10 scenarios, compared side by
 // side, each showing exactly what moves. A simulation only: nothing changes in any cluster.
 import { api, esc } from '/static/common.js';
@@ -12,6 +12,8 @@ const EST = '<span class="cost-est" title="Estimated from public pay-as-you-go L
 const KEY = 'buddy.cost.tags';
 const savedTags = () => { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } };
 const saveTags = (t) => { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch { /* ignore */ } };
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 const NSKEY = 'buddy.cost.ns'; // [] = every app namespace (the default)
 const savedNs = () => { try { return JSON.parse(localStorage.getItem(NSKEY) || '[]'); } catch { return []; } };
 const saveNs = (v) => { try { localStorage.setItem(NSKEY, JSON.stringify(v)); } catch { /* ignore */ } };
@@ -74,6 +76,8 @@ function detail(s) {
 
 export async function costView(view, head, current) {
   const picked = new Set(savedTags());
+  const pickedClusters = new Set(load('buddy.cost.clusters', []));
+  let mode = load('buddy.cost.mode', ''); // 'tags' | 'clusters'; '' = tags when any exist
   let chosenNs = savedNs();
   const bindCopy = () => view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = (e) => {
     e.stopPropagation();
@@ -83,7 +87,9 @@ export async function costView(view, head, current) {
   });
   const draw = async () => {
     const qs = new URLSearchParams();
-    for (const t of picked) qs.append('tag', t);
+    const byName = mode === 'clusters';
+    if (byName) for (const c of pickedClusters) qs.append('cluster', c);
+    else for (const t of picked) qs.append('tag', t);
     for (const n of chosenNs) qs.append('ns', n);
     const body = view.querySelector('#scBody');
     if (body) body.innerHTML = '<div class="card empty">Simulating…</div>';
@@ -91,17 +97,27 @@ export async function costView(view, head, current) {
     if (current() !== 'cost') return;
     for (const t of [...picked]) if (!r.tags[t]) picked.delete(t); // tags that no longer exist
     saveTags([...picked]);
+    for (const c of [...pickedClusters]) if (!r.available.includes(c)) pickedClusters.delete(c);
+    store('buddy.cost.clusters', [...pickedClusters]);
     const tags = Object.entries(r.tags).sort(([a], [b]) => a.localeCompare(b));
+    if (!mode) { mode = tags.length ? 'tags' : 'clusters'; if (mode === 'clusters') return draw(); }
+    const any = mode === 'clusters' ? pickedClusters.size : picked.size;
+    const studied = any ? `<div class="sc-studied">Studying <b>${r.clusters.length}</b> cluster${r.clusters.length === 1 ? '' : 's'}${r.clusters.length ? `: ${r.clusters.map(esc).join(', ')}` : mode === 'tags' ? ' (no cluster has all of these tags)' : ' (not connected yet)'}</div>
+      ${r.clusters.length ? `<div class="sc-ns">${nsPicker(r, chosenNs)} <span class="muted">Only these namespaces' replicas are moved and listed; system and add-on namespaces are left out by default (their pods are still checked to fit).</span></div>` : ''}` : '';
+    const tagPick = tags.length ? `<div class="fold-q">Pick tags. Studied clusters must have <b>all</b> the tags you pick (they can have others too).</div>
+          <div class="fold-tags">${tags.map(([t, cs]) => `<button class="ms-tag ${picked.has(t) ? 'on' : ''}" data-t="${esc(t)}" title="${esc(cs.join(', '))}">#${esc(t)} <small>${cs.length}</small></button>`).join('')}</div>`
+      : '<div class="fold-q">No tags yet. Tag your clusters (e.g. by environment, team or region) to study groups of them, or pick clusters by name.</div><button class="btn sm" data-tag-edit="">Tag clusters…</button>';
+    const clusterPick = `<div class="fold-q">Pick the clusters to study. Replicas can move between nodes of a cluster, or onto the other clusters you pick.
+        <span class="sc-quick"><button class="linkish" data-call>All</button> · <button class="linkish" data-cnone>None</button></span></div>
+      <div class="fold-tags">${r.available.map((c) => `<button class="ms-tag ${pickedClusters.has(c) ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
     view.innerHTML = `
       ${head('Cost', 'Find worker nodes you could remove by moving their replicas onto other worker nodes. A simulation on the pods running now: nothing is changed.')}
       <div class="card fold-pick">
-        ${tags.length ? `<div class="fold-q">Pick tags. Studied clusters must have <b>all</b> the tags you pick (they can have others too).</div>
-          <div class="fold-tags">${tags.map(([t, cs]) => `<button class="ms-tag ${picked.has(t) ? 'on' : ''}" data-t="${esc(t)}" title="${esc(cs.join(', '))}">#${esc(t)} <small>${cs.length}</small></button>`).join('')}</div>
-          ${picked.size ? `<div class="sc-studied">Studying <b>${r.clusters.length}</b> cluster${r.clusters.length === 1 ? '' : 's'}${r.clusters.length ? `: ${r.clusters.map(esc).join(', ')}` : ' (no cluster has all of these tags)'}</div>
-            ${r.clusters.length ? `<div class="sc-ns">${nsPicker(r, chosenNs)} <span class="muted">Only these namespaces' replicas are moved and listed; system and add-on namespaces are left out by default (their pods are still checked to fit).</span></div>` : ''}` : ''}`
-          : '<div class="fold-q">Tag your clusters first (e.g. by environment, team or region), then pick tags here to study them.</div><button class="btn sm" data-tag-edit="">Tag clusters…</button>'}
+        <div class="seg sc-mode"><button class="${mode === 'tags' ? 'on' : ''}" data-mode="tags">By tags</button><button class="${mode === 'clusters' ? 'on' : ''}" data-mode="clusters">By cluster</button></div>
+        ${mode === 'clusters' ? clusterPick : tagPick}
+        ${studied}
       </div>
-      <div id="scBody">${!picked.size ? '' : !r.scenarios.length
+      <div id="scBody">${!any ? '' : !r.scenarios.length
         ? `<div class="card empty"><span class="big">✨</span>No worker node can be removed from ${r.clusters.length === 1 ? 'this cluster' : 'these clusters'}: in every case some replica, disk or memory limit doesn't fit elsewhere.</div>`
         : `<div class="cost-note">💡 Savings are <b>estimates</b> from public list prices for the node's VM size and region. A simulation only: run the commands yourself if you agree. Each scenario is independent: after doing one, re-check the others.</div>
           <p class="muted plans-intro">${r.scenarios.length} scenario${r.scenarios.length === 1 ? '' : 's'}${r.considered > r.scenarios.length ? ` (best of ${r.considered} that fit)` : ''}. Every replica lands where its requests fit with 15% headroom, memory limits stay within the overcommit its cluster already runs with, its node selector, affinity and taints allow it, and each disk gets an attach slot under the VM's limit.</p>
@@ -129,6 +145,11 @@ export async function costView(view, head, current) {
         draw();
       };
     }
+    view.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => { mode = b.dataset.mode; store('buddy.cost.mode', mode); draw(); });
+    view.querySelectorAll('[data-c]').forEach((b) => b.onclick = () => { pickedClusters.has(b.dataset.c) ? pickedClusters.delete(b.dataset.c) : pickedClusters.add(b.dataset.c); store('buddy.cost.clusters', [...pickedClusters]); draw(); });
+    const setAll = (v) => { pickedClusters.clear(); v.forEach((c) => pickedClusters.add(c)); store('buddy.cost.clusters', v); draw(); };
+    view.querySelector('[data-call]')?.addEventListener('click', () => setAll(r.available));
+    view.querySelector('[data-cnone]')?.addEventListener('click', () => setAll([]));
     view.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { picked.has(b.dataset.t) ? picked.delete(b.dataset.t) : picked.add(b.dataset.t); saveTags([...picked]); draw(); });
     view.querySelectorAll('[data-sc]').forEach((tr) => tr.onclick = () => {
       const s = r.scenarios.find((x) => x.id === tr.dataset.sc);

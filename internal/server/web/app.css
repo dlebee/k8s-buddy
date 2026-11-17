@@ -499,3 +499,6 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .ms-meta .ms-chip { margin-left: 0; }
 .ms-item { align-items: flex-start; }
 .ms-item input[type=checkbox], .ms-item .ms-only { margin-top: 2px; }
+.sc-mode { display: inline-flex; margin-bottom: 10px; }
+.sc-quick { margin-left: 8px; font-size: 12px; }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; font-weight: 600; }
