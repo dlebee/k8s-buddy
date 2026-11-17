@@ -9,10 +9,13 @@ import (
 )
 
 type Options struct {
-	CharacterURL  string
-	PanelURL      string
-	OverviewURL   string
-	ShowCharacter bool
+	CharacterURL string
+	PanelURL     string
+	OverviewURL  string
+	// BrowserOverviewURL returns an overview URL for the default browser (a one-time code, not the
+	// token, so the token never lands in browser history).
+	BrowserOverviewURL func() string
+	ShowCharacter      bool
 	// Inspectable lets Safari's Web Inspector attach to the web views (development builds only).
 	Inspectable bool
 	// OnQuit runs synchronously right before the process exits.
@@ -69,6 +72,9 @@ func (h *headless) SetCharacterVisible(bool) {}
 
 func (h *headless) ShowOverview(tab string) {
 	u := h.o.OverviewURL
+	if h.o.BrowserOverviewURL != nil {
+		u = h.o.BrowserOverviewURL()
+	}
 	if t := sanitizeTab(tab); t != "" {
 		u += "#" + t
 	}

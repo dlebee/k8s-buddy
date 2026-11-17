@@ -70,7 +70,9 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	if url, ok := runningInstance(dataDir); ok {
 		log.Info("k8s-buddy is already running")
 		if openOverview {
-			return ui.OpenInBrowser(url)
+			// The running instance opens its own window (or a one-time browser link): the URL in
+			// instance.json carries the token and must not end up in browser history.
+			return askToShowOverview(url)
 		}
 		return nil
 	}
@@ -125,12 +127,13 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	}
 	initial := settings.Get()
 	driver := ui.New(ui.Options{
-		CharacterURL:  srv.URL("character"),
-		PanelURL:      srv.URL("panel"),
-		OverviewURL:   srv.URL("overview"),
-		ShowCharacter: initial.ShowCharacter,
-		Inspectable:   version == "dev",
-		OnQuit:        quit,
+		CharacterURL:       srv.URL("character"),
+		PanelURL:           srv.URL("panel"),
+		OverviewURL:        srv.URL("overview"),
+		BrowserOverviewURL: func() string { return srv.BrowserURL("overview") },
+		ShowCharacter:      initial.ShowCharacter,
+		Inspectable:        version == "dev",
+		OnQuit:             quit,
 		OnCharacterVisible: func(v bool) {
 			_ = settings.Update(func(s *config.Settings) { s.ShowCharacter = v })
 		},
