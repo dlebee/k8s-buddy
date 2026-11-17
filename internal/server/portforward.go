@@ -129,7 +129,7 @@ func (f *forwarder) start(req forwardRequest) (Forward, error) {
 	_, _ = rand.Read(id[:])
 	fw := &Forward{ID: hex.EncodeToString(id[:]), Cluster: req.Cluster, Namespace: req.Namespace, Kind: req.Kind, Name: req.Name,
 		RemotePort: req.Port, LocalPort: local, URL: fmt.Sprintf("http://127.0.0.1:%d", local), State: "starting", StartedAt: time.Now()}
-	cmd := exec.Command("kubectl", "--context", req.Cluster, "-n", req.Namespace, "port-forward", "--address", "127.0.0.1",
+	cmd := exec.Command("kubectl", "--context="+req.Cluster, "-n", req.Namespace, "port-forward", "--address", "127.0.0.1",
 		ref+"/"+req.Name, fmt.Sprintf("%d:%d", local, req.Port))
 	cmd.Env = f.env()
 	pr, pw := io.Pipe()

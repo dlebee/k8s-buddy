@@ -84,6 +84,9 @@ func encodeBlock(tier int, b block) []byte {
 var errCorrupt = errors.New("usage history: corrupt block")
 
 func decodeBlock(tier int, data []byte) (block, error) {
+	if tier != tier1 && tier != tier5 && tier != tier15 { // a damaged row must not divide by zero
+		return nil, errCorrupt
+	}
 	slots := tierSlots(tier)
 	nb := (slots + 7) / 8
 	if len(data) < nb {
