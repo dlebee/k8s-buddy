@@ -267,21 +267,9 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, map[string]any{"enabled": true, "points": pts, "info": info, "bucketSeconds": int(history.Bucket.Seconds()),
 			"retentionDays": s.settings.Get().UsageRetentionDays})
 	})
-	// Fold alternatives for one tag (computed on request: each simulates several clusters).
-	mux.HandleFunc("GET /api/cost/fold", func(w http.ResponseWriter, r *http.Request) {
-		tag := r.URL.Query().Get("tag")
-		plans := []monitor.CostPlan{}
-		if tag != "" {
-			plans = s.mgr.FoldPlans(tag)
-		}
-		writeJSON(w, map[string]any{"tags": s.mgr.FoldTags(), "tag": tag, "plans": plans})
-	})
-	mux.HandleFunc("GET /api/cost", func(w http.ResponseWriter, r *http.Request) {
-		hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
-		if hours <= 0 {
-			hours = s.settings.Get().UsageRetentionDays * 24
-		}
-		writeJSON(w, s.mgr.CostReport(hours))
+	// Node-removal scenarios for the clusters carrying every picked tag (simulation only).
+	mux.HandleFunc("GET /api/cost/scenarios", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag")))
 	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()

@@ -1,12 +1,9 @@
 package monitor
 
 import (
-	"maps"
 	"math"
 	"slices"
 	"strings"
-	"sync"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -83,31 +80,6 @@ type CostCluster struct {
 	SavingsU     float64     `json:"savingsByUsage"`
 }
 
-type Consolidation struct {
-	Tag         string   `json:"tag"`
-	From        string   `json:"from"`
-	Into        string   `json:"into"`
-	MoveCPU     int64    `json:"moveCpu"`
-	MoveMem     int64    `json:"moveMem"`
-	SpareCPU    int64    `json:"spareCpu"`
-	SpareMem    int64    `json:"spareMem"`
-	Workloads   int      `json:"workloads"`
-	Already     int      `json:"alreadyThere"`
-	WithVolumes []string `json:"withVolumes"`
-	Pinned      []string `json:"pinned"`
-	Savings     float64  `json:"savings"`
-	Priced      bool     `json:"priced"`
-}
-
-type CostReport struct {
-	Generated      time.Time       `json:"generated"`
-	WindowHours    int             `json:"windowHours"`
-	History        bool            `json:"history"`
-	Clusters       []CostCluster   `json:"clusters"`
-	Consolidations []Consolidation `json:"consolidations"`
-	Plans          []CostPlan      `json:"plans"`
-}
-
 // systemNamespace: platform pieces and cluster add-ons every cluster runs once for itself
 // (cert-manager, ingress controllers, monitoring, operators…). Folding one cluster into another
 // doesn't move or scale these: the target already has its own.
@@ -131,108 +103,7 @@ var addOnNamespaces = []string{
 	"gatekeeper", "reloader", "cluster-autoscaler", "kured", "datadog", "newrelic", "dynatrace", "octopus-agent", "logging",
 }
 
-func (m *Manager) CostReport(windowHours int) CostReport {
-	s := m.settings.Get()
-	h := m.History()
-	rep := CostReport{Generated: time.Now(), WindowHours: windowHours, History: h != nil && s.UsageHistory,
-		Clusters: []CostCluster{}, Consolidations: []Consolidation{}, Plans: []CostPlan{}}
-	since := time.Now().Add(-time.Duration(windowHours) * time.Hour)
-	type full struct {
-		cc   CostCluster
-		work map[string]wlFootprint
-		c    *cluster
-	}
-	var mu sync.Mutex
-	var all []full
-	var wg sync.WaitGroup
-	for _, c := range m.connected() {
-		if !c.synced("pods") || !c.synced("nodes") {
-			continue
-		}
-		wg.Go(func() {
-			var peaks map[string]history.Peak
-			var hours float64
-			if rep.History {
-				peaks, hours, _ = h.PodPeaks(c.name, since)
-			}
-			cc, work := c.costCluster(peaks, hours)
-			cc.Tags = s.ClusterTags[c.name]
-			plans := c.poolPlans(cc.Pools)
-			mu.Lock()
-			all = append(all, full{cc, work, c})
-			rep.Plans = append(rep.Plans, plans...)
-			mu.Unlock()
-		})
-	}
-	wg.Wait()
-	slices.SortFunc(all, func(a, b full) int { return strings.Compare(a.cc.Cluster, b.cc.Cluster) })
-	for _, f := range all {
-		rep.Clusters = append(rep.Clusters, f.cc)
-	}
-	// Clusters sharing a tag: could one's workloads fit in another's spare capacity?
-	byTag := map[string][]int{}
-	for i, f := range all {
-		for _, t := range f.cc.Tags {
-			byTag[t] = append(byTag[t], i)
-		}
-	}
-	seenPair := map[string]int{} // from/into → index in rep.Plans, so a pair sharing several tags shows once
-	tagNames := slices.Sorted(maps.Keys(byTag))
-	for _, tag := range tagNames {
-		idx := byTag[tag]
-		if len(idx) < 2 {
-			continue
-		}
-		for _, a := range idx {
-			var best *Consolidation
-			for _, b := range idx {
-				if a == b {
-					continue
-				}
-				con := consolidate(tag, all[a].cc, all[a].work, all[b].cc, all[b].work)
-				if con != nil && (best == nil || con.SpareCPU > best.SpareCPU) {
-					best = con
-				}
-			}
-			if best != nil {
-				// Totals say it fits; the simulation decides, replica by replica, with disk limits.
-				var into *cluster
-				var intoCost CostCluster
-				for _, f := range all {
-					if f.cc.Cluster == best.Into {
-						into, intoCost = f.c, f.cc
-					}
-				}
-				// Fold plans are built per tag on request (FoldPlans); here we only note that a fold
-				// is possible so Capacity can point to it.
-				_, _ = into, intoCost
-				pair := best.From + "/" + best.Into
-				if _, dup := seenPair[pair]; !dup {
-					seenPair[pair] = len(rep.Consolidations)
-					rep.Consolidations = append(rep.Consolidations, *best)
-				}
-			}
-		}
-	}
-	slices.SortFunc(rep.Consolidations, func(a, b Consolidation) int { return int(b.Savings - a.Savings) })
-	slices.SortFunc(rep.Plans, func(a, b CostPlan) int {
-		if d := cmpF(b.Savings, a.Savings); d != 0 {
-			return d
-		}
-		return strings.Compare(a.ID, b.ID)
-	})
-	return rep
-}
-
-// wlFootprint is one workload's requests in a cluster, for cross-cluster moves.
-type wlFootprint struct {
-	cpu, mem int64
-	volumes  bool
-	pinned   bool
-	system   bool
-}
-
-func (c *cluster) costCluster(peaks map[string]history.Peak, hours float64) (CostCluster, map[string]wlFootprint) {
+func (c *cluster) costCluster(peaks map[string]history.Peak, hours float64) CostCluster {
 	cc := CostCluster{Cluster: c.name, HistoryHours: math.Round(hours*10) / 10, Pools: []CostPool{}, Workloads: []RightSize{}, Priced: true}
 	nodes, _ := c.nodes.List(labels.Everything())
 	pods, _ := c.pods.List(labels.Everything())
@@ -369,9 +240,7 @@ func (c *cluster) costCluster(peaks map[string]history.Peak, hours float64) (Cos
 		cc.Pools = append(cc.Pools, *p)
 	}
 	slices.SortFunc(cc.Pools, func(a, b CostPool) int { return strings.Compare(a.Name, b.Name) })
-	foot := map[string]wlFootprint{}
-	for key, w := range work {
-		foot[key] = wlFootprint{cpu: w.reqCPU * int64(w.pods), mem: w.reqMem * int64(w.pods), volumes: w.volumes, pinned: w.pinned, system: systemNamespace(w.ns) || w.kind == "DaemonSet"}
+	for _, w := range work {
 		if w.known == 0 || w.kind == "Pod" {
 			continue
 		}
@@ -410,7 +279,7 @@ func (c *cluster) costCluster(peaks map[string]history.Peak, hours float64) (Cos
 	if len(cc.Workloads) > 40 {
 		cc.Workloads = cc.Workloads[:40]
 	}
-	return cc, foot
+	return cc
 }
 
 type packItem struct{ cpu, mem, ucpu, umem float64 }
@@ -482,39 +351,4 @@ func pinnedPod(p *corev1.Pod) bool {
 	}
 	a := p.Spec.Affinity
 	return a != nil && a.NodeAffinity != nil && a.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil
-}
-
-// consolidate checks whether `from`'s workloads fit in `into`'s spare capacity. A workload that also
-// runs in `into` still brings all its replicas: they serve `from`'s load today, so the target's copy
-// has to scale up by that much (counted in Already).
-func consolidate(tag string, from CostCluster, fw map[string]wlFootprint, into CostCluster, iw map[string]wlFootprint) *Consolidation {
-	con := Consolidation{Tag: tag, From: from.Cluster, Into: into.Cluster, WithVolumes: []string{}, Pinned: []string{}}
-	for key, w := range fw {
-		if w.system {
-			continue
-		}
-		if _, ok := iw[key]; ok {
-			con.Already++
-		}
-		con.Workloads++
-		con.MoveCPU += w.cpu
-		con.MoveMem += w.mem
-		if w.volumes {
-			con.WithVolumes = append(con.WithVolumes, key)
-		}
-		if w.pinned {
-			con.Pinned = append(con.Pinned, key)
-		}
-	}
-	for _, p := range into.Pools {
-		con.SpareCPU += max(0, int64(float64(p.NodeCPU-p.DSCPU)*headroom)*int64(p.Nodes)-p.ReqCPU)
-		con.SpareMem += max(0, int64(float64(p.NodeMem-p.DSMem)*headroom)*int64(p.Nodes)-p.ReqMem)
-	}
-	if con.Workloads == 0 || con.MoveCPU > con.SpareCPU || con.MoveMem > con.SpareMem {
-		return nil
-	}
-	slices.Sort(con.WithVolumes)
-	slices.Sort(con.Pinned)
-	con.Savings, con.Priced = from.Monthly, from.Priced
-	return &con
 }

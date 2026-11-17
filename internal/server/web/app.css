@@ -462,3 +462,22 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .fold-q { font-size: 13px; margin-bottom: 8px; }
 .fold-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .fold-tags .ms-tag { font-size: 13px; padding: 3px 11px; }
+
+/* cost scenarios */
+.sc-studied { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.sc-table { padding: 0; overflow-x: auto; margin-bottom: 14px; }
+.sc-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.sc-table th { text-align: left; font-weight: 500; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.sc-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sc-table tbody tr { cursor: pointer; }
+.sc-table tbody tr:hover { background: var(--surface-2); }
+.sc-table tbody tr.on { background: var(--accent-soft); }
+.sc-traits { font-size: 12.5px; }
+.sc-ok { color: var(--ok); }
+.sc-warn { color: var(--warn); }
+.sc-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 0 8px; }
+.sc-detail h4 { margin: 14px 16px 6px; font-size: 12.5px; }
+.sc-detail .ptable { margin: 0 16px; }
+.ptable tr.cont td { border-top: 0; }
+.sc-table td.sc-traits { white-space: normal; min-width: 220px; }
+.sc-table td { white-space: nowrap; }

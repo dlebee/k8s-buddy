@@ -806,11 +806,8 @@ async function alertsView(scope) {
 let doctorPoll;
 // Finding groups start collapsed; remember the ones the user opened across re-renders and re-runs.
 const doctorOpen = new Set();
-async function costPage(params) {
-  const ov = clustersCache || await loadClusters();
-  await costView(view, head, () => current, params);
-  view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); copyCmd(b.dataset.copy); });
-  if (current === 'cost') mountPickers(view, ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name), []);
+async function costPage() {
+  await costView(view, head, () => current);
 }
 
 async function doctor() {

@@ -25,28 +25,6 @@ func TestPack(t *testing.T) {
 	}
 }
 
-func TestConsolidate(t *testing.T) {
-	into := CostCluster{Cluster: "b", Pools: []CostPool{{Nodes: 2, NodeCPU: 4000, NodeMem: 16 << 30, ReqCPU: 1000, ReqMem: 2 << 30}}}
-	from := CostCluster{Cluster: "a", Monthly: 300, Priced: true}
-	fw := map[string]wlFootprint{
-		"web/Deployment/api":    {cpu: 1000, mem: 2 << 30},
-		"db/StatefulSet/pg":     {cpu: 500, mem: 4 << 30, volumes: true},
-		"kube-system/DS/agent":  {cpu: 100, mem: 1 << 20, system: true},
-		"shared/Deployment/ing": {cpu: 200, mem: 1 << 20},
-	}
-	iw := map[string]wlFootprint{"shared/Deployment/ing": {}}
-	c := consolidate("prod", from, fw, into, iw)
-	// The shared workload still needs room in the target: its replicas carry a's load.
-	if c == nil || c.Workloads != 3 || c.Already != 1 || c.MoveCPU != 1700 || len(c.WithVolumes) != 1 || c.Savings != 300 {
-		t.Fatalf("got %+v", c)
-	}
-	// Too big to fit.
-	fw["big/Deployment/x"] = wlFootprint{cpu: 9000, mem: 1}
-	if consolidate("prod", from, fw, into, iw) != nil {
-		t.Fatal("should not fit")
-	}
-}
-
 func TestPinnedPod(t *testing.T) {
 	if pinnedPod(&corev1.Pod{Spec: corev1.PodSpec{NodeSelector: map[string]string{"kubernetes.io/os": "linux"}}}) {
 		t.Fatal("os selector is not pinning")
