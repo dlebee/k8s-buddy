@@ -31,8 +31,12 @@ function nsPicker(r, chosen) {
 }
 
 // What makes a scenario different, in plain words, for the comparison table.
+const CONF = { high: 'High', medium: 'Medium', low: 'Low' };
+const confBadge = (s) => `<span class="conf conf-${s.confidence}" title="${esc(s.why.length ? s.why.map((w) => w.text).join('\n') : (s.basis || []).join(' · '))}">${CONF[s.confidence] || s.confidence} confidence</span>`;
+
 function traits(s) {
   const t = [];
+  for (const w of s.why.filter((x) => x.short)) t.push(`<span class="${w.level === 'low' ? 'sc-bad' : 'sc-warn'}">${esc(w.short)}</span>`);
   t.push(s.strategy === 'in-cluster' ? '<span class="sc-ok">stays in cluster</span>' : `<span class="sc-warn">${s.crossCluster} replica${s.crossCluster === 1 ? '' : 's'} → ${s.targetsUsed.map(esc).join(', ')}</span>`);
   if (s.disksMoved) t.push(`${s.disksMoved} disk${s.disksMoved === 1 ? '' : 's'} re-attach`);
   if (s.dataMigration) t.push(`<span class="sc-warn">${s.dataMigration} volume${s.dataMigration === 1 ? '' : 's'} to migrate</span>`);
@@ -47,6 +51,9 @@ function detail(s) {
   const byWl = {};
   for (const m of s.moves) (byWl[`${m.namespace}/${m.kind}/${m.workload}`] ||= []).push(m);
   return `<div class="sc-detail">
+    <div class="conf-box conf-box-${s.confidence}"><div>${confBadge(s)}${s.priced ? ` <span class="muted">· saves ≈ ${usd(s.savings)}/mo ${EST} · ranked by ≈ ${usd(s.weight)}/mo after confidence</span>` : ''}</div>
+      ${s.why.length ? `<ul>${s.why.map((w) => `<li class="${w.level === 'low' ? 'sc-bad' : 'sc-warn'}">${esc(w.text)}</li>`).join('')}</ul>` : ''}
+      ${(s.basis || []).length ? `<div class="muted small">Backed by: ${s.basis.map(esc).join(' · ')}</div>` : ''}</div>
     <h4>1 · Drain ${s.drain.length === 1 ? 'this worker node' : `these ${s.drain.length} worker nodes`} <span class="muted">from ${esc(s.cluster)} / ${esc(s.pool)} (${s.nodesFrom} → ${s.nodesTo} nodes)</span></h4>
     <table class="ptable"><thead><tr><th>Node</th><th>Replicas on it</th><th>Disks attached</th></tr></thead><tbody>
       ${s.drain.map((d) => `<tr><td class="mono">${esc(d.name)}</td><td>${d.pods}</td><td>${d.disks}</td></tr>`).join('')}</tbody></table>
@@ -120,12 +127,12 @@ export async function costView(view, head, current) {
       <div id="scBody">${!any ? '' : !r.scenarios.length
         ? `<div class="card empty"><span class="big">✨</span>No worker node can be removed from ${r.clusters.length === 1 ? 'this cluster' : 'these clusters'}: in every case some replica, disk or memory limit doesn't fit elsewhere.</div>`
         : `<div class="cost-note">💡 Savings are <b>estimates</b> from public list prices for the node's VM size and region. A simulation only: run the commands yourself if you agree. Each scenario is independent: after doing one, re-check the others.</div>
-          <p class="muted plans-intro">${r.scenarios.length} scenario${r.scenarios.length === 1 ? '' : 's'}${r.considered > r.scenarios.length ? ` (best of ${r.considered} that fit)` : ''}. Every replica lands where its requests fit with 15% headroom, memory limits stay within the overcommit its cluster already runs with, its node selector, affinity and taints allow it, and each disk gets an attach slot under the VM's limit.</p>
+          <p class="muted plans-intro">${r.scenarios.length} scenario${r.scenarios.length === 1 ? '' : 's'}${r.considered > r.scenarios.length ? ` (best of ${r.considered} that fit)` : ''}, ranked by weight: the saving scaled by confidence (high ×1, medium ×0.6, low ×0.25), so a big saving that loses high availability ranks below a safer one. Confidence drops for losing high availability (pools under 2 nodes, system pools under 3), thin usage history, recorded peaks near capacity, single replicas, PodDisruptionBudgets that block the drain, and replicas or zones losing their spread. Every replica lands where its requests fit with 15% headroom, memory limits stay within the overcommit its cluster already runs with, its node selector, affinity and taints allow it, and each disk gets an attach slot under the VM's limit.</p>
           <div class="card sc-table"><table><thead><tr><th>#</th><th>Remove</th><th>From</th><th>Saves ${EST}</th><th>Replicas move</th><th>What's different</th></tr></thead><tbody>
           ${r.scenarios.map((s, i) => `<tr data-sc="${esc(s.id)}" class="${i === 0 ? 'on' : ''}"><td>${i + 1}</td>
             <td><b>${s.drain.length} node${s.drain.length === 1 ? '' : 's'}</b><div class="muted mono small">${s.drain.map((d) => esc(d.name.replace(/^aks-/, ''))).join(', ')}</div></td>
             <td>${esc(s.cluster)}<div class="muted">${esc(s.pool)} · ${s.nodesFrom} → ${s.nodesTo}${s.sku ? ` · ${esc(s.sku)}` : ''}</div></td>
-            <td>${s.priced ? `<b class="ok">≈ ${usd(s.savings)}/mo</b>` : '<span class="muted">no price</span>'}</td>
+            <td>${s.priced ? `<b class="ok">≈ ${usd(s.savings)}/mo</b>` : '<span class="muted">no price</span>'}<div>${confBadge(s)}</div></td>
             <td><b>${s.replicas}</b> replica${s.replicas === 1 ? '' : 's'}<div class="muted">${s.workloads} workload${s.workloads === 1 ? '' : 's'}</div></td>
             <td class="sc-traits">${traits(s)}</td></tr>`).join('')}
           </tbody></table></div>

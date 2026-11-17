@@ -1,10 +1,16 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/dlebee/k8s-buddy/internal/history"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // Node-removal scenarios for the clusters that carry every tag the user picked. Each scenario
@@ -71,8 +77,57 @@ type Scenario struct {
 	DataMigration int      `json:"dataMigration"` // volumes whose data must be copied (cross-cluster)
 	Outages       int      `json:"outages"`       // single-replica workloads that restart
 	TargetsUsed   []string `json:"targetsUsed"`   // clusters receiving replicas
-	Notes         []string `json:"notes"`
-	Commands      []string `json:"commands"`
+	// Confidence: high, medium or low, with the reasons it isn't higher (Why) and what backs it
+	// (Basis). Weight ranks scenarios: the saving scaled by confidence.
+	Confidence string       `json:"confidence"`
+	Why        []ConfReason `json:"why"`
+	Basis      []string     `json:"basis"`
+	RemovesHA  bool         `json:"removesHA"`
+	Weight     float64      `json:"weight"`
+	Notes      []string     `json:"notes"`
+	Commands   []string     `json:"commands"`
+}
+
+// ConfReason is one thing that lowers a scenario's confidence, and to which level.
+type ConfReason struct {
+	Level string `json:"level"` // medium | low
+	Text  string `json:"text"`
+	Short string `json:"short,omitempty"` // label for the comparison table (empty: already shown there)
+}
+
+// simCtx is what the confidence check knows about a cluster beyond the snapshot.
+type simCtx struct {
+	peaks map[string]history.Peak // "ns/pod" → recorded usage
+	hours float64                 // hours of usage history
+	pdbs  []pdbInfo
+}
+
+type pdbInfo struct {
+	ns, name string
+	sel      labels.Selector
+	allowed  int32
+}
+
+// clusterSimCtx loads usage peaks and PodDisruptionBudgets for one cluster (best effort).
+func (m *Manager) clusterSimCtx(c *cluster, days int) *simCtx {
+	sx := &simCtx{}
+	if h := m.History(); h != nil {
+		if pk, hrs, err := h.PodPeaks(c.name, time.Now().Add(-time.Duration(max(days, 1))*24*time.Hour)); err == nil {
+			sx.peaks, sx.hours = pk, hrs
+		}
+	}
+	if c.cs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if l, err := c.cs.PolicyV1().PodDisruptionBudgets("").List(ctx, metav1.ListOptions{}); err == nil {
+			for _, b := range l.Items {
+				if sel, err := metav1.LabelSelectorAsSelector(b.Spec.Selector); err == nil && !sel.Empty() {
+					sx.pdbs = append(sx.pdbs, pdbInfo{ns: b.Namespace, name: b.Name, sel: sel, allowed: b.Status.DisruptionsAllowed})
+				}
+			}
+		}
+	}
+	return sx
 }
 
 // NamespaceInfo is a namespace found in the studied clusters, for the namespace picker.
@@ -105,6 +160,7 @@ func (m *Manager) CostScenarios(picked, byName, namespaces []string) ScenarioRep
 		cost  CostCluster
 		nodes []*planNode
 		pods  []*planPod
+		sx    *simCtx
 	}
 	var members []*member
 	for _, c := range m.connected() {
@@ -135,6 +191,7 @@ func (m *Manager) CostScenarios(picked, byName, namespaces []string) ScenarioRep
 		wg.Go(func() {
 			mb.cost = mb.c.costCluster(nil, 0)
 			mb.nodes, mb.pods = mb.c.planState()
+			mb.sx = m.clusterSimCtx(mb.c, s.UsageRetentionDays)
 		})
 	}
 	wg.Wait()
@@ -178,7 +235,7 @@ func (m *Manager) CostScenarios(picked, byName, namespaces []string) ScenarioRep
 			}
 		}
 		for _, pool := range mb.cost.Pools {
-			all = append(all, poolScenarios(mb.c.name, pool, mb.nodes, mb.pods, others, study)...)
+			all = append(all, poolScenarios(mb.c.name, pool, mb.nodes, mb.pods, others, study, mb.sx)...)
 		}
 	}
 	rep.Considered = len(all)
@@ -196,9 +253,15 @@ func (m *Manager) CostScenarios(picked, byName, namespaces []string) ScenarioRep
 	return rep
 }
 
-// compareScenarios: bigger saving first; then staying in-cluster, fewer replicas moving, fewer
-// disks, fewer outages.
+// compareScenarios: highest weight (saving scaled by confidence) first; then more confident, bigger
+// saving, staying in-cluster, fewer replicas moving, fewer disks, fewer outages.
 func compareScenarios(a, b Scenario) int {
+	if d := cmpF(b.Weight, a.Weight); d != 0 {
+		return d
+	}
+	if d := confRank[b.Confidence] - confRank[a.Confidence]; d != 0 {
+		return d
+	}
 	if d := cmpF(b.Savings, a.Savings); d != 0 {
 		return d
 	}
@@ -221,7 +284,7 @@ func compareScenarios(a, b Scenario) int {
 
 // poolScenarios tries draining 1..n-1 nodes of a pool: each single node on its own, and the least
 // loaded k nodes for larger k; in-cluster first, then spilling app replicas to the other clusters.
-func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*planPod, others []*planNode, study map[string]bool) []Scenario {
+func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*planPod, others []*planNode, study map[string]bool, sx *simCtx) []Scenario {
 	var inPool []*planNode
 	for _, n := range nodes {
 		if n.pool == pool.Name {
@@ -257,6 +320,9 @@ func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*pla
 		sc, ok := simulate(cluster, pool, nodes, drain, total, nil, study)
 		if !ok && len(others) > 0 {
 			sc, ok = simulate(cluster, pool, nodes, drain, total, others, study)
+		}
+		if ok {
+			assess(&sc, pool, nodes, drain, sx)
 		}
 		if ok && sc.Replicas == 0 {
 			continue // nothing studied runs there: not a useful scenario for this selection

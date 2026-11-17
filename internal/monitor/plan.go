@@ -24,6 +24,7 @@ type planPod struct {
 	selector                 map[string]string // nodeSelector
 	affinity                 bool              // has required node affinity: keep it in its pool
 	tolerations              []corev1.Toleration
+	labels                   map[string]string
 }
 
 type planNode struct {
@@ -99,7 +100,7 @@ func (c *cluster) planState() ([]*planNode, []*planPod) {
 		kind, name := workloadOf(p)
 		pp := &planPod{cluster: c.name, ns: p.Namespace, name: p.Name, kind: kind, workload: name, node: p.Spec.NodeName,
 			cpu: max(r.CPUReq, 0), mem: max(r.MemReq, 0), ds: kind == "DaemonSet", selector: p.Spec.NodeSelector,
-			tolerations: p.Spec.Tolerations}
+			tolerations: p.Spec.Tolerations, labels: p.Labels}
 		for _, ct := range p.Spec.Containers {
 			if l := quantity(ct.Resources.Limits, corev1.ResourceMemory, false); l >= 0 {
 				pp.memLim += l
