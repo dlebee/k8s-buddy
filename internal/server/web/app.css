@@ -403,3 +403,29 @@ td.dkc.bad { color: var(--bad); font-weight: 600; }
 .cons > div:first-child { display: flex; align-items: center; gap: 6px; }
 .cons-flag { font-size: 12.5px; margin-top: 4px; }
 .cons-flag.warn { color: var(--warn); }
+
+/* tag editing */
+.ctag-add { border: 1px dashed var(--border); background: none; color: var(--muted); border-radius: 999px; font-size: 10.5px; padding: 0 7px; margin-left: 5px; cursor: pointer; opacity: .7; }
+.ctags .ctag-add:first-child { margin-left: 0; }
+.card.cluster:hover .ctag-add, .ctag-add:focus { opacity: 1; }
+.ctag-add:hover { border-color: var(--accent); color: var(--accent); }
+.tag-modal { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; }
+.tag-scrim { position: absolute; inset: 0; background: rgba(15,17,23,.4); }
+.tag-box { position: relative; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); }
+.tag-head { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 14px 16px 8px; }
+.tag-head b { font-size: 15px; }
+.tag-head .muted { grid-column: 1; font-size: 12px; }
+.tag-head .btn { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+.tag-find { margin: 0 16px 8px; }
+.tag-rows { overflow: auto; padding: 0 16px; flex: 1; }
+.tag-row { display: grid; grid-template-columns: minmax(140px, 220px) 1fr; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--border); }
+.tag-row.focus { background: var(--accent-soft); border-radius: 8px; padding-left: 6px; }
+.tag-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-edit { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tag-chip { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; padding: 1px 4px 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.tag-chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 13px; padding: 0 3px; }
+.tag-in2 { border: 0; outline: none; background: none; color: var(--text); font-size: 12.5px; min-width: 80px; flex: 1; padding: 3px 2px; }
+.tag-sug { border: 1px dashed var(--border); background: none; color: var(--muted); border-radius: 999px; font-size: 11px; padding: 0 7px; cursor: pointer; }
+.tag-sug:hover { border-color: var(--accent); color: var(--accent); }
+.tag-foot { display: flex; align-items: center; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--border); }
+.tag-hint { font-size: 12px; }

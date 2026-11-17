@@ -4,7 +4,8 @@ import { costView } from '/static/cost.js';
 import { loadReleases, verSpan } from '/static/versions.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
-import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip } from '/static/scope.js';
+import { setScope, scopeParam, inScope, picker, pruneClusters, scopeChip, tagPicker, refreshTags } from '/static/scope.js';
+import { openTagEditor } from '/static/tags.js';
 import { mountExposure } from '/static/exposure.js';
 
 const view = document.getElementById('view');
@@ -55,11 +56,29 @@ document.addEventListener('click', (e) => { if (e.target.closest('[data-scope-cl
 // mountPickers fills toolbar placeholders with the shared cluster/namespace pickers.
 function mountPickers(root, clusterNames, namespaceNames, { namespaced = true } = {}) {
   const tags = Object.fromEntries((clustersCache?.clusters || []).map((c) => [c.name, c.tags || []]));
-  root.querySelector('[data-pick=clusters]')?.replaceWith(picker('clusters', clusterNames.map((value) => ({ value, tags: tags[value] }))));
+  const slot = root.querySelector('[data-pick=clusters]');
+  if (slot) {
+    const cp = picker('clusters', clusterNames.map((value) => ({ value, tags: tags[value] })));
+    slot.replaceWith(cp);
+    cp.before(tagPicker(tagMap(), () => editTags()));
+  }
   root.querySelector('[data-pick=namespaces]')?.replaceWith(picker('namespaces', namespaceNames.map((value) => ({ value })),
     { disabled: !namespaced, note: 'This kind is cluster-wide, so the namespace filter doesn\'t apply' }));
 }
 const PICKERS = '<span data-pick="clusters"></span><span data-pick="namespaces"></span>';
+
+// tagMap: tag → clusters carrying it (excluded clusters left out).
+function tagMap() {
+  const m = {};
+  for (const c of clustersCache?.clusters || []) if (c.status !== 'excluded') for (const t of c.tags || []) (m[t] ||= []).push(c.name);
+  return m;
+}
+function editTags(focus) {
+  openTagEditor({ clusters: (clustersCache?.clusters || []).filter((c) => c.status !== 'excluded'), focus }).catch((e) => toast(e.message));
+}
+// After tags change: reload clusters, keep a tag filter in sync, redraw the screen.
+document.addEventListener('buddy:tags', async () => { await loadClusters(); refreshTags(tagMap()); toast('Tags saved'); render(); });
+document.addEventListener('click', (e) => { const b = e.target.closest('[data-tag-edit]'); if (b) { e.stopPropagation(); e.preventDefault(); editTags(b.dataset.tagEdit); } }, true);
 
 // ---------- resizable sidebar ----------
 (() => {
@@ -181,7 +200,7 @@ function clusterCard(c) {
   const podPct = active ? (s.podsRunning / active) * 100 : 0, badPct = active ? (s.podsProblem / active) * 100 : 0;
   return `<div class="card cluster h-${h}" data-name="${esc(c.name)}" data-status="${c.status}">
     <div class="top"><span class="dot ${c.status === 'connected' ? h : c.status}"></span><span class="name" title="${esc(c.name)}">${esc(c.name)}</span>${verSpan(c.version)}</div>
-    ${c.tags?.length ? `<div class="ctags">${c.tags.map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="ctags">${(c.tags || []).map((t) => `<span class="ms-chip">#${esc(t)}</span>`).join('')}<button class="ctag-add" data-tag-edit="${esc(c.name)}" title="Tag this cluster">${c.tags?.length ? '✎' : '+ tag'}</button></div>
     ${s ? `<div class="metrics">
         <div><b class="${s.nodesReady < s.nodes ? 'bad' : ''}">${s.nodesReady}/${s.nodes}</b>nodes</div>
         <div title="${s.podsDone} completed job pods not counted"><b>${s.podsRunning}/${s.pods - s.podsDone}</b>pods${s.podsDone ? ` · ${s.podsDone} done` : ''}</div>
@@ -856,6 +875,7 @@ async function settings() {
           <div class="ctx-list">${ov.clusters.map((c) => `<label><input type="checkbox" data-ctx="${esc(c.name)}" ${s.excludedContexts.includes(c.name) ? '' : 'checked'}>
             <span class="dot ${c.status === 'connected' ? clusterHealth(c) : c.status}"></span><span class="n">${esc(c.name)}</span>${c.version ? verSpan(c.version, 'ctx-ver') : ''}<span class="muted" style="font-size:12px">${statusLabel[c.status] || c.status}</span>
             <input class="input tag-in" data-tags="${esc(c.name)}" value="${esc((s.clusterTags?.[c.name] || []).join(', '))}" placeholder="tags: prod, eastus" title="Your own tags for this cluster, comma-separated. Stored only in k8s-buddy's settings, never in your kubeconfig." spellcheck="false" autocomplete="off"></label>`).join('')}</div>
+          <button class="btn sm" data-tag-edit="" style="margin-top:8px">Edit cluster tags…</button>
           <p class="muted" style="font-size:12px;margin:6px 0 0">Tags are yours: kept only in k8s-buddy's settings on this computer (never written to your kubeconfig). Use them to filter clusters, and in Cost optimization to group clusters that could share capacity.</p>
         </div></div>
       <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config.</span></div>
