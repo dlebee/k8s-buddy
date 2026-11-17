@@ -40,11 +40,11 @@ func TestNginxMergeIssues(t *testing.T) {
 		// healthy master + minion
 		ing("a", "api-master", "master", "api.example.com", 10*day, 0, true),
 		ing("a", "api-users", "minion", "api.example.com", 9*day, 2, false),
-		// master shadowed by an older plain ingress for the same host (the cca-indexer case)
-		ing("cca", "cca-indexer-plain", "", "cca.example.com", 120*day, 1, true),
-		ing("dex", "cca-indexer-master", "master", "cca.example.com", 80*day, 0, true),
+		// master shadowed by an older plain ingress for the same host
+		ing("shop", "shop-plain", "", "shop.example.com", 120*day, 1, true),
+		ing("edge", "shop-master", "master", "shop.example.com", 80*day, 0, true),
 		// orphan minion
-		ing("dryrun", "router", "minion", "dryrun.example.com", 18*day, 2, false),
+		ing("orphans", "router", "minion", "orphans.example.com", 18*day, 2, false),
 		// master with paths (invalid) and a minion carrying TLS
 		ing("b", "bad-master", "master", "b.example.com", 5*day, 1, true),
 		ing("b", "tls-minion", "minion", "b.example.com", 4*day, 1, true),
@@ -56,10 +56,10 @@ func TestNginxMergeIssues(t *testing.T) {
 		sev  alert.Severity
 		text string
 	}{
-		"dex/cca-indexer-master": {alert.Warning, "also claimed by cca/cca-indexer-plain"},
-		"dryrun/router":          {alert.Warning, "has no master"},
-		"b/bad-master":           {alert.Warning, "can't define paths"},
-		"b/tls-minion":           {alert.Notice, "TLS on a minion"},
+		"edge/shop-master": {alert.Warning, "also claimed by shop/shop-plain"},
+		"orphans/router":   {alert.Warning, "has no master"},
+		"b/bad-master":     {alert.Warning, "can't define paths"},
+		"b/tls-minion":     {alert.Notice, "TLS on a minion"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d issues: %+v", len(got), got)
@@ -83,7 +83,7 @@ func nginxMergeIssuesT(ings []*networkingv1.Ingress) map[string]mergeIssue {
 }
 
 func withAddress(i *networkingv1.Ingress) *networkingv1.Ingress {
-	i.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "4.249.60.143"}}
+	i.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: "203.0.113.10"}}
 	return i
 }
 
@@ -91,18 +91,18 @@ func TestNginxIncSameHostPlainIngresses(t *testing.T) {
 	ci := classesFrom([]*networkingv1.IngressClass{{
 		ObjectMeta: metav1.ObjectMeta{Name: "nginx-oss"}, Spec: networkingv1.IngressClassSpec{Controller: nginxIncController},
 	}})
-	front := withAddress(ing("asc", "frontend", "", "explorer.example.com", time.Hour, 1, true))
-	metrics := ing("asc", "frontend-metrics", "", "explorer.example.com", time.Hour, 1, true)
+	front := withAddress(ing("store", "frontend", "", "store.example.com", time.Hour, 1, true))
+	metrics := ing("store", "frontend-metrics", "", "store.example.com", time.Hour, 1, true)
 	metrics.Annotations["nginx.ingress.kubernetes.io/whitelist-source-range"] = "10.0.0.0/8"
-	metrics.Annotations["meta.helm.sh/release-name"] = "blockscout"
+	metrics.Annotations["meta.helm.sh/release-name"] = "storefront"
 	got := nginxMergeIssues([]*networkingv1.Ingress{front, metrics}, ci)
-	g := got["asc/frontend-metrics"]
-	for _, want := range []string{"already served by asc/frontend", "/ is answered by frontend's / route", "its settings don't apply (whitelist-source-range)"} {
+	g := got["store/frontend-metrics"]
+	for _, want := range []string{"already served by store/frontend", "/ is answered by frontend's / route", "its settings don't apply (whitelist-source-range)"} {
 		if !strings.Contains(g.Message, want) {
 			t.Errorf("message %q missing %q", g.Message, want)
 		}
 	}
-	if _, ok := got["asc/frontend"]; ok {
+	if _, ok := got["store/frontend"]; ok {
 		t.Fatal("served ingress must not be flagged")
 	}
 	// The community controller merges same-host ingresses: nothing to report.
@@ -113,7 +113,7 @@ func TestNginxIncSameHostPlainIngresses(t *testing.T) {
 }
 
 func TestForeignAnnotations(t *testing.T) {
-	i := ing("asc", "metrics", "", "x.example.com", time.Hour, 1, false)
+	i := ing("store", "metrics", "", "x.example.com", time.Hour, 1, false)
 	i.Annotations["nginx.ingress.kubernetes.io/whitelist-source-range"] = "10.0.0.0/8"
 	i.Annotations["nginx.org/proxy-read-timeout"] = "3600"
 	keys, sec := foreignAnnotations(i, nginxIncController)

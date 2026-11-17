@@ -21,9 +21,9 @@ func TestOptimizerRounding(t *testing.T) {
 			t.Errorf("roundMem(%v) = %d, want %d", in, got, want)
 		}
 	}
-	// The case from a live cluster: typical 5.2Gi, max 5.5Gi → request 6.25Gi, limit 6.875Gi (not 7Gi/10Gi).
+	// A large stateful workload: typical 5.2Gi, max 5.5Gi → request 6.25Gi, limit 6.875Gi (not 7Gi/10Gi).
 	big := history.Profile{Minutes: 12000, Last: 8 * 86400, CPUMed: 147, CPUMax: 1260, MemMed: 5.2 * (1 << 30), MemMax: 5.5 * (1 << 30)}
-	r := optRow(OptRow{Kind: "StatefulSet", Workload: "rpc", Replicas: 2}, corev1.Container{Name: "rpc"}, big, history.OOMStat{}, false)
+	r := optRow(OptRow{Kind: "StatefulSet", Workload: "db", Replicas: 2}, corev1.Container{Name: "db"}, big, history.OOMStat{}, false)
 	if r.Mem.Request.Recommended != 6400<<20 || r.Mem.Limit.Recommended != 7040<<20 || r.CPU.Request.Recommended != 200 || r.CPU.Limit.Recommended != 1750 {
 		t.Errorf("big: mem %d/%d MiB cpu %d/%d", r.Mem.Request.Recommended>>20, r.Mem.Limit.Recommended>>20, r.CPU.Request.Recommended, r.CPU.Limit.Recommended)
 	}

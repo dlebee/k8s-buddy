@@ -36,7 +36,7 @@ func TestPinnedPod(t *testing.T) {
 
 func TestSystemNamespace(t *testing.T) {
 	for ns, want := range map[string]bool{"kube-system": true, "cert-manager": true, "nginx-ingress": true, "monitoring": true,
-		"backube-snapscheduler": true, "metacontroller": true, "rpc-gateway": false, "creditcoin": false, "sro": false} {
+		"backube-snapscheduler": true, "metacontroller": true, "shop": false, "payments": false, "api": false} {
 		if systemNamespace(ns) != want {
 			t.Errorf("%s: got %v want %v", ns, !want, want)
 		}
