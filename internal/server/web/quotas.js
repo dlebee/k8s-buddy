@@ -35,7 +35,7 @@ function detail(r) {
   return `<div class="q-detail">
     <div class="q-grid">
       <div><h4>Why</h4><ul class="q-find">${r.findings.length ? r.findings.map((f) => `<li class="lv-${f.level}">${esc(f.text)}</li>`).join('') : '<li>Requests and limits are in line with what it uses.</li>'}</ul>
-        <p class="muted small">Per replica, from ${days(r.days)} of recorded data${r.spanDays - r.days >= 1 ? ` over ${days(r.spanDays)} (gaps skipped)` : ''}. Requests: median use + 20%. Limits: highest use + 30% CPU / + 25% memory.${r.podLevel ? ' This pod has several containers and per-container data is still being collected, so these figures are for the whole pod.' : ''}</p>
+        <p class="muted small">Per replica, from ${days(r.days)} of recorded data${r.spanDays - r.days >= 1 ? ` over ${days(r.spanDays)} (gaps skipped)` : ''}. Requests: median use + 20%. Limits: highest use + 30% CPU / + 25% memory. Rounded up: CPU to 25m steps (quarter cores above 1 core), memory in power-of-two steps (… 256, 320, 384, 448, 512Mi, 640Mi …).${r.podLevel ? ' This pod has several containers and per-container data is still being collected, so these figures are for the whole pod.' : ''}</p>
         <table class="ptable q-nums"><thead><tr><th></th><th>Typical (median)</th><th>p95</th><th>Max</th></tr></thead><tbody>
           <tr><td>CPU</td><td>${fmtCPU(r.cpu.median)}</td><td>${fmtCPU(r.cpu.p95)}</td><td>${fmtCPU(r.cpu.max)}</td></tr>
           <tr><td>Memory</td><td>${fmtMem(r.mem.median)}</td><td>${fmtMem(r.mem.p95)}</td><td>${fmtMem(r.mem.max)}</td></tr>

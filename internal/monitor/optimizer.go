@@ -220,7 +220,7 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, podLevel bool
 	default:
 		row.Confidence = "low"
 	}
-	cpuReq := roundCPU(max(prof.CPUMed*1.2, 5))
+	cpuReq := roundCPU(prof.CPUMed * 1.2)
 	cpuLim := roundCPU(max(prof.CPUMax*1.3, float64(cpuReq)*1.5))
 	memReq := roundMem(max(prof.MemMed*1.2, 16<<20))
 	memLim := roundMem(max(prof.MemMax*1.25, float64(memReq)*1.25))
@@ -329,27 +329,28 @@ func optCommand(r *OptRow) string {
 	return cmd
 }
 
+// roundCPU rounds up to 25m steps (25, 50, 75, 100…), and to quarter cores from 1 core up.
 func roundCPU(m float64) int64 {
-	step := 10.0
-	switch {
-	case m < 100:
-		step = 5
-	case m >= 1000:
-		step = 50
+	step := 25.0
+	if m > 1000 {
+		step = 250
 	}
-	return int64(math.Ceil(m/step) * step)
+	return int64(max(math.Ceil(m/step)*step, 25))
 }
 
+// roundMem rounds up in power-of-two increments that grow with the size, four per doubling:
+// … 256Mi, 320Mi, 384Mi, 448Mi, 512Mi, 640Mi … 1Gi, 1.25Gi … (at least 16Mi; never more than +25%).
 func roundMem(b float64) int64 {
-	const mi = 1 << 20
-	step := 16.0 * mi
-	switch {
-	case b >= 4<<30:
-		step = 256 * mi
-	case b >= 512*mi:
-		step = 64 * mi
+	const minMem = 16 << 20
+	if b <= minMem {
+		return minMem
 	}
-	return int64(math.Ceil(b/step) * step)
+	pow := int64(minMem)
+	for float64(pow*2) <= b {
+		pow *= 2
+	}
+	step := max(pow/4, minMem)
+	return int64(math.Ceil(b/float64(step))) * step
 }
 
 func cpuQty(m int64) string {
