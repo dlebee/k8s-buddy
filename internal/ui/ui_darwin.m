@@ -101,9 +101,31 @@ static NSRect hitRectOnScreen(void) {
 
 static BuddyController *gController;
 
+// Keeps every web view on the app's own local server. The views have no address bar, so a page
+// from anywhere else (a link that slipped into cluster data, a port-forwarded app) would look
+// like part of k8s-buddy; such navigations are cancelled. Links meant for the browser go through
+// the API (ingress-open, port-forward open), which opens them in the default browser.
+@interface BuddyNavigation : NSObject <WKNavigationDelegate>
+@end
+@implementation BuddyNavigation
+- (void)webView:(WKWebView *)wv decidePolicyForNavigationAction:(WKNavigationAction *)action
+    decisionHandler:(void (^)(WKNavigationActionPolicy))decide {
+    NSURL *u = action.request.URL;
+    NSURL *home = [NSURL URLWithString:gOverviewURL];
+    BOOL local = [u.scheme isEqualToString:@"http"] && home.host != nil && [u.host isEqualToString:home.host] &&
+                 home.port != nil && [u.port isEqualToNumber:home.port];
+    BOOL blank = [u.absoluteString isEqualToString:@"about:blank"];
+    decide((local || blank) ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
+}
+@end
+
+static BuddyNavigation *gNavigation; // web views hold their navigation delegate weakly
+
 static WKWebView *makeWebView(NSRect frame, NSString *url, BOOL transparent) {
     WKWebViewConfiguration *cfg = [[[WKWebViewConfiguration alloc] init] autorelease];
     WKWebView *wv = [[WKWebView alloc] initWithFrame:frame configuration:cfg];
+    if (!gNavigation) gNavigation = [[BuddyNavigation alloc] init];
+    wv.navigationDelegate = gNavigation;
     wv.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     if (transparent) [wv setValue:@NO forKey:@"drawsBackground"];
     if (@available(macOS 13.3, *)) wv.inspectable = gInspectable;

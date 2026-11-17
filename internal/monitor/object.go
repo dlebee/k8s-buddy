@@ -156,13 +156,21 @@ func (m *Manager) Object(clusterName, kind, ns, name string) (ObjectDetail, erro
 		if !ok {
 			return d, fmt.Errorf("%s not served by %s", g.res.Resource, clusterName)
 		}
+		p, err := res.objectPath(ns, name)
+		if err != nil {
+			return d, err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath(res.path(ns, name)).DoRaw(ctx)
+		raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath(p).DoRaw(ctx)
 		if err != nil {
 			return d, err
 		}
 		if err := json.Unmarshal(raw, &d.Object); err != nil {
+			return d, err
+		}
+		if err := singleObject(d.Object); err != nil {
+			d.Object = nil
 			return d, err
 		}
 		if res.Group == "" && res.Resource == "secrets" {

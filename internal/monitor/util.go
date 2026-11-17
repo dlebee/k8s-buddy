@@ -23,6 +23,12 @@ func validObjectName(s string) bool { return len(s) <= 253 && dnsSubdomain.Match
 func validKind(s string) bool       { return kindName.MatchString(s) }
 func validHelmName(s string) bool   { return len(s) <= 53 && dnsSubdomain.MatchString(s) }
 
+// validPathName mirrors the API server's rule for an object name used as a URL path segment (some
+// kinds, e.g. ClusterRoles, allow more than DNS names): not empty, not "." or "..", no "/" or "%".
+func validPathName(s string) bool {
+	return s != "" && s != "." && s != ".." && len(s) <= 253 && !strings.ContainsAny(s, "/%\\\x00?#")
+}
+
 // workloadOf maps a pod to its top-level controller so alerts dedupe per workload, not per pod.
 func workloadOf(p *corev1.Pod) (kind, name string) {
 	for _, o := range p.OwnerReferences {

@@ -179,3 +179,27 @@ func TestOOMsDedupeAndPrune(t *testing.T) {
 		t.Fatalf("ooms: %+v", m)
 	}
 }
+
+func TestDecodeBlockRejectsDamage(t *testing.T) {
+	good := encodeBlock(tier5, block{0: {N: 5, CPU: 120, CPUMin: 100, CPUMax: 150, Mem: 2048, MemMin: 2000, MemMax: 2100}})
+	cases := map[string]struct {
+		tier int
+		data []byte
+	}{
+		"unknown tier 0":   {0, good},
+		"negative tier":    {-5, good},
+		"tier 7":           {7, good},
+		"empty":            {tier5, nil},
+		"bitmap only":      {tier5, good[:2]},
+		"truncated varint": {tier5, append(append([]byte{}, good[:2]...), 0x80)},
+		"overlong varint":  {tier1, append([]byte{1, 0, 0, 0, 0, 0, 0, 0}, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01)},
+	}
+	for name, c := range cases {
+		if _, err := decodeBlock(c.tier, c.data); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
+	}
+	if b, err := decodeBlock(tier5, good); err != nil || b[0].CPU != 120 {
+		t.Errorf("round trip: %v %v", b, err)
+	}
+}
