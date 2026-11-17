@@ -94,21 +94,23 @@ type cluster struct {
 	stats       *Stats
 	statsAt     time.Time
 
-	informers    map[string]cache.SharedIndexInformer
-	pods         corelisters.PodLister
-	pvcs         corelisters.PersistentVolumeClaimLister
-	services     corelisters.ServiceLister
-	nodes        corelisters.NodeLister
-	csinodes     storagelisters.CSINodeLister
-	events       corelisters.EventLister
-	deploys      appslisters.DeploymentLister
-	sts          appslisters.StatefulSetLister
-	ds           appslisters.DaemonSetLister
-	cs           kubernetes.Interface
-	metricsMu    sync.Mutex
-	metricsCache *metricsCacheEntry
-	retry        chan struct{}
-	azureCLI     bool
+	informers     map[string]cache.SharedIndexInformer
+	pods          corelisters.PodLister
+	pvcs          corelisters.PersistentVolumeClaimLister
+	services      corelisters.ServiceLister
+	nodes         corelisters.NodeLister
+	csinodes      storagelisters.CSINodeLister
+	events        corelisters.EventLister
+	deploys       appslisters.DeploymentLister
+	sts           appslisters.StatefulSetLister
+	ds            appslisters.DaemonSetLister
+	cs            kubernetes.Interface
+	metricsMu     sync.Mutex
+	metricsCache  *metricsCacheEntry
+	nodeMetricsMu sync.Mutex
+	nodeMetrics   *nodeMetricsCacheEntry
+	retry         chan struct{}
+	azureCLI      bool
 	// onAzureFailure reports whether an expired Azure CLI session explains a credential error.
 	onAzureFailure func(*cluster) bool
 	runCtx         context.Context

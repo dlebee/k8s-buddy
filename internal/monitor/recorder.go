@@ -113,9 +113,28 @@ func (c *cluster) usageSamples() map[history.Series]history.Sample {
 	return out
 }
 
-// allNodeMetrics reads every node's current usage in one call.
+type nodeMetricsCacheEntry struct {
+	at    time.Time
+	nodes map[string]ResourceNumbers
+	err   error
+}
+
+// allNodeMetrics reads every node's current usage in one call, cached briefly so the Nodes list
+// (refreshed every few seconds) doesn't hit the metrics API each time.
 func (c *cluster) allNodeMetrics() (map[string]ResourceNumbers, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	c.nodeMetricsMu.Lock()
+	defer c.nodeMetricsMu.Unlock()
+	if e := c.nodeMetrics; e != nil && time.Since(e.at) < metricsTTL {
+		return e.nodes, e.err
+	}
+	nodes, err := c.fetchNodeMetrics()
+	c.nodeMetrics = &nodeMetricsCacheEntry{at: time.Now(), nodes: nodes, err: err}
+	return nodes, err
+}
+
+func (c *cluster) fetchNodeMetrics() (map[string]ResourceNumbers, error) {
+	// Short timeout: the node list waits on this, and a slow metrics server shouldn't stall it.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	raw, err := c.cs.CoreV1().RESTClient().Get().AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
 	if err != nil {

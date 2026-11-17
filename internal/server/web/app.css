@@ -337,6 +337,7 @@ td.uc.warn i b { background: var(--warn); }
 td.uc.bad i b { background: var(--bad); }
 td.uc.bad > span { color: var(--bad); }
 td.uc i u { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+td.uc.reqonly i b { background: var(--muted); opacity: .5; }
 
 /* Kubernetes version with a hover card */
 .k8sv { cursor: help; text-decoration: underline dotted; text-decoration-color: var(--faint); text-underline-offset: 3px; outline: none; }

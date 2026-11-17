@@ -615,6 +615,32 @@ function meter(label, used, total, fmt, sub) {
     <div class="rv-meter-bar"><span style="width:${pct}%"></span></div>${sub ? `<div class="muted rv-small">${sub}</div>` : ''}</div>`;
 }
 
+// nodeUseBar: used now against allocatable, with a tick for what the node's pods request.
+function nodeUseBar(label, used, req, alloc, fmt, unit) {
+  const pct = (v) => (alloc > 0 ? Math.min(100, Math.max(0, (v / alloc) * 100)) : 0);
+  const has = used != null;
+  const tone = !has ? '' : pct(used) >= 90 ? 'bad' : pct(used) >= 75 ? 'warn' : 'ok';
+  const notes = [];
+  if (has) notes.push(`${Math.round(pct(used))}% of allocatable in use`);
+  notes.push(`${Math.round(pct(req))}% requested by pods`);
+  if (has && req > 0) notes.push(used > req ? `${fmt(used - req)}${unit} above requests` : `${fmt(req - used)}${unit} requested but idle`);
+  const why = tone === 'bad' ? (label === 'Memory' ? 'nearly full: pods may be evicted or OOM-killed' : 'nearly saturated: pods are competing for CPU') : tone === 'warn' ? 'getting busy' : '';
+  return `<div class="rv-use ${tone}" ${why ? `title="${esc(why)}"` : ''}>
+    <div class="rv-use-top"><b>${label}</b><span>${has ? `used ${fmt(used)}` : '<span class="muted">no live data</span>'}<span class="muted"> / ${fmt(alloc)}${unit} · requested ${fmt(req)}</span></span></div>
+    <div class="rv-use-bar">${has ? `<span class="fill" style="width:${pct(used)}%"></span>` : ''}${req > 0 ? `<i class="req" style="left:${pct(req)}%" title="requested by pods ${fmt(req)}${unit}"></i>` : ''}</div>
+    <div class="muted rv-small">${notes.join(' · ')}</div></div>`;
+}
+
+function nodeUsageHTML(rep) {
+  const note = rep.metrics ? `<p class="muted rv-small">Live from the metrics API, averaged over ${esc(rep.window || 'the last minute')} · ${plural(rep.pods, 'pod')} on the node · refreshes every 15s</p>`
+    : `<p class="muted rv-small">⚠ ${esc(rep.metricsError || 'Metrics API unavailable')} — showing what pods request only.</p>`;
+  const gi = (b) => (b / 1024 ** 3).toFixed(b >= 100 * 1024 ** 3 ? 0 : 1);
+  const co = (m) => (m / 1000).toFixed(m >= 100000 ? 0 : m >= 1000 ? 1 : 2);
+  return note + `<div class="rv-use-grid">
+    ${nodeUseBar('CPU', rep.usage?.cpu, rep.requests.cpu, rep.allocatable.cpu, co, ' cores')}
+    ${nodeUseBar('Memory', rep.usage?.memory, rep.requests.memory, rep.allocatable.memory, gi, ' GiB')}</div>`;
+}
+
 function nodeSummary(o, ctx) {
   const spec = obj(o.spec), status = obj(o.status), md = obj(o.metadata);
   const cap = obj(status.capacity), alloc = obj(status.allocatable), info = obj(status.nodeInfo);
@@ -633,6 +659,7 @@ function nodeSummary(o, ctx) {
       ['Age', esc(ago(md.creationTimestamp))],
     ])}
     ${info.kubeletVersion ? section('Kubernetes version', versionCardHTML(info.kubeletVersion)) : ''}
+    ${section('Current usage <span class="muted">used now against allocatable</span>', '<div data-usage="node"><p class="muted">Loading…</p></div>')}
     ${section('Capacity <span class="muted">allocatable of total</span>', `<div class="rv-meters">
       ${meter('CPU', qty(alloc.cpu), qty(cap.cpu), cores, reserved('cpu', cores))}
       ${meter('Memory', qty(alloc.memory), qty(cap.memory), bytes, reserved('memory', bytes))}
@@ -797,7 +824,7 @@ export function renderSummary(kind, d, { row, events, open, fallback }) {
         const q = new URLSearchParams({ cluster: d.cluster, kind: d.kind, namespace: d.namespace || '', name: d.name });
         const load = async () => {
           if (!document.contains(ub)) return clearInterval(timer);
-          try { ub.innerHTML = usageHTML(await api('/api/usage?' + q), ub.dataset.usage === '1'); } catch (e) { ub.innerHTML = `<p class="muted">${esc(e.message.replace(/^\d+ /, ''))}</p>`; }
+          try { ub.innerHTML = ub.dataset.usage === 'node' ? nodeUsageHTML(await api('/api/usage?' + q)) : usageHTML(await api('/api/usage?' + q), ub.dataset.usage === '1'); } catch (e) { ub.innerHTML = `<p class="muted">${esc(e.message.replace(/^\d+ /, ''))}</p>`; }
           wire();
         };
         const timer = setInterval(load, 15000);
