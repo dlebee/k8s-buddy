@@ -119,10 +119,18 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	go func() { _ = httpSrv.Serve(ln) }()
 	releaseInstance := claimInstance(dataDir, srv.URL("overview"))
 
+	// hist is the usage history once opened. Quitting writes out its buffered readings here: on
+	// macOS the app process ends inside the quit callback, so deferred cleanup would never run.
+	var hist atomic.Pointer[history.Store]
 	quit := func() {
 		releaseInstance()
 		srv.StopForwards()
 		cancel()
+		if h := hist.Swap(nil); h != nil {
+			if err := h.Close(); err != nil {
+				log.Warn("usage history close", "err", err)
+			}
+		}
 		if err := store.Save(historyPath); err != nil {
 			log.Warn("save history", "err", err)
 		}
@@ -162,8 +170,13 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 		log.Warn("usage history unavailable", "err", err)
 	} else {
 		_ = os.Chmod(filepath.Join(dataDir, "usage-v2.db"), 0o600)
+		hist.Store(h)
 		go mgr.RunRecorder(ctx, h)
-		defer h.Close()
+		defer func() {
+			if h := hist.Swap(nil); h != nil {
+				_ = h.Close()
+			}
+		}()
 	}
 	go store.Maintain(ctx, historyPath, func(err error) { log.Warn("save history", "err", err) })
 	go updateTray(ctx, store, mgr, driver)

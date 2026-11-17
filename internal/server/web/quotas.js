@@ -7,7 +7,13 @@ import { mountHistory } from '/static/charts.js';
 const GOOD_DAYS = 7;
 const fmtCPU = (m) => (m < 0 ? '–' : m >= 1000 ? `${+(m / 1000).toFixed(2)}` : `${Math.round(m)}m`);
 const fmtMem = (b) => { if (b < 0) return '–'; const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)}${u[i]}`; };
-const days = (d) => (d >= 1 ? `${d.toFixed(d >= 10 ? 0 : 1)} d` : `${Math.round(d * 24)} h`);
+// days: an amount of recorded time, given in days: "45 min" under an hour, "3.5 h" under a day, then days.
+const days = (d) => {
+  const m = Math.round(d * 1440);
+  if (m < 60) return `${m} min`;
+  if (d < 1) return `${+(d * 24).toFixed(d * 24 >= 10 ? 0 : 1)} h`;
+  return `${d.toFixed(d >= 10 ? 0 : 1)} d`;
+};
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
@@ -72,7 +78,11 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
     return;
   }
   const nsNames = [...new Set(r.rows.map((x) => x.namespace))].sort();
-  const banner = r.days < GOOD_DAYS
+  const recorded = Math.max(r.days, (r.recordedMinutes || 0) / 1440);
+  const toGo = Math.max(0, (r.minMinutes || 60) - (r.recordedMinutes || 0));
+  const banner = !r.rows.length && r.collecting
+    ? `<div class="q-banner">⏳ <div><b>${recorded ? `${days(recorded)} of usage recorded so far.` : 'No usage recorded yet.'}</b> Recommendations start once a workload has 1 hour of recorded usage${toGo ? `: about ${toGo} min to go` : ', in the next few minutes'}. They get better with more data: it's best to wait for at least ${GOOD_DAYS} days before changing anything. Only the time k8s-buddy is running counts; gaps are skipped.</div></div>`
+    : r.days < GOOD_DAYS
     ? `<div class="q-banner">⏳ <div><b>Only ${days(r.days)} of usage recorded so far.</b> Suggestions get better with more data: it's best to wait until at least ${GOOD_DAYS} days are recorded before changing anything (busy days and weekly jobs need to be seen). Only the time k8s-buddy was running counts; gaps are skipped. History is kept ${r.retentionDays} days (Settings).</div></div>`
     : `<div class="q-banner ok">✓ <div>Based on up to ${days(r.days)} of recorded usage (kept ${r.retentionDays} days). Gaps while k8s-buddy wasn't running are skipped.</div></div>`;
 
@@ -86,7 +96,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
     view.innerHTML = shell(`
       ${banner}
       <div class="stats q-stats">
-        <div class="card stat"><div class="label">Containers analysed</div><div class="value">${base.length}</div><div class="foot">${r.collecting ? `${r.collecting} workload${r.collecting === 1 ? '' : 's'} still collecting (under 1 h)` : `in ${r.clusters.length} cluster${r.clusters.length === 1 ? '' : 's'}`}</div></div>
+        <div class="card stat"><div class="label">Containers analysed</div><div class="value">${base.length}</div><div class="foot">${r.collecting ? `${r.collecting} workload${r.collecting === 1 ? '' : 's'} still collecting (need 1 h)` : `in ${r.clusters.length} cluster${r.clusters.length === 1 ? '' : 's'}`}</div></div>
         <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">OOM-killed, or CPU at its limit</div></div>
         <div class="card stat ${count('under') ? 'warn' : ''}"><div class="label">Under-requested</div><div class="value">${count('under')}</div><div class="foot">memory use above request, under limit</div></div>
         <div class="card stat ${count('missing') ? 'warn' : ''}"><div class="label">Missing requests/limits</div><div class="value">${count('missing')}</div><div class="foot">suggested from their use</div></div>
@@ -108,7 +118,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
             <td>${resCell(x.cpu, fmtCPU)}</td>
             <td>${resCell(x.mem, fmtMem)}${memTags(x)}</td>
           </tr>${open === id ? `<tr class="q-open"><td colspan="6">${detail(x)}</td></tr>` : ''}`; }).join('')}
-      </tbody></table></div>` : `<div class="card empty">${base.length ? 'Nothing matches this filter.' : r.collecting ? 'Still collecting: workloads need at least an hour of recorded usage.' : 'No workloads with recorded usage in this selection.'}</div>`}`);
+      </tbody></table></div>` : `<div class="card empty">${base.length ? 'Nothing matches this filter.' : r.collecting ? `Still collecting: recommendations start at the 1-hour mark${toGo ? ` (about ${toGo} min to go)` : ''}.` : 'No workloads with recorded usage in this selection.'}</div>`}`);
     mountPickers(view, monitored, nsNames);
     view.querySelectorAll('[data-f]').forEach((b) => b.onclick = () => { filter = b.dataset.f; store('buddy.quotas.filter', filter); draw(); });
     view.querySelector('#qSys').onchange = (e) => { system = e.target.checked; store('buddy.quotas.system', system); draw(); };

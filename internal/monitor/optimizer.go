@@ -76,7 +76,11 @@ type OptReport struct {
 	Days          float64  `json:"days"` // most recorded data of any workload
 	Rows          []OptRow `json:"rows"`
 	Collecting    int      `json:"collecting"` // workloads with under an hour of data, not shown
-	Clusters      []string `json:"clusters"`
+	// RecordedMinutes is the most usage any workload has recorded so far (gaps skipped), and
+	// MinMinutes how much a workload needs before it gets suggestions.
+	RecordedMinutes int64    `json:"recordedMinutes"`
+	MinMinutes      int64    `json:"minMinutes"`
+	Clusters        []string `json:"clusters"`
 }
 
 type optCacheEntry struct {
@@ -110,7 +114,7 @@ func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]histor
 // Optimize builds recommendations for the given clusters (all when empty).
 func (m *Manager) Optimize(clusters []string) OptReport {
 	s := m.settings.Get()
-	rep := OptReport{RetentionDays: s.UsageRetentionDays, Rows: []OptRow{}, Clusters: []string{}}
+	rep := OptReport{MinMinutes: optMinMinutes, RetentionDays: s.UsageRetentionDays, Rows: []OptRow{}, Clusters: []string{}}
 	h := m.History()
 	if h == nil || !s.UsageHistory {
 		return rep
@@ -122,6 +126,9 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 		}
 		rep.Clusters = append(rep.Clusters, c.name)
 		pods, cts, ooms := m.profiles(h, c.name, s.UsageRetentionDays)
+		for _, p := range pods {
+			rep.RecordedMinutes = max(rep.RecordedMinutes, p.Minutes)
+		}
 		rows, collecting := c.optimize(pods, cts, ooms)
 		rep.Rows = append(rep.Rows, rows...)
 		rep.Collecting += collecting
