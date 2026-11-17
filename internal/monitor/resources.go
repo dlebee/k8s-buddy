@@ -32,7 +32,8 @@ type Resource struct {
 	Health    Health    `json:"health"`
 	Created   time.Time `json:"created"`
 	Cols      []string  `json:"cols"`
-	// Usage is set on pods: summed container requests/limits and live usage (-1 = unknown/unset).
+	// Usage is set on pods (summed container requests/limits and live usage) and nodes (live usage,
+	// requests of the pods on it, and allocatable in the Lim fields); -1 = unknown/unset.
 	Usage *RowUsage `json:"usage,omitempty"`
 }
 
@@ -142,7 +143,7 @@ type ResourceQuery struct {
 	Search     string
 	Problems   bool
 	Limit      int
-	Sort       string // "cpu" or "memory": heaviest first (pods)
+	Sort       string // "cpu" or "memory": heaviest first (pods, nodes)
 }
 
 type ResourceList struct {
@@ -151,7 +152,7 @@ type ResourceList struct {
 	Namespaced bool       `json:"namespaced"`
 	Items      []Resource `json:"items"`
 	Total      int        `json:"total"`
-	// NoMetrics lists clusters whose metrics API didn't answer (pods only).
+	// NoMetrics lists clusters whose metrics API didn't answer (pods and nodes).
 	NoMetrics   []string      `json:"noMetrics,omitempty"`
 	Problems    int           `json:"problems"`
 	Namespaces  []string      `json:"namespaces"`
@@ -197,8 +198,11 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 	}
 	out := newResourceList(q.Kind, spec.columns, spec.namespaced)
 	var metrics map[string]map[string]ResourceNumbers
-	if q.Kind == "pods" {
+	switch q.Kind {
+	case "pods":
 		metrics = m.podMetricsByCluster(q.Clusters)
+	case "nodes":
+		metrics = m.nodeMetricsByCluster(q.Clusters)
 	}
 	var rows []Resource
 	for _, c := range m.connected() {
@@ -223,13 +227,17 @@ func (m *Manager) Resources(q ResourceQuery) (ResourceList, error) {
 			continue
 		}
 		mm, hasMetrics := metrics[c.name]
-		if q.Kind == "pods" && !hasMetrics {
+		if (q.Kind == "pods" || q.Kind == "nodes") && !hasMetrics {
 			out.NoMetrics = append(out.NoMetrics, c.name)
 		}
 		for _, r := range spec.list(c) {
 			r.Cluster = c.name
 			if r.Usage != nil && hasMetrics {
-				if u, ok := mm[r.Namespace+"/"+r.Name]; ok {
+				key := r.Name // nodes
+				if r.Namespace != "" {
+					key = r.Namespace + "/" + r.Name
+				}
+				if u, ok := mm[key]; ok {
 					r.Usage.CPU, r.Usage.Mem = u.CPU, u.Memory
 				}
 			}
@@ -607,6 +615,12 @@ func listPVCs(c *cluster) []Resource {
 func listNodes(c *cluster) []Resource {
 	nodes, _ := c.nodes.List(labels.Everything())
 	out := make([]Resource, 0, len(nodes))
+	var req map[string]ResourceNumbers
+	podsKnown := c.synced("pods")
+	if podsKnown {
+		pods, _ := c.pods.List(labels.Everything())
+		req, _ = nodeRequests(pods)
+	}
 	for _, n := range nodes {
 		status, h := "NotReady", HealthBad
 		if cond := nodeCondition(n, corev1.NodeReady); cond != nil && cond.Status == corev1.ConditionTrue {
@@ -633,7 +647,8 @@ func listNodes(c *cluster) []Resource {
 		slices.Sort(roles)
 		out = append(out, Resource{
 			Name: n.Name, Status: status, Health: h, Created: n.CreationTimestamp.Time,
-			Cols: []string{strings.Join(roles, ","), poolOf(n), n.Status.NodeInfo.KubeletVersion, nodeDisks(n, c.csiNode(n.Name)).cell(), n.Status.NodeInfo.OSImage},
+			Cols:  []string{strings.Join(roles, ","), poolOf(n), n.Status.NodeInfo.KubeletVersion, nodeDisks(n, c.csiNode(n.Name)).cell(), n.Status.NodeInfo.OSImage},
+			Usage: nodeRowUsage(n, req, podsKnown),
 		})
 	}
 	return out

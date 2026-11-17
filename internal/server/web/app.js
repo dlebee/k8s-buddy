@@ -277,7 +277,7 @@ function renderSubnav(active) {
   subnav.querySelector('a.on')?.scrollIntoView({ block: 'nearest' });
 }
 
-// ---------- CPU / memory cells (pods) ----------
+// ---------- CPU / memory cells (pods, nodes) ----------
 const fmtCPU = (m) => (m >= 1000 ? `${+(m / 1000).toFixed(m >= 10000 ? 0 : 1)} core${m === 1000 ? '' : 's'}` : `${m}m`);
 const fmtMem = (b) => { const u = ['B', 'Ki', 'Mi', 'Gi', 'Ti']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)}${u[i]}`; };
 function usageCell(used, req, lim, fmt, isMem) {
@@ -290,6 +290,20 @@ function usageCell(used, req, lim, fmt, isMem) {
   return `<td class="uc ${tone}" title="${esc(tip)}"><span>${has ? fmt(used) : req > 0 ? `<span class="muted">req ${fmt(req)}</span>` : '<span class="muted">–</span>'}</span>${ref ? `<i><b style="width:${pct}%"></b>${lim > 0 && req > 0 ? `<u style="left:${Math.min(100, (req / lim) * 100)}%"></u>` : ''}</i>` : ''}</td>`;
 }
 const usageCells = (u, which) => !u ? '<td></td>' : which === 'cpu' ? usageCell(u.cpu, u.cpuReq, u.cpuLim, fmtCPU) : usageCell(u.mem, u.memReq, u.memLim, fmtMem, true);
+
+// nodeUsageCell: live usage against allocatable (bar), with the pods' requests as a tick. On node
+// rows the server puts allocatable in the lim fields. Without metrics it falls back to requests.
+function nodeUsageCell(used, req, alloc, fmt) {
+  const has = used >= 0;
+  const pct = (v) => (alloc > 0 && v >= 0 ? Math.min(100, (v / alloc) * 100) : 0);
+  const shown = has ? used : req;
+  const tone = !has ? 'reqonly' : pct(used) >= 90 ? 'bad' : pct(used) >= 75 ? 'warn' : 'ok';
+  const tip = [has ? `using ${fmt(used)} (${Math.round(pct(used))}% of allocatable)` : 'no live sample',
+    req >= 0 ? `pods request ${fmt(req)} (${Math.round(pct(req))}%)` : '', alloc > 0 ? `allocatable ${fmt(alloc)}` : ''].filter(Boolean).join(' · ');
+  const text = has ? `${fmt(used)}<span class="muted"> ${Math.round(pct(used))}%</span>` : req >= 0 ? `<span class="muted">req ${fmt(req)}</span>` : '<span class="muted">–</span>';
+  return `<td class="uc ${tone}" title="${esc(tip)}"><span>${text}</span>${alloc > 0 && shown >= 0 ? `<i><b style="width:${pct(shown)}%"></b>${has && req > 0 ? `<u style="left:${pct(req)}%"></u>` : ''}</i>` : ''}</td>`;
+}
+const nodeUsageCells = (u, which) => !u ? '<td></td>' : which === 'cpu' ? nodeUsageCell(u.cpu, u.cpuReq, u.cpuLim, fmtCPU) : nodeUsageCell(u.mem, u.memReq, u.memLim, fmtMem);
 
 // diskCell colours "3/16" as the node nears its attach limit.
 function diskCell(v) {
@@ -375,8 +389,8 @@ async function resources(params) {
       { id: 'cluster', label: 'Cluster', td: (r) => `<td class="muted">${esc(r.cluster)}</td>`, key: (r) => r.cluster },
       { id: 'status', label: 'Status', td: (r) => `<td>${healthPill(r.health, r.status)}</td>`, key: (r) => r.status },
       ...(usage ? [
-        { id: 'cpu', label: 'CPU', server: 'cpu', td: (r) => usageCells(r.usage, 'cpu'), key: (r) => -(r.usage?.cpu ?? -1) },
-        { id: 'memory', label: 'Memory', server: 'memory', td: (r) => usageCells(r.usage, 'mem'), key: (r) => -(r.usage?.mem ?? -1) },
+        { id: 'cpu', label: 'CPU', server: 'cpu', td: (r) => (nodes ? nodeUsageCells : usageCells)(r.usage, 'cpu'), key: (r) => -(r.usage?.cpu ?? -1) },
+        { id: 'memory', label: 'Memory', server: 'memory', td: (r) => (nodes ? nodeUsageCells : usageCells)(r.usage, 'mem'), key: (r) => -(r.usage?.mem ?? -1) },
       ] : []),
       ...list.columns.map((label, ci) => ({
         id: 'c:' + label, label,
@@ -409,12 +423,12 @@ async function resources(params) {
       wrap.innerHTML = `<div class="empty"><span class="big">${waiting ? '⏳' : denied ? '🔒' : f.problems ? '✨' : '🔍'}</span>${waiting ? 'Loading…' : denied ? "You don't have access to list these on any cluster." : f.problems ? 'No problems here.' : 'Nothing here.'}</div>`;
     } else {
       const sortedId = f.sort ? (f.sort === 'cpu' ? 'cpu' : 'memory') : resState.sort;
-      wrap.innerHTML = `<table><thead><tr>${shown.map((c) => `<th data-id="${esc(c.id)}" class="${sortedId === c.id ? 'sorted' + (resState.asc || f.sort ? '' : ' asc') : ''}"${c.server ? ' title="Sort heaviest first, across all pods"' : ''}>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>
+      wrap.innerHTML = `<table><thead><tr>${shown.map((c) => `<th data-id="${esc(c.id)}" class="${sortedId === c.id ? 'sorted' + (resState.asc || f.sort ? '' : ' asc') : ''}"${c.server ? ` title="${f.kind === 'nodes' ? 'Live usage against allocatable; the tick marks what pods on the node request. Click to sort heaviest first, across all nodes' : 'Sort heaviest first, across all pods'}"` : ''}>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>
         ${items.map((r, idx) => `<tr data-idx="${idx}">${shown.map((c) => c.td(r)).join('')}</tr>`).join('')}
       </tbody></table>`;
       wrap.querySelectorAll('th').forEach((th) => th.onclick = () => {
         const c = shown.find((x) => x.id === th.dataset.id);
-        // CPU/Memory sort on the server so "heaviest" covers every pod, not just the rows shown.
+        // CPU/Memory sort on the server so "heaviest" covers every pod/node, not just the rows shown.
         if (c.server) { resState.sort = null; resources.setSort(f.sort === c.server ? '' : c.server); return; }
         if (f.sort) { f.sort = ''; history.replaceState(null, '', '#resources?' + new URLSearchParams(Object.entries({ ...f, problems: f.problems ? '1' : '' }).filter(([, v]) => v))); }
         resState.asc = resState.sort === c.id ? !resState.asc : true;

@@ -298,6 +298,15 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/usage", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		if q.Get("kind") == "nodes" {
+			rep, err := s.mgr.NodeUsage(q.Get("cluster"), q.Get("name"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			writeJSON(w, rep)
+			return
+		}
 		rep, err := s.mgr.Usage(q.Get("cluster"), q.Get("kind"), q.Get("namespace"), q.Get("name"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
