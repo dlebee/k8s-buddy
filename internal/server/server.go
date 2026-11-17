@@ -269,7 +269,11 @@ func (s *Server) Handler() http.Handler {
 	})
 	// Node-removal scenarios for the clusters carrying every picked tag (simulation only).
 	mux.HandleFunc("GET /api/cost/scenarios", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag")))
+		if !s.settings.Get().BetaOn("cost") {
+			http.Error(w, "Cost is a beta feature: turn it on in Settings → Beta features", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag"), listParam(r, "ns")))
 	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()

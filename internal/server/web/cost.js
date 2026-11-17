@@ -12,6 +12,21 @@ const EST = '<span class="cost-est" title="Estimated from public pay-as-you-go L
 const KEY = 'buddy.cost.tags';
 const savedTags = () => { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; } };
 const saveTags = (t) => { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch { /* ignore */ } };
+const NSKEY = 'buddy.cost.ns'; // [] = every app namespace (the default)
+const savedNs = () => { try { return JSON.parse(localStorage.getItem(NSKEY) || '[]'); } catch { return []; } };
+const saveNs = (v) => { try { localStorage.setItem(NSKEY, JSON.stringify(v)); } catch { /* ignore */ } };
+
+// nsPicker: which namespaces' pods the scenarios move. Default: every app namespace.
+function nsPicker(r, chosen) {
+  const label = !chosen.length ? `All app namespaces (${r.studiedNamespaces.length})` : chosen.length === 1 ? chosen[0] : `${chosen.length} namespaces`;
+  return `<span class="colpick"><button class="btn sm ${chosen.length ? 'primary' : ''}" id="nsBtn" title="${esc(r.studiedNamespaces.join(', '))}">Namespaces: ${esc(label)} ▾</button>
+    <div class="colpick-menu ns-menu" id="nsMenu" hidden>
+      <div class="colpick-head">Namespaces to study<button class="btn sm" data-ns-reset>App only (default)</button></div>
+      <input class="input" id="nsFind" placeholder="Filter…" style="margin:0 6px 6px;width:calc(100% - 12px)" spellcheck="false">
+      <div id="nsList">${r.namespaces.map((n) => `<label data-name="${esc(n.name)}"><input type="checkbox" value="${esc(n.name)}" ${r.studiedNamespaces.includes(n.name) ? 'checked' : ''}> ${esc(n.name)}${n.system ? ' <span class="muted">system</span>' : ''}<span class="spacer"></span><small class="muted">${n.pods} pod${n.pods === 1 ? '' : 's'}</small></label>`).join('')}</div>
+      <div class="colpick-head"><span></span><button class="btn sm primary" data-ns-apply>Apply</button></div>
+    </div></span>`;
+}
 
 // What makes a scenario different, in plain words, for the comparison table.
 function traits(s) {
@@ -59,6 +74,7 @@ function detail(s) {
 
 export async function costView(view, head, current) {
   const picked = new Set(savedTags());
+  let chosenNs = savedNs();
   const bindCopy = () => view.querySelectorAll('[data-copy]').forEach((b) => b.onclick = (e) => {
     e.stopPropagation();
     navigator.clipboard?.writeText(b.dataset.copy);
@@ -68,6 +84,7 @@ export async function costView(view, head, current) {
   const draw = async () => {
     const qs = new URLSearchParams();
     for (const t of picked) qs.append('tag', t);
+    for (const n of chosenNs) qs.append('ns', n);
     const body = view.querySelector('#scBody');
     if (body) body.innerHTML = '<div class="card empty">Simulating…</div>';
     const r = await api('/api/cost/scenarios?' + qs);
@@ -80,7 +97,8 @@ export async function costView(view, head, current) {
       <div class="card fold-pick">
         ${tags.length ? `<div class="fold-q">Pick tags. Studied clusters must have <b>all</b> the tags you pick (they can have others too).</div>
           <div class="fold-tags">${tags.map(([t, cs]) => `<button class="ms-tag ${picked.has(t) ? 'on' : ''}" data-t="${esc(t)}" title="${esc(cs.join(', '))}">#${esc(t)} <small>${cs.length}</small></button>`).join('')}</div>
-          ${picked.size ? `<div class="sc-studied">Studying <b>${r.clusters.length}</b> cluster${r.clusters.length === 1 ? '' : 's'}${r.clusters.length ? `: ${r.clusters.map(esc).join(', ')}` : ' (no cluster has all of these tags)'}</div>` : ''}`
+          ${picked.size ? `<div class="sc-studied">Studying <b>${r.clusters.length}</b> cluster${r.clusters.length === 1 ? '' : 's'}${r.clusters.length ? `: ${r.clusters.map(esc).join(', ')}` : ' (no cluster has all of these tags)'}</div>
+            ${r.clusters.length ? `<div class="sc-ns">${nsPicker(r, chosenNs)} <span class="muted">Only these namespaces' replicas are moved and listed; system and add-on namespaces are left out by default (their pods are still checked to fit).</span></div>` : ''}` : ''}`
           : '<div class="fold-q">Tag your clusters first (e.g. by environment, team or region), then pick tags here to study them.</div><button class="btn sm" data-tag-edit="">Tag clusters…</button>'}
       </div>
       <div id="scBody">${!picked.size ? '' : !r.scenarios.length
@@ -96,6 +114,21 @@ export async function costView(view, head, current) {
             <td class="sc-traits">${traits(s)}</td></tr>`).join('')}
           </tbody></table></div>
           <div id="scDetail">${detail(r.scenarios[0])}</div>`}</div>`;
+    const nsBtn = view.querySelector('#nsBtn'), nsMenu = view.querySelector('#nsMenu');
+    if (nsBtn) {
+      nsBtn.onclick = (e) => { e.stopPropagation(); nsMenu.hidden = !nsMenu.hidden; nsMenu.querySelector('#nsFind').focus(); };
+      nsMenu.onclick = (e) => e.stopPropagation();
+      document.addEventListener('click', () => { nsMenu.hidden = true; }, { once: true });
+      nsMenu.querySelector('#nsFind').oninput = (e) => { const q = e.target.value.toLowerCase(); nsMenu.querySelectorAll('#nsList label').forEach((l) => { l.hidden = !l.dataset.name.toLowerCase().includes(q); }); };
+      nsMenu.querySelector('[data-ns-reset]').onclick = () => { chosenNs = []; saveNs(chosenNs); draw(); };
+      nsMenu.querySelector('[data-ns-apply]').onclick = () => {
+        const sel = [...nsMenu.querySelectorAll('#nsList input:checked')].map((c) => c.value);
+        const defaults = r.namespaces.filter((n) => !n.system).map((n) => n.name);
+        chosenNs = sel.length === defaults.length && sel.every((n) => defaults.includes(n)) ? [] : sel;
+        saveNs(chosenNs);
+        draw();
+      };
+    }
     view.querySelectorAll('[data-t]').forEach((b) => b.onclick = () => { picked.has(b.dataset.t) ? picked.delete(b.dataset.t) : picked.add(b.dataset.t); saveTags([...picked]); draw(); });
     view.querySelectorAll('[data-sc]').forEach((tr) => tr.onclick = () => {
       const s = r.scenarios.find((x) => x.id === tr.dataset.sc);

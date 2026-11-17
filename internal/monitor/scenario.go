@@ -75,18 +75,30 @@ type Scenario struct {
 	Commands      []string `json:"commands"`
 }
 
+// NamespaceInfo is a namespace found in the studied clusters, for the namespace picker.
+type NamespaceInfo struct {
+	Name     string `json:"name"`
+	System   bool   `json:"system"`   // platform or cluster add-on namespace
+	Pods     int    `json:"pods"`     // non-DaemonSet pods across studied clusters
+	Clusters int    `json:"clusters"` // studied clusters that have it
+}
+
 type ScenarioReport struct {
 	Picked     []string            `json:"picked"`
+	Namespaces []NamespaceInfo     `json:"namespaces"` // in the studied clusters
+	Studied    []string            `json:"studiedNamespaces"`
 	Tags       map[string][]string `json:"tags"`     // every tag → its connected clusters
 	Clusters   []string            `json:"clusters"` // clusters carrying all picked tags
 	Scenarios  []Scenario          `json:"scenarios"`
 	Considered int                 `json:"considered"` // feasible scenarios before the top-10 cut
 }
 
-// CostScenarios studies the clusters carrying every picked tag.
-func (m *Manager) CostScenarios(picked []string) ScenarioReport {
+// CostScenarios studies the clusters carrying every picked tag. Only pods in `namespaces` are
+// simulated; with none given, every app namespace (system and add-on namespaces left out).
+func (m *Manager) CostScenarios(picked, namespaces []string) ScenarioReport {
 	s := m.settings.Get()
-	rep := ScenarioReport{Picked: picked, Tags: map[string][]string{}, Clusters: []string{}, Scenarios: []Scenario{}}
+	rep := ScenarioReport{Picked: picked, Tags: map[string][]string{}, Clusters: []string{}, Scenarios: []Scenario{},
+		Namespaces: []NamespaceInfo{}, Studied: []string{}}
 	type member struct {
 		c     *cluster
 		cost  CostCluster
@@ -118,9 +130,36 @@ func (m *Manager) CostScenarios(picked []string) ScenarioReport {
 	}
 	wg.Wait()
 	slices.SortFunc(members, func(a, b *member) int { return strings.Compare(a.c.name, b.c.name) })
+	nsInfo := map[string]*NamespaceInfo{}
 	for _, mb := range members {
 		rep.Clusters = append(rep.Clusters, mb.c.name)
+		seen := map[string]bool{}
+		for _, p := range mb.pods {
+			if p.ds {
+				continue
+			}
+			ni := nsInfo[p.ns]
+			if ni == nil {
+				ni = &NamespaceInfo{Name: p.ns, System: systemNamespace(p.ns)}
+				nsInfo[p.ns] = ni
+			}
+			ni.Pods++
+			if !seen[p.ns] {
+				seen[p.ns] = true
+				ni.Clusters++
+			}
+		}
 	}
+	study := map[string]bool{}
+	for _, ni := range nsInfo {
+		rep.Namespaces = append(rep.Namespaces, *ni)
+		if len(namespaces) == 0 && !ni.System || slices.Contains(namespaces, ni.Name) {
+			study[ni.Name] = true
+			rep.Studied = append(rep.Studied, ni.Name)
+		}
+	}
+	slices.SortFunc(rep.Namespaces, func(a, b NamespaceInfo) int { return strings.Compare(a.Name, b.Name) })
+	slices.Sort(rep.Studied)
 	var all []Scenario
 	for i, mb := range members {
 		var others []*planNode
@@ -130,7 +169,7 @@ func (m *Manager) CostScenarios(picked []string) ScenarioReport {
 			}
 		}
 		for _, pool := range mb.cost.Pools {
-			all = append(all, poolScenarios(mb.c.name, pool, mb.nodes, mb.pods, others)...)
+			all = append(all, poolScenarios(mb.c.name, pool, mb.nodes, mb.pods, others, study)...)
 		}
 	}
 	rep.Considered = len(all)
@@ -173,7 +212,7 @@ func compareScenarios(a, b Scenario) int {
 
 // poolScenarios tries draining 1..n-1 nodes of a pool: each single node on its own, and the least
 // loaded k nodes for larger k; in-cluster first, then spilling app replicas to the other clusters.
-func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*planPod, others []*planNode) []Scenario {
+func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*planPod, others []*planNode, study map[string]bool) []Scenario {
 	var inPool []*planNode
 	for _, n := range nodes {
 		if n.pool == pool.Name {
@@ -202,13 +241,16 @@ func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*pla
 	var out []Scenario
 	for _, drain := range sets {
 		if slices.ContainsFunc(drain, func(n *planNode) bool {
-			return slices.ContainsFunc(n.pods, func(p *planPod) bool { return p.pinned && !p.ds })
+			return slices.ContainsFunc(n.pods, func(p *planPod) bool { return p.pinned && !p.ds && study[p.ns] })
 		}) {
-			continue // a pod tied to this node (hostPath, hostname) can't move
+			continue // a studied pod tied to this node (hostPath, hostname) can't move
 		}
-		sc, ok := simulate(cluster, pool, nodes, drain, total, nil)
+		sc, ok := simulate(cluster, pool, nodes, drain, total, nil, study)
 		if !ok && len(others) > 0 {
-			sc, ok = simulate(cluster, pool, nodes, drain, total, others)
+			sc, ok = simulate(cluster, pool, nodes, drain, total, others, study)
+		}
+		if ok && sc.Replicas == 0 {
+			continue // nothing studied runs there: not a useful scenario for this selection
 		}
 		if ok {
 			out = append(out, sc)
@@ -219,7 +261,7 @@ func poolScenarios(cluster string, pool CostPool, nodes []*planNode, pods []*pla
 
 // simulate drains `drain` and places its pods: on the cluster's other nodes, and, when `others` is
 // given, app replicas that don't fit there go to the other studied clusters' nodes.
-func simulate(cluster string, pool CostPool, nodes, drain []*planNode, total map[string]int, others []*planNode) (Scenario, bool) {
+func simulate(cluster string, pool CostPool, nodes, drain []*planNode, total map[string]int, others []*planNode, study map[string]bool) (Scenario, bool) {
 	gone := map[string]bool{}
 	for _, n := range drain {
 		gone[n.name] = true
@@ -236,13 +278,30 @@ func simulate(cluster string, pool CostPool, nodes, drain []*planNode, total map
 	for _, n := range append(slices.Clone(local), remote...) {
 		before[n] = [3]int64{n.usedCPU, n.usedMem, int64(n.disks)}
 	}
-	var moving []*planPod
+	var moving, background []*planPod
 	for _, n := range drain {
 		for _, p := range n.pods {
-			if !p.ds {
+			switch {
+			case p.ds:
+			case study == nil || study[p.ns]:
 				moving = append(moving, p)
+			default:
+				background = append(background, p)
 			}
 		}
+	}
+	other := len(background)
+	// Pods outside the studied namespaces aren't listed, but Kubernetes reschedules them too: they
+	// must still fit on the cluster's remaining nodes, or the scenario isn't real.
+	for _, p := range background {
+		if p.pinned {
+			return Scenario{}, false
+		}
+		dst := bestFit(p, pool.Name, local)
+		if dst == nil {
+			return Scenario{}, false
+		}
+		dst.take(p)
 	}
 	// Disk-carrying and bigger pods first: disk slots and big gaps are the scarce part.
 	slices.SortFunc(moving, func(a, b *planPod) int {
@@ -292,11 +351,18 @@ func simulate(cluster string, pool CostPool, nodes, drain []*planNode, total map
 	for _, n := range drain {
 		d := PlanDrain{Name: n.name, Disks: n.disks}
 		for _, p := range n.pods {
-			if !p.ds {
+			switch {
+			case p.ds:
+			case study == nil || study[p.ns]:
 				d.Pods++
+			default:
+				d.Other++
 			}
 		}
 		sc.Drain = append(sc.Drain, d)
+	}
+	if other > 0 {
+		sc.Notes = append(sc.Notes, fmt.Sprintf("%d other pod(s) on the drained node(s) are in system/add-on or unselected namespaces: not listed, but checked to fit on the remaining nodes, where Kubernetes reschedules them.", other))
 	}
 	for n, g := range gains {
 		b := before[n]
@@ -315,7 +381,8 @@ func simulate(cluster string, pool CostPool, nodes, drain []*planNode, total map
 		names[i] = n.name
 	}
 	sc.ID = cluster + "/" + pool.Name + "/" + sc.Strategy + "/" + strings.Join(names, "+")
-	sc.Notes, sc.Commands = scenarioNotes(sc, pool)
+	notes, cmds := scenarioNotes(sc, pool)
+	sc.Notes, sc.Commands = append(notes, sc.Notes...), cmds
 	return sc, true
 }
 

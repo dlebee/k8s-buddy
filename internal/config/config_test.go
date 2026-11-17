@@ -8,3 +8,14 @@ func TestNormalizeTags(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestBetaFeaturesNormalized(t *testing.T) {
+	s := Settings{Beta: []string{"cost", "nope", "cost"}}
+	s.normalize()
+	if len(s.Beta) != 1 || !s.BetaOn("cost") || s.BetaOn("nope") {
+		t.Fatalf("beta: %v", s.Beta)
+	}
+	if d := Defaults(); d.BetaOn("cost") {
+		t.Fatal("cost must be off by default")
+	}
+}

@@ -48,7 +48,8 @@ type PlanVolume struct {
 
 type PlanDrain struct {
 	Name  string `json:"name"`
-	Pods  int    `json:"pods"` // non-DaemonSet pods that must move
+	Pods  int    `json:"pods"`  // replicas the scenario moves (in the namespaces studied)
+	Other int    `json:"other"` // other non-DaemonSet pods on it (system/add-ons or namespaces not studied)
 	Disks int    `json:"disks"`
 }
 

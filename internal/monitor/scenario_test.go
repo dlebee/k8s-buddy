@@ -29,21 +29,21 @@ func TestSimulateRespectsDisksLimitsAndTaints(t *testing.T) {
 	put(a, web)
 	total := map[string]int{"data/StatefulSet/pg": 1, "web/Deployment/api": 3}
 
-	sc, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil)
+	sc, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil, nil)
 	if !ok || sc.NodesTo != 2 || sc.Replicas != 2 || sc.DisksMoved != 1 || sc.Outages != 1 || sc.Strategy != "in-cluster" {
 		t.Fatalf("in-cluster: %+v ok=%v", sc, ok)
 	}
 
 	// Every other node at its disk limit: pg-0's disk has nowhere to attach.
 	b.disks, c.disks = 4, 4
-	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil); ok {
+	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil, nil); ok {
 		t.Fatal("placed a disk on nodes at their attach limit")
 	}
 	b.disks, c.disks = 3, 3
 
 	// Memory limits: targets already hold limits up to their allocatable memory.
 	b.limMem, c.limMem = b.limCap, c.limCap
-	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil); ok {
+	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil, nil); ok {
 		t.Fatal("overcommitted memory limits")
 	}
 	b.limMem, c.limMem = 0, 0
@@ -51,12 +51,12 @@ func TestSimulateRespectsDisksLimitsAndTaints(t *testing.T) {
 	// A NoSchedule taint the pods don't tolerate keeps them off.
 	b.taints = []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoSchedule}}
 	c.taints = b.taints
-	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil); ok {
+	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil, nil); ok {
 		t.Fatal("ignored a taint")
 	}
 	web.tolerations = []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "gpu", Effect: corev1.TaintEffectNoSchedule}}
 	db.tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
-	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil); !ok {
+	if _, ok := simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, nil, nil); !ok {
 		t.Fatal("tolerated taints should allow placement")
 	}
 	b.taints, c.taints = nil, nil
@@ -64,12 +64,12 @@ func TestSimulateRespectsDisksLimitsAndTaints(t *testing.T) {
 	// No room in the cluster: an app replica may spill to another studied cluster.
 	b.usedCPU, c.usedCPU = 3400, 3400
 	other := node("c2", "x", 0, 8)
-	sc, ok = simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, []*planNode{other})
+	sc, ok = simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, []*planNode{other}, nil)
 	if !ok || sc.Strategy != "spill" || sc.CrossCluster != 2 || sc.DataMigration != 0 || sc.TargetsUsed[0] != "c2" {
 		t.Fatalf("spill: %+v ok=%v", sc, ok)
 	}
 	db.pvcs = []PlanVolume{{Claim: "data-pg-0", Disk: true}}
-	sc, _ = simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, []*planNode{other})
+	sc, _ = simulate("c1", pool, []*planNode{a, b, c}, []*planNode{a}, total, []*planNode{other}, nil)
 	if sc.DataMigration != 1 {
 		t.Fatalf("cross-cluster volume should need data migration: %+v", sc)
 	}
@@ -90,5 +90,16 @@ func TestTolerates(t *testing.T) {
 		if got := tolerates(tc.tol, taint); got != tc.want {
 			t.Errorf("%+v: got %v", tc.tol, got)
 		}
+	}
+}
+
+func TestSimulateOnlyStudiedNamespaces(t *testing.T) {
+	pool := CostPool{Name: "p", Nodes: 2}
+	a, b := node("c1", "a", 0, 8), node("c1", "b", 0, 8)
+	put(a, &planPod{ns: "web", name: "api-1", kind: "Deployment", workload: "api", cpu: 100, mem: 1 << 20})
+	put(a, &planPod{ns: "kube-system", name: "coredns-1", kind: "Deployment", workload: "coredns", cpu: 100, mem: 1 << 20})
+	sc, ok := simulate("c1", pool, []*planNode{a, b}, []*planNode{a}, map[string]int{}, nil, map[string]bool{"web": true})
+	if !ok || sc.Replicas != 1 || sc.Drain[0].Pods != 1 || sc.Drain[0].Other != 1 {
+		t.Fatalf("got %+v", sc)
 	}
 }

@@ -806,7 +806,20 @@ async function alertsView(scope) {
 let doctorPoll;
 // Finding groups start collapsed; remember the ones the user opened across re-renders and re-runs.
 const doctorOpen = new Set();
+// Beta features: turned on in Settings; their nav items stay hidden until then.
+let beta = new Set();
+async function loadBeta() {
+  try { beta = new Set((await api('/api/settings')).beta || []); } catch { /* keep what we had */ }
+  document.getElementById('navCost').hidden = !beta.has('cost');
+  return beta;
+}
+loadBeta();
+
 async function costPage() {
+  if (!(await loadBeta()).has('cost')) {
+    view.innerHTML = `${head('Cost', 'A beta feature.')}<div class="card empty"><span class="big">🧪</span>Cost is a beta feature.<br><span class="muted">Turn it on in Settings → Beta features.</span><br><button class="btn sm" style="margin-top:10px" onclick="location.hash='#settings'">Open Settings</button></div>`;
+    return;
+  }
   await costView(view, head, () => current);
 }
 
@@ -892,6 +905,9 @@ async function settings() {
           <label class="toggle" style="color:var(--text)"><input type="checkbox" id="usageHistory" ${s.usageHistory ? 'checked' : ''}> Record usage history</label>
           <label class="toggle" style="color:var(--text)">Keep <select class="input" id="usageRetentionDays" style="width:auto">${[1, 3, 7, 14, 30, 60, 90, 180, 365].map((d) => `<option value="${d}" ${d === s.usageRetentionDays ? 'selected' : ''}>${d} day${d === 1 ? '' : 's'}${d === 7 ? ' (default)' : ''}</option>`).join('')}</select></label>
           <span class="muted" id="usageStats" style="font-size:12px"></span></div></div>
+      <div class="row"><div class="lbl"><b>Beta features</b><span>Early features you can try. They work, but may change or move.</span></div>
+        <div><label class="toggle" style="color:var(--text)"><input type="checkbox" data-beta="cost" ${(s.beta || []).includes('cost') ? 'checked' : ''}> <b>Cost</b> <span class="beta-badge">beta</span></label>
+          <div class="muted" style="font-size:12px;margin:2px 0 0 24px">Simulates removing worker nodes from clusters you pick by tag, moving their replicas onto other nodes within requests, limits, taints and disk-attach limits. Read-only: it never changes a cluster.</div></div></div>
       <div class="row"><div class="lbl"><b>Ignored namespaces</b><span>One per line. Globs work, e.g. <code>preview-*</code>.</span></div>
         <textarea class="input" id="ignoredNamespaces" placeholder="kube-system">${esc(s.ignoredNamespaces.join('\n'))}</textarea></div>
       <div class="row"><div class="lbl"><b>Muted alerts</b><span>Alerts you chose to never see again.</span></div>
@@ -926,12 +942,14 @@ async function settings() {
       snoozeHours: +view.querySelector('#snoozeHours').value,
       historySize: +view.querySelector('#historySize').value,
       usageHistory: view.querySelector('#usageHistory').checked,
+      beta: [...view.querySelectorAll('[data-beta]')].filter((c) => c.checked).map((c) => c.dataset.beta),
       clusterTags: Object.fromEntries([...view.querySelectorAll('[data-tags]')].map((i) => [i.dataset.tags, i.value.split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)]).filter(([, v]) => v.length)),
       usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
     toast('Settings saved');
+    loadBeta();
     view.querySelector('#dirty').textContent = '';
     setTimeout(loadClusters, 1500);
   };

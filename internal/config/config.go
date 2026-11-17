@@ -30,6 +30,8 @@ type Settings struct {
 	ClusterTags map[string][]string `json:"clusterTags"`
 	// usageHistorySet distinguishes "turned off" from "settings file older than the feature".
 	UsageHistorySet bool `json:"usageHistorySet,omitempty"`
+	// Beta lists the beta features the user turned on (e.g. "cost"); everything else stays hidden.
+	Beta []string `json:"beta"`
 }
 
 func Defaults() Settings {
@@ -70,7 +72,8 @@ func (s *Settings) normalize() {
 		s.NudgeLevel = d.NudgeLevel
 	}
 	s.ClusterTags = normalizeTags(s.ClusterTags)
-	for _, l := range []*[]string{&s.ExcludedContexts, &s.IgnoredNamespaces, &s.MutedKeys} {
+	s.Beta = slices.DeleteFunc(slices.Clone(s.Beta), func(b string) bool { return !slices.Contains(BetaFeatures, b) })
+	for _, l := range []*[]string{&s.ExcludedContexts, &s.IgnoredNamespaces, &s.MutedKeys, &s.Beta} {
 		if *l == nil {
 			*l = []string{}
 		}
@@ -188,3 +191,8 @@ func normalizeTags(in map[string][]string) map[string][]string {
 	}
 	return out
 }
+
+// BetaFeatures are the features that are off until turned on in Settings → Beta features.
+var BetaFeatures = []string{"cost"}
+
+func (s Settings) BetaOn(feature string) bool { return slices.Contains(s.Beta, feature) }
