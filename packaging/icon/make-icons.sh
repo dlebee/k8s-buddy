@@ -2,6 +2,7 @@
 # Regenerates the app icons (needs rsvg-convert: `brew install librsvg`, plus iconutil and python3):
 #   app-icon.svg       → packaging/macos/AppIcon.icns (macOS: the buddy on a rounded tile)
 #   app-icon-small.svg → packaging/windows/k8s-buddy.ico (Windows: the buddy alone, readable at 16 px)
+#                        and cmd/k8s-buddy/rsrc_windows_{amd64,arm64}.syso (the icon inside the .exe)
 # The results are committed, so release builds don't need this.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -21,4 +22,8 @@ for s in 16 20 24 32 40 48 64 256; do
 	pngs+=("$ICO/$s.png")
 done
 python3 make-ico.py ../windows/k8s-buddy.ico "${pngs[@]}"
-echo "wrote packaging/macos/AppIcon.icns, packaging/windows/k8s-buddy.ico and packaging/icon/app-icon-1024.png"
+# The .exe icon: Windows resource objects that `go build` links into Windows builds.
+for arch in amd64 arm64; do
+	python3 make-syso.py ../windows/k8s-buddy.ico "$arch" "../../cmd/k8s-buddy/rsrc_windows_$arch.syso"
+done
+echo "wrote packaging/macos/AppIcon.icns, packaging/windows/k8s-buddy.ico, cmd/k8s-buddy/rsrc_windows_*.syso and packaging/icon/app-icon-1024.png"
