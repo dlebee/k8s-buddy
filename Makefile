@@ -28,8 +28,9 @@ vet:
 
 app: build
 	rm -rf $(APP)
-	mkdir -p $(APP)/Contents/MacOS
+	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
 	cp bin/k8s-buddy $(APP)/Contents/MacOS/k8s-buddy
+	cp packaging/macos/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	sed 's/VERSION/$(PLIST_VERSION)/g' packaging/macos/Info.plist > $(APP)/Contents/Info.plist
 	codesign --force --sign - $(APP)
 	@echo "built $(APP) — open it with: open $(APP)"

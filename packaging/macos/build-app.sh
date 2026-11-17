@@ -24,7 +24,8 @@ for arch in arm64 amd64; do
 done
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$ROOT/packaging/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 lipo -create -output "$APP/Contents/MacOS/k8s-buddy" "$BUILD/k8s-buddy-arm64" "$BUILD/k8s-buddy-amd64"
 # Bundle versions must be numeric (1.2.3); the full version stays in the binary.
 PLIST_VERSION="$(echo "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+(\.[0-9]+)?)([^0-9.].*)?$/\1/; /^[0-9]+\.[0-9]+(\.[0-9]+)?$/!s/.*/0.0.0/')"
