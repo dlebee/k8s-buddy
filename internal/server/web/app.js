@@ -912,8 +912,9 @@ async function settings() {
           <button class="btn sm" data-tag-edit="" style="margin-top:8px">Edit cluster tags…</button>
           <p class="muted" style="font-size:12px;margin:6px 0 0">Tags are yours: kept only in k8s-buddy's settings on this computer (never written to your kubeconfig). Use them to filter clusters, and in Cost optimization to group clusters that could share capacity.</p>
         </div></div>
-      <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config.</span></div>
-        <input class="input" id="kubeconfig" style="width:100%" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"></div>
+      <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config. New and removed contexts are picked up every 30 seconds, or right away with Reload.</span></div>
+        <div><div style="display:flex;gap:8px"><input class="input" id="kubeconfig" style="flex:1" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"><button class="btn sm" id="reloadKube" title="Read the kubeconfig again now">↻ Reload now</button></div>
+          <p class="muted" id="reloadMsg" style="font-size:12px;margin:6px 0 0" aria-live="polite"></p></div></div>
       <div class="row"><div class="lbl"><b>Nudge me for</b><span>The buddy bounces and the menu bar count goes up at this level and above.</span></div>
         <div class="seg" id="nudge" style="width:max-content">${['info', 'notice', 'warning', 'critical'].map((l) => `<button data-v="${l}" class="${l === s.nudgeLevel ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}+</button>`).join('')}</div></div>
       <div class="row"><div class="lbl"><b>Buddy</b><span>The floating character on your screen.</span></div>
@@ -945,6 +946,23 @@ async function settings() {
   view.querySelector('#selNone').onclick = () => { boxes().forEach((b) => (b.checked = false)); dirty(); };
   view.querySelector('#selBad').onclick = () => { boxes().forEach((b) => { if (byName[b.dataset.ctx]?.status === 'error') b.checked = false; }); dirty(); };
   view.querySelector('#usageRetentionDays').onchange = dirty;
+  view.querySelector('#reloadKube').onclick = async (e) => {
+    const b = e.currentTarget, msg = view.querySelector('#reloadMsg');
+    b.disabled = true;
+    msg.textContent = 'Reading the kubeconfig…';
+    try {
+      const r = await api('/api/kubeconfig/reload', { method: 'POST' });
+      const parts = [`${r.contexts} context${r.contexts === 1 ? '' : 's'}`];
+      if (r.added.length) parts.push(`new: ${r.added.join(', ')}`);
+      if (r.removed.length) parts.push(`removed: ${r.removed.join(', ')}`);
+      msg.textContent = r.error ? `Couldn't read it: ${r.error}` : `Reloaded · ${parts.join(' · ')}${r.added.length || r.removed.length ? '' : ' · no changes'}`;
+      if ((r.added.length || r.removed.length) && !view.querySelector('#dirty')?.textContent) setTimeout(() => { if (current === 'settings') settings(); }, 1500);
+    } catch (err) {
+      msg.textContent = err.message.replace(/^\d+ /, '');
+    } finally {
+      b.disabled = false;
+    }
+  };
   api('/api/usage/stats').then((st) => {
     const el = view.querySelector('#usageStats');
     if (!el || !st.available) return;

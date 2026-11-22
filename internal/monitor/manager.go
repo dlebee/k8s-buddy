@@ -34,6 +34,7 @@ type Manager struct {
 	loadErr  string
 	running  map[string]*running
 	kick     chan struct{}
+	waiters  []chan struct{} // ReloadNow callers waiting for the next reconcile to finish
 	doc      doctor
 	az       azureState
 	hist     *history.Store
@@ -52,6 +53,57 @@ func (m *Manager) Reload() {
 	}
 }
 
+// ReloadResult is what an immediate kubeconfig reload found.
+type ReloadResult struct {
+	Contexts int      `json:"contexts"`
+	Added    []string `json:"added"`   // contexts that weren't loaded before
+	Removed  []string `json:"removed"` // contexts that are gone
+	Error    string   `json:"error,omitempty"`
+}
+
+// ReloadNow re-reads the kubeconfig right away (instead of at the next 30-second check) and waits
+// for it to be applied.
+func (m *Manager) ReloadNow(ctx context.Context) (ReloadResult, error) {
+	names := func() map[string]bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		out := make(map[string]bool, len(m.contexts))
+		for _, c := range m.contexts {
+			out[c.Name] = true
+		}
+		return out
+	}
+	before := names()
+	w := make(chan struct{})
+	m.mu.Lock()
+	m.waiters = append(m.waiters, w)
+	m.mu.Unlock()
+	m.Reload()
+	select {
+	case <-w:
+	case <-ctx.Done():
+		return ReloadResult{}, ctx.Err()
+	}
+	after := names()
+	res := ReloadResult{Contexts: len(after), Added: []string{}, Removed: []string{}}
+	for n := range after {
+		if !before[n] {
+			res.Added = append(res.Added, n)
+		}
+	}
+	for n := range before {
+		if !after[n] {
+			res.Removed = append(res.Removed, n)
+		}
+	}
+	slices.Sort(res.Added)
+	slices.Sort(res.Removed)
+	m.mu.Lock()
+	res.Error = m.loadErr
+	m.mu.Unlock()
+	return res, nil
+}
+
 func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
@@ -60,6 +112,13 @@ func (m *Manager) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		m.reconcile()
+		m.mu.Lock()
+		done := m.waiters
+		m.waiters = nil
+		m.mu.Unlock()
+		for _, w := range done {
+			close(w)
+		}
 		select {
 		case <-ctx.Done():
 			return

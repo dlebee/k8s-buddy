@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
@@ -325,6 +326,17 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, s.mgr.CostScenarios(listParam(r, "tag"), listParam(r, "cluster"), listParam(r, "ns")))
+	})
+	// Re-reads the kubeconfig now rather than at the next 30-second check (Settings button).
+	mux.HandleFunc("POST /api/kubeconfig/reload", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		res, err := s.mgr.ReloadNow(ctx)
+		if err != nil {
+			http.Error(w, "the kubeconfig is still loading: try again in a moment", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, res)
 	})
 	mux.HandleFunc("GET /api/optimizer", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.mgr.Optimize(listParam(r, "cluster")))
