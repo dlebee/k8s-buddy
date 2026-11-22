@@ -21,7 +21,12 @@ func writeKubeconfig(t *testing.T, path string, names ...string) {
 	for _, n := range names {
 		s += "- name: " + n + "\n  context: {cluster: c, user: u}\n"
 	}
-	if err := os.WriteFile(path, []byte(s), 0o600); err != nil {
+	// Swap in a complete file, so a background reload never reads it half-written.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(s), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
 	}
 }

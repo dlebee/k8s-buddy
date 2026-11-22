@@ -111,12 +111,14 @@ func (m *Manager) Run(ctx context.Context) {
 	t := time.NewTicker(reloadEvery)
 	defer t.Stop()
 	for {
-		m.reconcile()
+		// Only callers already waiting when this reconcile starts are answered by it: one that
+		// started earlier may have read the kubeconfig before their change.
 		m.mu.Lock()
-		done := m.waiters
+		waiting := m.waiters
 		m.waiters = nil
 		m.mu.Unlock()
-		for _, w := range done {
+		m.reconcile()
+		for _, w := range waiting {
 			close(w)
 		}
 		select {
