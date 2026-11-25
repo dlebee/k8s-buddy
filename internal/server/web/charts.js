@@ -31,11 +31,28 @@ function chart(points, key, ref, fmt, label, bucket) {
   const id = `uc-over-${++uid}`;
   const hot = ref.over > 0 ? `<clipPath id="${id}"><rect x="0" y="0" width="${W}" height="${Math.max(0, y(ref.over)).toFixed(1)}"/></clipPath>
     <g clip-path="url(#${id})" class="hot">${band}<path class="avg" d="${segs(avg)}"/></g>${hline(ref.over, 'over', ref.overLabel || 'spike line')}` : '';
+  // Each run of points over the spike line: a red column behind the chart (never thinner than a
+  // few pixels, so a 5-minute spike still shows in 14 days; click it to zoom in) and a dot on its peak.
+  const runs = [];
+  if (ref.over > 0) {
+    points.forEach((p, i) => {
+      if (!(peak[i] > ref.over)) return;
+      const end = p.t + (p.step || bucket), last = runs.at(-1);
+      if (last && !gapAt(i) && last.i === i - 1) { last.to = end; last.i = i; if (peak[i] > last.peak) { last.peak = peak[i]; last.at = p.t; } return; }
+      runs.push({ from: p.t, to: end, i, peak: peak[i], at: p.t });
+    });
+  }
+  const cols = runs.map((r) => {
+    const a = x(r.from), b = x(r.to), w = Math.max(b - a, 4), left = (a + b) / 2 - w / 2;
+    const when = new Date(r.from * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    return `<rect class="spike-col" data-from="${r.from}" data-to="${r.to}" x="${left.toFixed(1)}" y="${PAD.t}" width="${w.toFixed(1)}" height="${H - PAD.t - PAD.b}"><title>Over the line from ${esc(when)}, peak ${esc(fmt(r.peak))}: click to zoom in</title></rect>`;
+  }).join('');
+  const dots = runs.map((r) => `<i class="spike-dot" style="left:${(x(r.at) / W * 100).toFixed(2)}%;top:${(y(r.peak) / H * 100).toFixed(2)}%"></i>`).join('');
   return `<div class="uc-chart" data-key="${key}" data-t0="${t0}" data-t1="${t1}">
-    <div class="uc-head"><b>${label}</b><span class="muted">avg ${esc(fmt(avgAll))} · peak ${esc(fmt(peakAll))}</span></div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${ticks}${band}<path class="avg" d="${segs(avg)}"/>${points.length < 4 ? points.map((p, i) => `<circle class="dot" cx="${x(p.t).toFixed(1)}" cy="${y(avg[i]).toFixed(1)}" r="3"/>`).join('') : ''}${hline(ref.req, 'req', 'request')}${hline(ref.lim, 'lim', ref.limLabel || 'limit')}${hot}
+    <div class="uc-head"><b>${label}${runs.length ? ` <span class="spike-n">${runs.length} spike${runs.length === 1 ? '' : 's'}</span>` : ''}</b><span class="muted">avg ${esc(fmt(avgAll))} · peak ${esc(fmt(peakAll))}</span></div>
+    <div class="uc-plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${ticks}${cols}${band}<path class="avg" d="${segs(avg)}"/>${points.length < 4 ? points.map((p, i) => `<circle class="dot" cx="${x(p.t).toFixed(1)}" cy="${y(avg[i]).toFixed(1)}" r="3"/>`).join('') : ''}${hline(ref.req, 'req', 'request')}${hline(ref.lim, 'lim', ref.limLabel || 'limit')}${hot}
       <rect class="sel" x="0" y="${PAD.t}" width="0" height="${H - PAD.t - PAD.b}" visibility="hidden"/>
-      <line class="cross" x1="0" x2="0" y1="${PAD.t}" y2="${H - PAD.b}" visibility="hidden"/>${xt}</svg>
+      <line class="cross" x1="0" x2="0" y1="${PAD.t}" y2="${H - PAD.b}" visibility="hidden"/>${xt}</svg>${dots}</div>
     <div class="uc-tip" hidden></div></div>`;
 }
 
@@ -102,7 +119,12 @@ function dragZoom(c, onZoom) {
       window.removeEventListener('mouseup', up);
       sel.setAttribute('visibility', 'hidden');
       const x = fx(ev);
-      if (Math.abs(x - start) < 6) return;
+      if (Math.abs(x - start) < 6) {
+        // A click on a red column zooms into that spike, with some time around it.
+        const col = e.target.closest?.('.spike-col');
+        if (col) { const a = +col.dataset.from, b = +col.dataset.to, pad = Math.max(1800, (b - a) * 2); onZoom(a - pad, b + pad); }
+        return;
+      }
       const a = tAt(Math.min(start, x)), b = tAt(Math.max(start, x));
       if (b - a >= 120) onZoom(a, b);
     };

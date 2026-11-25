@@ -297,6 +297,11 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .uc-chart .over { stroke: var(--warn, #ff9f0a); stroke-dasharray: 6 3; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
 .uc-chart text.lbl.over { fill: var(--warn, #ff9f0a); stroke: none; }
 .uc-chart .sel { fill: var(--accent); opacity: .15; }
+.uc-plot { position: relative; }
+.uc-chart .spike-col { fill: var(--bad); opacity: .22; cursor: zoom-in; }
+.uc-chart .spike-col:hover { opacity: .4; }
+.spike-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--bad); border: 2px solid var(--surface); box-shadow: 0 0 0 1px var(--bad); pointer-events: none; }
+.spike-n { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); font-size: 11px; font-weight: 600; }
 .uc-chart svg { cursor: crosshair; }
 .uc-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; }
 .uc-bar .uc-win { margin-bottom: 0; }
