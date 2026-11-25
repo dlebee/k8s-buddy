@@ -2,7 +2,9 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -69,6 +71,65 @@ type doctor struct {
 	mu     sync.Mutex
 	report DoctorReport
 	done   DoctorReport // the latest finished checkup, kept while the next one runs
+	file   string       // where the latest checkup is saved across restarts ("" in tests)
+}
+
+// The latest checkup is saved to doctor.json so a restart shows it right away instead of an empty
+// Doctor until the next scan. The file carries a format version: one from another version is
+// ignored, and the next checkup replaces it.
+const doctorFileVersion = 1
+
+// A saved checkup older than this isn't shown; the next scan replaces it anyway.
+const doctorMaxAge = 7 * 24 * time.Hour
+
+type doctorFile struct {
+	Version int          `json:"version"`
+	Report  DoctorReport `json:"report"`
+}
+
+func (m *Manager) saveDoctor(r DoctorReport) {
+	if m.doc.file == "" {
+		return
+	}
+	r.Running, r.NextAt, r.Checks = false, time.Time{}, nil
+	b, err := json.Marshal(doctorFile{Version: doctorFileVersion, Report: r})
+	if err == nil {
+		tmp := m.doc.file + ".tmp"
+		if err = os.WriteFile(tmp, b, 0o600); err == nil {
+			err = os.Rename(tmp, m.doc.file)
+		}
+	}
+	if err != nil {
+		m.log.Warn("save doctor result", "err", err)
+	}
+}
+
+// loadDoctor brings back the checkup saved before the last quit, if it's this format, finished,
+// and recent. Findings for clusters excluded since are dropped.
+func (m *Manager) loadDoctor() {
+	b, err := os.ReadFile(m.doc.file)
+	if err != nil {
+		return
+	}
+	var f doctorFile
+	if json.Unmarshal(b, &f) != nil || f.Version != doctorFileVersion {
+		return
+	}
+	r := f.Report
+	age := time.Since(r.FinishedAt)
+	if r.FinishedAt.IsZero() || age < 0 || age > doctorMaxAge {
+		return
+	}
+	s := m.settings.Get()
+	r.Findings = slices.DeleteFunc(r.Findings, func(x Finding) bool { return s.IsExcluded(x.Cluster) })
+	r.Clusters = slices.DeleteFunc(r.Clusters, s.IsExcluded)
+	r.Running, r.NextAt = false, time.Time{}
+	if r.Errors == nil {
+		r.Errors = map[string]string{}
+	}
+	m.doc.mu.Lock()
+	m.doc.report, m.doc.done = r, r
+	m.doc.mu.Unlock()
 }
 
 // LastDoctor is the latest finished checkup (empty before the first one), with Running set while
@@ -107,10 +168,12 @@ func (m *Manager) nextDoctor(r DoctorReport) time.Time {
 	if every == 0 {
 		return time.Time{}
 	}
+	// Never before the clusters had a few minutes to load, also after a restart with a saved result.
+	first := m.started.Add(doctorWarmup)
 	if r.FinishedAt.IsZero() {
-		return m.started.Add(doctorWarmup)
+		return first
 	}
-	return r.FinishedAt.Add(every)
+	return later(r.FinishedAt.Add(every), first)
 }
 
 // doctorLoop runs the Doctor on its own, as often as Settings says. A checkup the user starts
@@ -180,10 +243,19 @@ func (m *Manager) startDoctor(scheduled bool) bool {
 		m.doc.report.Errors = errs
 		m.doc.report.Clusters = names
 		m.doc.done = m.doc.report
+		done := m.doc.done
 		m.doc.mu.Unlock()
+		m.saveDoctor(done)
 		m.store.Touch() // the buddy and the panel show the latest checkup
 	}()
 	return true
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // idleLBMessage explains a LoadBalancer with nothing behind it: its address still exists (and is billed).

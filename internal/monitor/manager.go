@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/dlebee/k8s-buddy/internal/history"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ type Manager struct {
 func NewManager(settings *config.Store, store *alert.Store, log *slog.Logger) *Manager {
 	m := &Manager{settings: settings, store: store, log: log, running: map[string]*running{}, kick: make(chan struct{}, 1), started: time.Now()}
 	settings.OnChange(func(config.Settings) { m.Reload() })
+	if dataDir != "" {
+		m.doc.file = filepath.Join(dataDir, "doctor.json")
+		m.loadDoctor()
+	}
 	return m
 }
 
