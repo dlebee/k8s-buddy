@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Settings struct {
@@ -34,6 +35,9 @@ type Settings struct {
 	UsageRetention14 bool `json:"usageRetention14,omitempty"`
 	// Beta lists the beta features the user turned on (e.g. "cost"); everything else stays hidden.
 	Beta []string `json:"beta"`
+	// DoctorEvery is how often the Doctor checks every cluster on its own: "off", "3h", "6h",
+	// "12h" or "24h".
+	DoctorEvery string `json:"doctorEvery"`
 }
 
 func Defaults() Settings {
@@ -47,6 +51,7 @@ func Defaults() Settings {
 		UsageRetentionDays: 14,
 		UsageHistorySet:    true,
 		UsageRetention14:   true,
+		DoctorEvery:        "6h",
 	}
 }
 
@@ -81,6 +86,9 @@ func (s *Settings) normalize() {
 		s.NudgeLevel = d.NudgeLevel
 	}
 	s.ClusterTags = normalizeTags(s.ClusterTags)
+	if s.DoctorInterval() == 0 && s.DoctorEvery != "off" {
+		s.DoctorEvery = d.DoctorEvery
+	}
 	s.Beta = slices.DeleteFunc(slices.Clone(s.Beta), func(b string) bool { return !slices.Contains(BetaFeatures, b) })
 	for _, l := range []*[]string{&s.ExcludedContexts, &s.IgnoredNamespaces, &s.MutedKeys, &s.Beta} {
 		if *l == nil {
@@ -206,3 +214,18 @@ func normalizeTags(in map[string][]string) map[string][]string {
 var BetaFeatures = []string{"cost"}
 
 func (s Settings) BetaOn(feature string) bool { return slices.Contains(s.Beta, feature) }
+
+// DoctorInterval is how often the Doctor runs on its own; 0 when that's turned off.
+func (s Settings) DoctorInterval() time.Duration {
+	switch s.DoctorEvery {
+	case "3h":
+		return 3 * time.Hour
+	case "6h":
+		return 6 * time.Hour
+	case "12h":
+		return 12 * time.Hour
+	case "24h":
+		return 24 * time.Hour
+	}
+	return 0
+}

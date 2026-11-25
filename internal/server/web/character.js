@@ -55,11 +55,36 @@ function flush() {
   }
 }
 
+// The Doctor's latest checkup: a badge with its count, and a "psst" when it found more than the
+// buddy last mentioned (remembered across launches, so the same findings aren't announced again).
+const DOC_KEY = 'buddy.doctorAnnounced';
+let docAt = '';
+function setDoctor(d) {
+  const el = document.getElementById('doc');
+  if (!d) return;
+  const n = d.ran ? d.findings : 0;
+  document.getElementById('docN').textContent = n > 99 ? '99+' : String(n);
+  el.classList.toggle('on', n > 0);
+  el.title = n ? `Doctor: ${n} thing${n === 1 ? '' : 's'} need attention (click me)` : 'Doctor';
+  if (!d.ran || d.at === docAt) return;
+  docAt = d.at;
+  let announced = -1;
+  try { announced = Number(localStorage.getItem(DOC_KEY) ?? -1); } catch { /* no storage */ }
+  if (n > 0 && n > announced) {
+    setTimeout(() => {
+      bounce();
+      say('Psst… the doctor has a few notes', `${n} thing${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} attention${d.clusters ? ` on ${d.clusters} cluster${d.clusters === 1 ? '' : 's'}` : ''} · click me`, 9000);
+    }, bubble.classList.contains('on') ? 8000 : 0);
+  }
+  try { localStorage.setItem(DOC_KEY, String(n)); } catch { /* no storage */ }
+}
+
 function onSummary(s) {
   cfg = { nudgeLevel: s.nudgeLevel, showBubble: s.showBubble };
   last = s;
   setBadge(s);
   mood(s);
+  setDoctor(s.doctor);
 }
 
 function onAlert(a) {

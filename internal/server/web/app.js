@@ -846,6 +846,13 @@ async function costPage() {
   await costView(view, head, () => current);
 }
 
+// doctorNext: " Next automatic checkup in 5 h." (empty when the schedule is off).
+function doctorNext(rep) {
+  if (!rep.nextAt) return ' Automatic checkups are off (Settings).';
+  const mins = Math.max(1, Math.round((new Date(rep.nextAt) - Date.now()) / 60000));
+  return ` Next automatic checkup in ${mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`}.`;
+}
+
 async function doctor() {
   const rep = await api('/api/doctor');
   if (current !== 'doctor') return;
@@ -856,11 +863,11 @@ async function doctor() {
   const clusters = [...new Set(rep.findings.map((x) => x.cluster))].sort();
   document.getElementById('navDoctor').textContent = ran ? String(rep.findings.length) : '';
   view.innerHTML = `
-    ${head('Doctor', 'An on-demand checkup for things that are quietly wrong.')}
+    ${head('Doctor', 'A checkup for things that are quietly wrong: runs on its own a few times a day (Settings), or whenever you like.')}
     <div class="card hero">
       <div><h2>${rep.running ? 'Examining your clusters…' : ran ? `${plural(rep.findings.length, 'finding')} across ${plural(rep.clusters.length, 'cluster')}` : 'Give your clusters a checkup'}</h2>
         <p>${rep.running ? 'Looking for dangling services, broken ingresses, blocking PDBs, orphaned volumes and more.'
-          : ran ? `Last run ${ago(rep.finishedAt)} ago, took ${Math.max(1, Math.round((new Date(rep.finishedAt) - new Date(rep.startedAt)) / 1000))}s.`
+          : ran ? `Last run ${ago(rep.finishedAt)} ago${rep.scheduled ? ' (automatic)' : ''}, took ${Math.max(1, Math.round((new Date(rep.finishedAt) - new Date(rep.startedAt)) / 1000))}s.${doctorNext(rep)}`
           : 'Looks for dangling services and ingresses, PDBs that will block upgrades, orphaned disks, unused claims and leftover pods. Read-only.'}</p></div>
       <div class="spacer"></div>
       <button class="btn primary" id="runDoctor" ${rep.running ? 'disabled' : ''}>${rep.running ? '<span class="spinner"></span>Running…' : ran ? 'Run again' : 'Run checkup'}</button>
@@ -915,6 +922,8 @@ async function settings() {
       <div class="row"><div class="lbl"><b>Kubeconfig</b><span>Empty uses $KUBECONFIG or ~/.kube/config. New and removed contexts are picked up every 30 seconds, or right away with Reload.</span></div>
         <div><div style="display:flex;gap:8px"><input class="input" id="kubeconfig" style="flex:1" value="${esc(s.kubeconfig)}" placeholder="~/.kube/config"><button class="btn sm" id="reloadKube" title="Read the kubeconfig again now">↻ Reload now</button></div>
           <p class="muted" id="reloadMsg" style="font-size:12px;margin:6px 0 0" aria-live="polite"></p></div></div>
+      <div class="row"><div class="lbl"><b>Doctor checkups</b><span>The Doctor checks every cluster on its own this often. The buddy shows what it found and says "psst" when there's more than last time.</span></div>
+        <select class="input" id="doctorEvery" style="width:auto">${[['off', 'Off (only when I run it)'], ['3h', 'Every 3 hours'], ['6h', 'Every 6 hours, 4 times a day (default)'], ['12h', 'Every 12 hours'], ['24h', 'Once a day']].map(([v, l]) => `<option value="${v}" ${v === (s.doctorEvery || '6h') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <div class="row"><div class="lbl"><b>Nudge me for</b><span>The buddy bounces and the menu bar count goes up at this level and above.</span></div>
         <div class="seg" id="nudge" style="width:max-content">${['info', 'notice', 'warning', 'critical'].map((l) => `<button data-v="${l}" class="${l === s.nudgeLevel ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}+</button>`).join('')}</div></div>
       <div class="row"><div class="lbl"><b>Buddy</b><span>The floating character on your screen.</span></div>
@@ -946,6 +955,7 @@ async function settings() {
   view.querySelector('#selNone').onclick = () => { boxes().forEach((b) => (b.checked = false)); dirty(); };
   view.querySelector('#selBad').onclick = () => { boxes().forEach((b) => { if (byName[b.dataset.ctx]?.status === 'error') b.checked = false; }); dirty(); };
   view.querySelector('#usageRetentionDays').onchange = dirty;
+  view.querySelector('#doctorEvery').onchange = dirty;
   view.querySelector('#reloadKube').onclick = async (e) => {
     const b = e.currentTarget, msg = view.querySelector('#reloadMsg');
     b.disabled = true;
@@ -986,6 +996,7 @@ async function settings() {
       beta: [...view.querySelectorAll('[data-beta]')].filter((c) => c.checked).map((c) => c.dataset.beta),
       clusterTags: Object.fromEntries([...view.querySelectorAll('[data-tags]')].map((i) => [i.dataset.tags, i.value.split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)]).filter(([, v]) => v.length)),
       usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
+      doctorEvery: view.querySelector('#doctorEvery').value,
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
@@ -1033,6 +1044,7 @@ async function refreshBadges() {
   const sum = await api('/api/summary');
   document.getElementById('navAlerts').textContent = sum.pending ? String(sum.pending) : '';
   document.getElementById('brandSub').textContent = sum.pending ? `${plural(sum.pending, 'thing')} to look at` : 'all quiet';
+  if (sum.doctor?.ran) document.getElementById('navDoctor').textContent = sum.doctor.findings ? String(sum.doctor.findings) : '';
 }
 const onChange = debounce(() => {
   refreshBadges();

@@ -43,6 +43,11 @@
   .empty .big { font-size: 34px; display: block; margin-bottom: 6px; }
   .azure { display: flex; gap: 10px; align-items: center; margin: 10px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,159,10,.14); }
   .azure[hidden] { display: none; }
+  .doc { display: flex; gap: 10px; align-items: center; margin: 10px 14px 0; padding: 9px 12px; border-radius: 10px; background: rgba(255,59,48,.10); }
+  .doc[hidden] { display: none; }
+  .doc svg { width: 16px; height: 16px; flex: none; }
+  .doc div { flex: 1; font-size: 12px; } .doc b { display: block; font-size: 12.5px; }
+  .doc button { white-space: nowrap; }
   .azure div { flex: 1; font-size: 12px; } .azure b { display: block; font-size: 12.5px; }
   .azure button { background: #0a84ff; color: #fff; font-weight: 600; white-space: nowrap; }
   .azure button:disabled { opacity: .6; }
@@ -63,6 +68,7 @@
     <button data-scope="all">History</button>
   </div>
   <div id="azure" class="azure" hidden></div>
+  <div id="doc" class="doc" hidden></div>
   <div id="list"></div>
   <footer>
     <button id="ackAll">Snooze all</button>

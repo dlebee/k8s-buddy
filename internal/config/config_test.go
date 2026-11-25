@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestNormalizeTags(t *testing.T) {
@@ -61,5 +62,15 @@ func TestOpenMigratesOldRetention(t *testing.T) {
 	st2, _ := Open(dir)
 	if d := st2.Get().UsageRetentionDays; d != 7 {
 		t.Fatalf("explicit 7 days not kept: %d", d)
+	}
+}
+
+func TestDoctorEvery(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": 6 * time.Hour, "6h": 6 * time.Hour, "3h": 3 * time.Hour, "24h": 24 * time.Hour, "off": 0, "5m": 6 * time.Hour} {
+		s := Settings{DoctorEvery: in}
+		s.normalize()
+		if got := s.DoctorInterval(); got != want {
+			t.Errorf("DoctorEvery %q: %v, want %v", in, got, want)
+		}
 	}
 }

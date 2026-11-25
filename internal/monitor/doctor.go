@@ -55,6 +55,8 @@ type Finding struct {
 
 type DoctorReport struct {
 	Running    bool              `json:"running"`
+	Scheduled  bool              `json:"scheduled"`       // started by the schedule, not by the user
+	NextAt     time.Time         `json:"nextAt,omitzero"` // next scheduled checkup (zero: schedule off)
 	StartedAt  time.Time         `json:"startedAt,omitzero"`
 	FinishedAt time.Time         `json:"finishedAt,omitzero"`
 	Clusters   []string          `json:"clusters"`
@@ -66,6 +68,18 @@ type DoctorReport struct {
 type doctor struct {
 	mu     sync.Mutex
 	report DoctorReport
+	done   DoctorReport // the latest finished checkup, kept while the next one runs
+}
+
+// LastDoctor is the latest finished checkup (empty before the first one), with Running set while
+// a newer one is under way. The buddy shows it, so its count doesn't blink away during a run.
+func (m *Manager) LastDoctor() DoctorReport {
+	m.doc.mu.Lock()
+	defer m.doc.mu.Unlock()
+	r := m.doc.done
+	r.Running = m.doc.report.Running
+	r.NextAt = m.nextDoctor(m.doc.report)
+	return r
 }
 
 func (m *Manager) DoctorReport() DoctorReport {
@@ -73,6 +87,7 @@ func (m *Manager) DoctorReport() DoctorReport {
 	defer m.doc.mu.Unlock()
 	r := m.doc.report
 	r.Checks = doctorChecks
+	r.NextAt = m.nextDoctor(r)
 	if r.Findings == nil {
 		r.Findings = []Finding{}
 	}
@@ -81,13 +96,48 @@ func (m *Manager) DoctorReport() DoctorReport {
 
 // StartDoctor runs a one-off checkup across connected clusters in the background.
 // It returns false if a checkup is already running.
-func (m *Manager) StartDoctor() bool {
+func (m *Manager) StartDoctor() bool { return m.startDoctor(false) }
+
+// doctorWarmup is how long after launch the first scheduled checkup waits, so clusters are loaded.
+const doctorWarmup = 3 * time.Minute
+
+// nextDoctor is when the schedule runs the next checkup (zero when the schedule is off).
+func (m *Manager) nextDoctor(r DoctorReport) time.Time {
+	every := m.settings.Get().DoctorInterval()
+	if every == 0 {
+		return time.Time{}
+	}
+	if r.FinishedAt.IsZero() {
+		return m.started.Add(doctorWarmup)
+	}
+	return r.FinishedAt.Add(every)
+}
+
+// doctorLoop runs the Doctor on its own, as often as Settings says. A checkup the user starts
+// counts too: the next scheduled one is measured from the latest finish.
+func (m *Manager) doctorLoop(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		r := m.DoctorReport()
+		if !r.Running && !r.NextAt.IsZero() && !time.Now().Before(r.NextAt) {
+			m.startDoctor(true)
+		}
+	}
+}
+
+func (m *Manager) startDoctor(scheduled bool) bool {
 	m.doc.mu.Lock()
 	if m.doc.report.Running {
 		m.doc.mu.Unlock()
 		return false
 	}
-	m.doc.report = DoctorReport{Running: true, StartedAt: time.Now(), Errors: map[string]string{}}
+	m.doc.report = DoctorReport{Running: true, Scheduled: scheduled, StartedAt: time.Now(), Errors: map[string]string{}}
 	m.doc.mu.Unlock()
 
 	go func() {
@@ -129,7 +179,9 @@ func (m *Manager) StartDoctor() bool {
 		m.doc.report.Findings = all
 		m.doc.report.Errors = errs
 		m.doc.report.Clusters = names
+		m.doc.done = m.doc.report
 		m.doc.mu.Unlock()
+		m.store.Touch() // the buddy and the panel show the latest checkup
 	}()
 	return true
 }

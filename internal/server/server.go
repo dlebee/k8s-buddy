@@ -455,6 +455,19 @@ type summary struct {
 	NudgeLevel string        `json:"nudgeLevel"`
 	ShowBubble bool          `json:"showBubble"`
 	Latest     []alert.Alert `json:"latest"`
+	Doctor     doctorSummary `json:"doctor"`
+}
+
+// doctorSummary is the latest Doctor checkup, for the buddy's doctor badge and the panel.
+type doctorSummary struct {
+	Ran      bool      `json:"ran"`
+	Running  bool      `json:"running"`
+	At       time.Time `json:"at,omitzero"`     // when the latest checkup finished
+	NextAt   time.Time `json:"nextAt,omitzero"` // next scheduled one (zero: schedule off)
+	Findings int       `json:"findings"`
+	Critical int       `json:"critical"`
+	Warning  int       `json:"warning"`
+	Clusters int       `json:"clusters"` // clusters with findings
 }
 
 func (s *Server) summary() summary {
@@ -464,7 +477,25 @@ func (s *Server) summary() summary {
 		NudgeLevel: st.NudgeLevel,
 		ShowBubble: st.ShowBubble,
 		Latest:     s.store.List(alert.Query{Limit: 3}),
+		Doctor:     s.doctorSummary(),
 	}
+}
+
+func (s *Server) doctorSummary() doctorSummary {
+	r := s.mgr.LastDoctor()
+	d := doctorSummary{Ran: !r.FinishedAt.IsZero(), Running: r.Running, At: r.FinishedAt, NextAt: r.NextAt, Findings: len(r.Findings)}
+	clusters := map[string]bool{}
+	for _, f := range r.Findings {
+		clusters[f.Cluster] = true
+		switch f.Severity {
+		case alert.Critical:
+			d.Critical++
+		case alert.Warning:
+			d.Warning++
+		}
+	}
+	d.Clusters = len(clusters)
+	return d
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {

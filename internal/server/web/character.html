@@ -35,6 +35,13 @@
   #badge.on { transform: scale(1); }
   #badge.warn { background: #ff9f0a; }
   #badge.calm { background: #0a84ff; }
+  /* The latest Doctor checkup: a little medical cross with how many things it found. */
+  #doc { position: absolute; left: 2px; top: 14px; height: 22px; padding: 0 7px 0 4px; box-sizing: border-box; display: flex; align-items: center; gap: 3px;
+    border-radius: 11px; background: #fff; color: #1c1c1e; font-weight: 700; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #ff3b30;
+    transform: scale(0); transition: transform .25s cubic-bezier(.3,1.8,.5,1); }
+  #doc.on { transform: scale(1); }
+  #doc svg { position: static; width: 14px; height: 14px; }
+  #doc.calm { border-color: #34c759; }
 
   #bubble { position: absolute; right: 112px; bottom: 58px; max-width: 160px; padding: 8px 10px; border-radius: 12px;
     background: #fff; color: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.22); opacity: 0; transform: translateX(8px) scale(.96);
@@ -93,6 +100,7 @@
     </svg>
   </div>
   <div id="badge"></div>
+  <div id="doc" title="Doctor"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M5 1.5h4v3.5h3.5v4H9v3.5H5V9H1.5V5H5z" fill="#ff3b30"/></svg><span id="docN"></span></div>
 </div>
 <script type="module" src="/static/character.js"></script>
 </body>

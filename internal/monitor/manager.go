@@ -38,10 +38,11 @@ type Manager struct {
 	doc      doctor
 	az       azureState
 	hist     *history.Store
+	started  time.Time
 }
 
 func NewManager(settings *config.Store, store *alert.Store, log *slog.Logger) *Manager {
-	m := &Manager{settings: settings, store: store, log: log, running: map[string]*running{}, kick: make(chan struct{}, 1)}
+	m := &Manager{settings: settings, store: store, log: log, running: map[string]*running{}, kick: make(chan struct{}, 1), started: time.Now()}
 	settings.OnChange(func(config.Settings) { m.Reload() })
 	return m
 }
@@ -108,6 +109,7 @@ func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
+	go m.doctorLoop(ctx)
 	t := time.NewTicker(reloadEvery)
 	defer t.Stop()
 	for {
