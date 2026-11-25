@@ -3,6 +3,7 @@ package main
 import (
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,9 @@ func TestVersionIsSetAtBuildTime(t *testing.T) {
 		t.Skip("builds the app")
 	}
 	bin := filepath.Join(t.TempDir(), "k8s-buddy")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-ldflags", "-X main.version=9.8.7", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
