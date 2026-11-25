@@ -227,3 +227,21 @@ func TestOOMsMostIn2Days(t *testing.T) {
 		t.Fatalf("a %+v b %+v", a, b)
 	}
 }
+
+// A mute counts only kills after it: two old kills in a day don't, two new ones do.
+func TestOOMStatOfAfterMute(t *testing.T) {
+	h := int64(3600)
+	ts := []int64{10 * h, 12 * h, 100 * h, 110 * h}
+	if st := OOMStatOf(ts, 0); st.Count != 4 || st.Max2Days != 2 {
+		t.Fatalf("all: %+v", st)
+	}
+	if st := OOMStatOf(ts, 50*h); st.Count != 2 || st.Max2Days != 2 || st.Last.Unix() != 110*h {
+		t.Fatalf("after the mute: %+v", st)
+	}
+	if st := OOMStatOf(ts, 105*h); st.Count != 1 || st.Max2Days != 1 {
+		t.Fatalf("one since: %+v", st)
+	}
+	if st := OOMStatOf(ts, 200*h); st.Count != 0 {
+		t.Fatalf("none since: %+v", st)
+	}
+}

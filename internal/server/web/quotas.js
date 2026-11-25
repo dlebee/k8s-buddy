@@ -40,7 +40,21 @@ function resCell(r, fmt) {
     <div class="q-use muted">use ${fmt(r.median)} typical · ${fmt(r.max)} max</div>`;
 }
 const memTags = (x) => (x.ooms ? `<span class="q-tag q-bad" title="${x.oomBurst} kills within 2 days, ${x.ooms} in the recorded period. Last ${new Date(x.lastOom * 1000).toLocaleString()}">OOM-killed ×${x.oomBurst} in 2 days</span>`
+  : x.oomMutedAt ? '<span class="q-tag" title="OOM kills muted as expected; kills after that still count">🔕 OOM muted</span>'
   : x.fillsLimit ? '<span class="q-tag q-notice" title="Uses most of its memory limit without OOM kills: likely sizes itself to it (JVM, databases, caches)">fills its limit</span>' : '');
+
+// OOM kills known to be expected can be muted per workload: it stops counting as at risk, and only
+// kills after the mute count (2 within 2 days bring it back).
+function oomMute(r) {
+  const at = r.oomMutedAt ? new Date(r.oomMutedAt * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  if (r.oomMutedAt) {
+    return `<div class="q-mute"><span>🔕 OOM kills muted as expected since ${esc(at)}. Kills after that still count: 2 within 2 days bring it back.</span>
+      <button class="btn sm" data-mute="0">Unmute OOM kills</button></div>`;
+  }
+  if (!r.ooms) return '';
+  return `<div class="q-mute"><span>Known and expected for this ${esc(r.kind)}? Mute its OOM kills: it stops counting as at risk until it's killed 2 or more times within 2 days again.</span>
+    <button class="btn sm" data-mute="1">Mute OOM kills</button></div>`;
+}
 
 function detail(r) {
   return `<div class="q-detail">
@@ -55,6 +69,7 @@ function detail(r) {
     </div>
     <h4>Apply it <span class="muted">(a suggestion to run yourself; nothing runs from here)</span></h4>
     <div class="plan-cmds"><div class="cmd"><pre class="code">${esc(r.command)}</pre><button class="btn sm" data-copy="${esc(r.command.split('\n').filter((l) => !l.startsWith('#')).join('\n') || r.command)}">Copy</button></div></div>
+    ${oomMute(r)}
     <button class="btn sm" data-open>Open ${esc(r.kind)} ${esc(r.workload)}</button>
   </div>`;
 }
@@ -66,7 +81,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
   let open = null;
   view.innerHTML = `${head('Resource Quotas Optimizer', 'Suggested requests and limits for every container, from the CPU and memory it actually used.')}<div class="card empty">Reading usage history…</div>`;
   const clusters = monitored.filter((n) => inScope('clusters', n));
-  const r = await api('/api/optimizer?' + new URLSearchParams({ cluster: clusters.join(',') }));
+  let r = await api('/api/optimizer?' + new URLSearchParams({ cluster: clusters.join(',') }));
   if (current() !== 'quotas') return;
 
   const shell = (body) => `
@@ -89,7 +104,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
   const draw = () => {
     const base = r.rows.filter((x) => inScope('namespaces', x.namespace) && (system || !x.system));
     const count = (v) => base.filter((x) => x.verdict === v).length;
-    const shown = base.filter((x) => (filter === 'all' || x.verdict === filter)
+    const shown = base.filter((x) => (filter === 'all' || x.verdict === filter || (filter === 'muted' && x.oomMutedAt))
       && (!q || `${x.cluster} ${x.namespace} ${x.workload} ${x.container}`.toLowerCase().includes(q)));
     const over = base.filter((x) => x.verdict === 'over');
     const freeCPU = over.reduce((n, x) => n + Math.max(0, x.freeCpu), 0), freeMem = over.reduce((n, x) => n + Math.max(0, x.freeMem), 0);
@@ -103,7 +118,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
         <div class="card stat"><div class="label">Over-provisioned</div><div class="value">${count('over')}</div><div class="foot">could free ${fmtCPU(freeCPU)} CPU · ${fmtMem(freeMem)} requested</div></div>
       </div>
       <div class="q-tools">
-        <div class="seg">${[['all', 'All', base.length], ...Object.entries(VERDICT).map(([k, v]) => [k, v[0], count(k)])].map(([k, label, n]) => `<button class="${filter === k ? 'on' : ''}" data-f="${k}">${label} <small>${n}</small></button>`).join('')}</div>
+        <div class="seg">${[['all', 'All', base.length], ...Object.entries(VERDICT).map(([k, v]) => [k, v[0], count(k)]), ['muted', '🔕 OOM muted', base.filter((x) => x.oomMutedAt).length]].map(([k, label, n]) => `<button class="${filter === k ? 'on' : ''}" data-f="${k}">${label} <small>${n}</small></button>`).join('')}</div>
         <label class="toggle"><input type="checkbox" id="qSys" ${system ? 'checked' : ''}> Include system namespaces</label>
         <span class="spacer"></span>
         <input class="input" id="qFind" placeholder="Filter workloads…" value="${esc(q)}" spellcheck="false">
@@ -137,6 +152,16 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
       chart.dataset.hours = String(Math.min(24 * r.retentionDays, 24 * 7));
       mountHistory(chart, { cluster: x.cluster, kind: x.historyKind, namespace: x.namespace, name: x.historyName });
       openRow.querySelector('[data-open]').onclick = () => openWorkload(x);
+      const mute = openRow.querySelector('[data-mute]');
+      if (mute) mute.onclick = async (e) => {
+        e.stopPropagation();
+        mute.disabled = true;
+        try {
+          await api('/api/optimizer/mute', { method: 'POST', body: JSON.stringify({ cluster: x.cluster, namespace: x.namespace, kind: x.kind, workload: x.workload, mute: mute.dataset.mute === '1' }) });
+          r = await api('/api/optimizer?' + new URLSearchParams({ cluster: clusters.join(',') }));
+        } catch (err) { mute.disabled = false; mute.textContent = err.message.replace(/^\d+ /, ''); return; }
+        if (current() === 'quotas') draw();
+      };
       openRow.querySelectorAll('[data-copy]').forEach((b) => b.onclick = (e) => {
         e.stopPropagation();
         navigator.clipboard?.writeText(b.dataset.copy);

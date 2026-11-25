@@ -74,3 +74,14 @@ func TestDoctorEvery(t *testing.T) {
 		}
 	}
 }
+
+func TestOOMMuteKey(t *testing.T) {
+	if k, ok := OOMMuteKey("c", "shop", "StatefulSet", "db"); !ok || k != "c|shop|StatefulSet/db" {
+		t.Fatalf("%q %v", k, ok)
+	}
+	for _, bad := range [][4]string{{"", "shop", "Deployment", "web"}, {"c", "shop", "Deployment", "a/b"}, {"c|d", "shop", "Deployment", "web"}} {
+		if _, ok := OOMMuteKey(bad[0], bad[1], bad[2], bad[3]); ok {
+			t.Errorf("%v should be refused", bad)
+		}
+	}
+}

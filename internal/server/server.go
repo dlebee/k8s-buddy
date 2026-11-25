@@ -346,6 +346,38 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/optimizer", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.mgr.Optimize(listParam(r, "cluster")))
 	})
+	// Marks a workload's OOM kills as known and expected (or not any more). Kills after the mute
+	// still count, so it comes back if they get frequent again.
+	mux.HandleFunc("POST /api/optimizer/mute", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Cluster, Namespace, Kind, Workload string
+			Mute                               bool
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		key, ok := config.OOMMuteKey(in.Cluster, in.Namespace, in.Kind, in.Workload)
+		if !ok {
+			http.Error(w, "bad workload", http.StatusBadRequest)
+			return
+		}
+		err := s.settings.Update(func(st *config.Settings) {
+			if !in.Mute {
+				delete(st.MutedOOMs, key)
+				return
+			}
+			if st.MutedOOMs == nil {
+				st.MutedOOMs = map[string]time.Time{}
+			}
+			st.MutedOOMs[key] = time.Now().Truncate(time.Second)
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /api/spikes", func(w http.ResponseWriter, r *http.Request) {
 		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
 		writeJSON(w, s.mgr.Spikes(listParam(r, "cluster"), days))
@@ -403,7 +435,8 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.settings.Update(func(st *config.Settings) { *st = in }); err != nil {
+		// OOM mutes are changed from Quotas, not from the Settings page: keep the current ones.
+		if err := s.settings.Update(func(st *config.Settings) { in.MutedOOMs = st.MutedOOMs; *st = in }); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

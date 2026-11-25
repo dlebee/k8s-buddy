@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/dlebee/k8s-buddy/internal/history"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -201,12 +202,16 @@ func (m *Manager) forgetRemovedContexts(s config.Settings, contexts []kube.Conte
 	gone := func(cluster string) bool { return !known[cluster] }
 	stale := slices.ContainsFunc(s.ExcludedContexts, gone) ||
 		slices.ContainsFunc(s.MutedKeys, func(k string) bool { return gone(strings.SplitN(k, "|", 2)[0]) })
+	for k := range s.MutedOOMs {
+		stale = stale || gone(strings.SplitN(k, "|", 2)[0])
+	}
 	if !stale {
 		return
 	}
 	err := m.settings.Update(func(st *config.Settings) {
 		st.ExcludedContexts = slices.DeleteFunc(st.ExcludedContexts, gone)
 		st.MutedKeys = slices.DeleteFunc(st.MutedKeys, func(k string) bool { return gone(strings.SplitN(k, "|", 2)[0]) })
+		maps.DeleteFunc(st.MutedOOMs, func(k string, _ time.Time) bool { return gone(strings.SplitN(k, "|", 2)[0]) })
 	})
 	if err != nil {
 		m.log.Warn("prune settings", "err", err)

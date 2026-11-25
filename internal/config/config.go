@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,6 +39,9 @@ type Settings struct {
 	// DoctorEvery is how often the Doctor checks every cluster on its own: "off", "3h", "6h",
 	// "12h" or "24h".
 	DoctorEvery string `json:"doctorEvery"`
+	// MutedOOMs marks workloads whose OOM kills are known and expected, keyed
+	// "cluster|namespace|Kind/name", with when they were muted: only kills after that count.
+	MutedOOMs map[string]time.Time `json:"mutedOoms,omitempty"`
 	// UpdateCheck is "on" (default) to ask GitHub twice a day whether a newer release is out, or "off".
 	UpdateCheck string `json:"updateCheck"`
 }
@@ -89,6 +93,12 @@ func (s *Settings) normalize() {
 		s.NudgeLevel = d.NudgeLevel
 	}
 	s.ClusterTags = normalizeTags(s.ClusterTags)
+	for k := range s.MutedOOMs {
+		if len(s.MutedOOMs) <= maxOOMMutes {
+			break
+		}
+		delete(s.MutedOOMs, k)
+	}
 	if s.UpdateCheck != "off" {
 		s.UpdateCheck = "on"
 	}
@@ -157,6 +167,7 @@ func (s Settings) clone() Settings {
 	s.ExcludedContexts = slices.Clone(s.ExcludedContexts)
 	s.IgnoredNamespaces = slices.Clone(s.IgnoredNamespaces)
 	s.MutedKeys = slices.Clone(s.MutedKeys)
+	s.MutedOOMs = maps.Clone(s.MutedOOMs)
 	return s
 }
 
@@ -215,6 +226,19 @@ func normalizeTags(in map[string][]string) map[string][]string {
 	}
 	return out
 }
+
+// OOMMuteKey is the MutedOOMs key of a workload, or false when a part is empty or odd.
+func OOMMuteKey(cluster, namespace, kind, workload string) (string, bool) {
+	for _, p := range []string{cluster, namespace, kind, workload} {
+		if p == "" || len(p) > 253 || strings.ContainsAny(p, "|/\n") {
+			return "", false
+		}
+	}
+	return cluster + "|" + namespace + "|" + kind + "/" + workload, true
+}
+
+// maxOOMMutes caps how many workloads can have their OOM kills muted.
+const maxOOMMutes = 2000
 
 // BetaFeatures are the features that are off until turned on in Settings → Beta features.
 var BetaFeatures = []string{"cost"}

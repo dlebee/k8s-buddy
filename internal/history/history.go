@@ -725,8 +725,9 @@ type OOMStat struct {
 	Max2Days int // most kills within any 2 days: repeated kills keep it down in restart back-off
 }
 
-// OOMs returns OOM kills per "ns/Kind/name/container" of a cluster since `since`.
-func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error) {
+// OOMTimes returns the OOM kill times (unix seconds, oldest first) per "ns/Kind/name/container"
+// of a cluster since `since`.
+func (s *Store) OOMTimes(cluster string, since time.Time) (map[string][]int64, error) {
 	rows, err := s.db.Query(`SELECT ns, owner, container, ts FROM ooms WHERE cluster = ? AND ts >= ? ORDER BY ns, owner, container, ts`, cluster, since.Unix())
 	if err != nil {
 		return nil, err
@@ -742,19 +743,39 @@ func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error
 		k := ns + "/" + owner + "/" + ct
 		times[k] = append(times[k], ts)
 	}
-	if err := rows.Err(); err != nil {
+	return times, rows.Err()
+}
+
+// OOMStatOf sums up kill times (oldest first), counting only those after `after` (unix seconds;
+// 0 counts all).
+func OOMStatOf(ts []int64, after int64) OOMStat {
+	i := 0
+	for i < len(ts) && ts[i] <= after {
+		i++
+	}
+	ts = ts[i:]
+	if len(ts) == 0 {
+		return OOMStat{}
+	}
+	st := OOMStat{Count: len(ts), Last: time.Unix(ts[len(ts)-1], 0)}
+	for i, j := 0, 0; j < len(ts); j++ {
+		for ts[j]-ts[i] >= 2*86400 {
+			i++
+		}
+		st.Max2Days = max(st.Max2Days, j-i+1)
+	}
+	return st
+}
+
+// OOMs returns OOM kills per "ns/Kind/name/container" of a cluster since `since`.
+func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error) {
+	times, err := s.OOMTimes(cluster, since)
+	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]OOMStat, len(times))
-	for k, ts := range times { // sorted by time
-		st := OOMStat{Count: len(ts), Last: time.Unix(ts[len(ts)-1], 0)}
-		for i, j := 0, 0; j < len(ts); j++ {
-			for ts[j]-ts[i] >= 2*86400 {
-				i++
-			}
-			st.Max2Days = max(st.Max2Days, j-i+1)
-		}
-		out[k] = st
+	for k, ts := range times {
+		out[k] = OOMStatOf(ts, 0)
 	}
 	return out, nil
 }

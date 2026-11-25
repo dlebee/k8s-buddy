@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dlebee/k8s-buddy/internal/config"
 	"github.com/dlebee/k8s-buddy/internal/history"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -60,11 +61,12 @@ type OptRow struct {
 	Command     string       `json:"command"`
 	FreeCPU     int64        `json:"freeCpu"` // requests freed across replicas (negative: more needed)
 	FreeMem     int64        `json:"freeMem"`
-	OOMs        int          `json:"ooms"`       // OOM kills recorded in the window
-	LastOOM     int64        `json:"lastOom"`    // unix seconds of the latest
-	OOMBurst    int          `json:"oomBurst"`   // most kills within any 2 days (only set when that's a problem)
-	FillsLimit  bool         `json:"fillsLimit"` // uses most of its memory limit without OOM kills: sizes itself to it
-	PodLevel    bool         `json:"podLevel"`   // multi-container pod sized as a whole (per-container data still collecting)
+	OOMs        int          `json:"ooms"`                 // OOM kills recorded in the window
+	LastOOM     int64        `json:"lastOom"`              // unix seconds of the latest
+	OOMBurst    int          `json:"oomBurst"`             // most kills within any 2 days (only set when that's a problem)
+	OOMMutedAt  int64        `json:"oomMutedAt,omitempty"` // OOM kills muted as expected then; only later ones count
+	FillsLimit  bool         `json:"fillsLimit"`           // uses most of its memory limit without OOM kills: sizes itself to it
+	PodLevel    bool         `json:"podLevel"`             // multi-container pod sized as a whole (per-container data still collecting)
 	HistoryKind string       `json:"historyKind"`
 	HistoryName string       `json:"historyName"`
 }
@@ -87,7 +89,7 @@ type OptReport struct {
 type optCacheEntry struct {
 	at        time.Time
 	pods, cts []history.Profile
-	ooms      map[string]history.OOMStat
+	ooms      map[string][]int64 // kill times per "ns/Kind/name/container"
 }
 
 var (
@@ -95,7 +97,7 @@ var (
 	optCache   = map[string]optCacheEntry{}
 )
 
-func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]history.Profile, []history.Profile, map[string]history.OOMStat) {
+func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]history.Profile, []history.Profile, map[string][]int64) {
 	optCacheMu.Lock()
 	defer optCacheMu.Unlock()
 	if e, ok := optCache[cluster]; ok && time.Since(e.at) < 5*time.Minute {
@@ -107,7 +109,7 @@ func (m *Manager) profiles(h *history.Store, cluster string, days int) ([]histor
 		m.log.Warn("optimizer profiles", "cluster", cluster, "err", err)
 	}
 	cts, _ := h.Profiles(cluster, "container", since)
-	ooms, _ := h.OOMs(cluster, since)
+	ooms, _ := h.OOMTimes(cluster, since)
 	optCache[cluster] = optCacheEntry{at: time.Now(), pods: pods, cts: cts, ooms: ooms}
 	return pods, cts, ooms
 }
@@ -130,7 +132,7 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 		for _, p := range pods {
 			rep.RecordedMinutes = max(rep.RecordedMinutes, p.Minutes)
 		}
-		rows, collecting := c.optimize(pods, cts, ooms)
+		rows, collecting := c.optimize(pods, cts, ooms, s.MutedOOMs)
 		rep.Rows = append(rep.Rows, rows...)
 		rep.Collecting += collecting
 	}
@@ -148,7 +150,7 @@ func (m *Manager) Optimize(clusters []string) OptReport {
 	return rep
 }
 
-func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[string]history.OOMStat) ([]OptRow, int) {
+func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, oomTimes map[string][]int64, muted map[string]time.Time) ([]OptRow, int) {
 	byOwner := map[string]history.Profile{}
 	for _, p := range podProfiles {
 		byOwner[p.Namespace+"/"+p.Owner] = p
@@ -190,11 +192,19 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 		}
 		p := w.pod
 		kind, name := workloadOf(p)
-		base := OptRow{Cluster: c.name, Namespace: p.Namespace, Kind: kind, Workload: name, Containers: len(p.Spec.Containers),
+		// OOM kills per container of this workload; once muted, only kills after the mute count.
+		var after int64
+		if key, ok := config.OOMMuteKey(c.name, p.Namespace, kind, name); ok {
+			if at, ok := muted[key]; ok {
+				after = at.Unix()
+			}
+		}
+		ooms := func(ct string) history.OOMStat { return history.OOMStatOf(oomTimes[k+"/"+ct], after) }
+		base := OptRow{OOMMutedAt: after, Cluster: c.name, Namespace: p.Namespace, Kind: kind, Workload: name, Containers: len(p.Spec.Containers),
 			Replicas: w.replicas, System: systemNamespace(p.Namespace), Helm: p.Labels["app.kubernetes.io/managed-by"] == "Helm",
 			HistoryKind: "workload", HistoryName: kind + "/" + name}
 		if len(p.Spec.Containers) == 1 {
-			rows = append(rows, optRow(base, p.Spec.Containers[0], prof, ooms[k+"/"+p.Spec.Containers[0].Name], false))
+			rows = append(rows, optRow(base, p.Spec.Containers[0], prof, ooms(p.Spec.Containers[0].Name), false))
 			continue
 		}
 		// Several containers: per-container data when there is enough, else the pod as a whole.
@@ -206,7 +216,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 		}
 		if all {
 			for _, ct := range p.Spec.Containers {
-				rows = append(rows, optRow(base, ct, byCt[k+"/"+ct.Name], ooms[k+"/"+ct.Name], false))
+				rows = append(rows, optRow(base, ct, byCt[k+"/"+ct.Name], ooms(ct.Name), false))
 			}
 			continue
 		}
@@ -214,7 +224,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 		r := podRequests(p)
 		var podOOM history.OOMStat
 		for _, ct := range p.Spec.Containers {
-			if o := ooms[k+"/"+ct.Name]; o.Count > 0 {
+			if o := ooms(ct.Name); o.Count > 0 {
 				podOOM.Count += o.Count
 				podOOM.Max2Days = max(podOOM.Max2Days, o.Max2Days)
 				if o.Last.After(podOOM.Last) {
@@ -294,6 +304,9 @@ func judge(r *OptRow) {
 	}
 	// At risk: repeated OOM kills only. Memory near its limit without OOM kills is often by design
 	// (software sizing itself to its limit).
+	if r.OOMs > 0 && r.OOMMutedAt > 0 {
+		add("bad", "Its OOM kills were muted as expected on %s, but since then it was killed 2 or more times within 2 days again.", time.Unix(r.OOMMutedAt, 0).Format("Jan 2 15:04"))
+	}
 	switch {
 	case r.OOMs > 0 && mem.Limit.Current >= 0:
 		add("bad", "OOM-killed %d times within 2 days (%d in the recorded period, last %s): its %s limit is too low. Usage can't show above the limit, so the suggestion raises the limit itself; raise further if kills continue.", r.OOMBurst, r.OOMs, time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"), fmtBytes(mem.Limit.Current))

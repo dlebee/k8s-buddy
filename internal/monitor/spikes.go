@@ -43,8 +43,8 @@ type SpikeReport struct {
 	Available     bool       `json:"available"`
 	Days          int        `json:"days"`
 	RetentionDays int        `json:"retentionDays"`
-	Clusters  []string   `json:"clusters"`
-	Rows      []SpikeRow `json:"rows"`
+	Clusters      []string   `json:"clusters"`
+	Rows          []SpikeRow `json:"rows"`
 }
 
 // Spikes looks back `days` days (capped at the history kept) in the given clusters (all when empty).
