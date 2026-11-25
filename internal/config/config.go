@@ -38,6 +38,8 @@ type Settings struct {
 	// DoctorEvery is how often the Doctor checks every cluster on its own: "off", "3h", "6h",
 	// "12h" or "24h".
 	DoctorEvery string `json:"doctorEvery"`
+	// UpdateCheck is "on" (default) to ask GitHub twice a day whether a newer release is out, or "off".
+	UpdateCheck string `json:"updateCheck"`
 }
 
 func Defaults() Settings {
@@ -52,6 +54,7 @@ func Defaults() Settings {
 		UsageHistorySet:    true,
 		UsageRetention14:   true,
 		DoctorEvery:        "6h",
+		UpdateCheck:        "on",
 	}
 }
 
@@ -86,6 +89,9 @@ func (s *Settings) normalize() {
 		s.NudgeLevel = d.NudgeLevel
 	}
 	s.ClusterTags = normalizeTags(s.ClusterTags)
+	if s.UpdateCheck != "off" {
+		s.UpdateCheck = "on"
+	}
 	if s.DoctorInterval() == 0 && s.DoctorEvery != "off" {
 		s.DoctorEvery = d.DoctorEvery
 	}

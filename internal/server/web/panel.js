@@ -19,6 +19,7 @@ async function render() {
   renderAzure();
   const [alerts, sum] = await Promise.all([api(`/api/alerts?scope=${scope}&limit=300`), api('/api/summary')]);
   drawDoctor(sum.doctor);
+  drawUpdate(sum.update);
   document.getElementById('sub').textContent = sum.pending ? `· ${sum.pending} open on ${sum.clusters} cluster${sum.clusters > 1 ? 's' : ''}` : '· all quiet';
   if (!alerts.length) {
     list.innerHTML = `<div class="empty"><span class="big">${scope === 'pending' ? '😌' : '🗂️'}</span>${scope === 'pending' ? 'Nothing needs your attention.' : 'No alerts yet.'}</div>`;
@@ -81,6 +82,19 @@ function drawDoctor(d) {
     <div><b>The doctor found ${n} thing${n === 1 ? '' : 's'} to look at</b><span class="sub">${d.critical ? `${d.critical} critical · ` : ''}${d.clusters} cluster${d.clusters === 1 ? '' : 's'} · checked ${esc(ago(d.at))} ago${next}</span></div>
     <button id="openDoctor">Open Doctor</button>`;
   document.getElementById('openDoctor').onclick = () => post('/api/action/overview?tab=doctor');
+}
+
+// A newer release on GitHub: a link to the file for this computer and to what's new. Installing is
+// up to the user.
+function drawUpdate(u) {
+  const el = document.getElementById('upd');
+  el.hidden = !u?.available;
+  if (el.hidden) return;
+  el.innerHTML = `<svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6.5" fill="#0a84ff"/><path d="M7 10.5V4M4.2 6.6 7 3.8l2.8 2.8" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div><b>k8s-buddy ${esc(u.latest)} is out</b><span class="sub">Download it and install it over this one.</span></div>
+    <button id="updNotes">What's new</button><button id="updGet">Download</button>`;
+  document.getElementById('updNotes').onclick = () => post('/api/update/open?what=notes');
+  document.getElementById('updGet').onclick = () => post('/api/update/open?what=download');
 }
 
 stream({ summary: refresh });

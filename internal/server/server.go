@@ -22,6 +22,7 @@ import (
 	"github.com/dlebee/k8s-buddy/internal/alert"
 	"github.com/dlebee/k8s-buddy/internal/config"
 	"github.com/dlebee/k8s-buddy/internal/monitor"
+	"github.com/dlebee/k8s-buddy/internal/update"
 )
 
 //go:embed web
@@ -42,6 +43,7 @@ type Server struct {
 	mgr      *monitor.Manager
 	actions  Actions
 	forwards *forwarder
+	updates  *update.Checker
 
 	codesMu sync.Mutex
 	codes   map[string]time.Time // one-time page codes → expiry, see BrowserURL
@@ -59,6 +61,9 @@ func New(store *alert.Store, settings *config.Store, mgr *monitor.Manager) *Serv
 }
 
 func (s *Server) SetActions(a Actions) { s.actions = a }
+
+// SetUpdates connects the release checker (Settings → Updates, the buddy's update badge).
+func (s *Server) SetUpdates(u *update.Checker) { s.updates = u }
 
 // Listen binds a random loopback port.
 func (s *Server) Listen() (net.Listener, error) {
@@ -400,6 +405,41 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, s.settings.Get())
 	})
+	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
+		if s.updates == nil {
+			writeJSON(w, update.Status{})
+			return
+		}
+		writeJSON(w, s.updates.Status())
+	})
+	mux.HandleFunc("POST /api/update/check", func(w http.ResponseWriter, r *http.Request) {
+		if s.updates != nil {
+			s.updates.CheckNow()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Opens the download or the release notes in the user's browser. The page only says which:
+	// the link itself is the one the checker found on GitHub.
+	mux.HandleFunc("POST /api/update/open", func(w http.ResponseWriter, r *http.Request) {
+		if s.updates == nil {
+			http.NotFound(w, r)
+			return
+		}
+		st := s.updates.Status()
+		url := st.Notes
+		if r.URL.Query().Get("what") == "download" && st.Download != "" {
+			url = st.Download
+		}
+		if url == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := openURL(url); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /api/action/{name}", func(w http.ResponseWriter, r *http.Request) {
 		if s.actions != nil {
 			switch r.PathValue("name") {
@@ -456,6 +496,13 @@ type summary struct {
 	ShowBubble bool          `json:"showBubble"`
 	Latest     []alert.Alert `json:"latest"`
 	Doctor     doctorSummary `json:"doctor"`
+	Update     updateSummary `json:"update"`
+}
+
+// updateSummary says whether a newer release is out, for the buddy's update badge.
+type updateSummary struct {
+	Available bool   `json:"available"`
+	Latest    string `json:"latest,omitempty"`
 }
 
 // doctorSummary is the latest Doctor checkup, for the buddy's doctor badge and the panel.
@@ -478,7 +525,16 @@ func (s *Server) summary() summary {
 		ShowBubble: st.ShowBubble,
 		Latest:     s.store.List(alert.Query{Limit: 3}),
 		Doctor:     s.doctorSummary(),
+		Update:     s.updateSummary(),
 	}
+}
+
+func (s *Server) updateSummary() updateSummary {
+	if s.updates == nil {
+		return updateSummary{}
+	}
+	st := s.updates.Status()
+	return updateSummary{Available: st.Available, Latest: st.Latest}
 }
 
 func (s *Server) doctorSummary() doctorSummary {

@@ -25,6 +25,7 @@ import (
 	"github.com/dlebee/k8s-buddy/internal/monitor"
 	"github.com/dlebee/k8s-buddy/internal/server"
 	"github.com/dlebee/k8s-buddy/internal/ui"
+	"github.com/dlebee/k8s-buddy/internal/update"
 )
 
 // version is set at build time with -ldflags "-X main.version=1.2.3".
@@ -111,6 +112,9 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 
 	mgr := monitor.NewManager(settings, store, log)
 	srv := server.New(store, settings, mgr)
+	// Asks GitHub for the latest release twice a day (release builds only, unless turned off).
+	updates := update.New(version, func() bool { return settings.Get().UpdateCheck != "off" }, store.Touch)
+	srv.SetUpdates(updates)
 	ln, err := srv.Listen()
 	if err != nil {
 		return err
@@ -151,16 +155,21 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	}, headless)
 	srv.SetActions(driver)
 
-	var lastShow atomic.Bool
+	var lastShow, lastUpdateCheck atomic.Bool
 	lastShow.Store(initial.ShowCharacter)
+	lastUpdateCheck.Store(initial.UpdateCheck != "off")
 	settings.OnChange(func(s config.Settings) {
 		applySettings(s)
+		if on := s.UpdateCheck != "off"; lastUpdateCheck.Swap(on) != on && on {
+			updates.CheckNow()
+		}
 		if lastShow.Swap(s.ShowCharacter) != s.ShowCharacter {
 			driver.SetCharacterVisible(s.ShowCharacter)
 		}
 	})
 
 	go mgr.Run(ctx)
+	go updates.Run(ctx)
 	// Usage history lives in a local SQLite file next to the settings; it never leaves the machine.
 	// usage.db held the first (5-minute, uncompressed) format: replaced, not migrated.
 	for _, old := range []string{"usage.db", "usage.db-wal", "usage.db-shm"} {

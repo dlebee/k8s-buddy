@@ -924,6 +924,9 @@ async function settings() {
           <p class="muted" id="reloadMsg" style="font-size:12px;margin:6px 0 0" aria-live="polite"></p></div></div>
       <div class="row"><div class="lbl"><b>Doctor checkups</b><span>The Doctor checks every cluster on its own this often. The buddy shows what it found and says "psst" when there's more than last time.</span></div>
         <select class="input" id="doctorEvery" style="width:auto">${[['off', 'Off (only when I run it)'], ['3h', 'Every 3 hours'], ['6h', 'Every 6 hours, 4 times a day (default)'], ['12h', 'Every 12 hours'], ['24h', 'Once a day']].map(([v, l]) => `<option value="${v}" ${v === (s.doctorEvery || '6h') ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="row"><div class="lbl"><b>Updates</b><span>Asks GitHub twice a day whether a newer release is out. Only full releases, never pre-releases. Nothing is installed for you: you download it and install it over this one.</span></div>
+        <div><label class="toggle" style="color:var(--text)"><input type="checkbox" id="updateCheck" ${s.updateCheck !== 'off' ? 'checked' : ''}> Tell me when a new version is out</label>
+          <div id="updStatus" class="muted" style="font-size:12px;margin-top:6px" aria-live="polite"></div></div></div>
       <div class="row"><div class="lbl"><b>Nudge me for</b><span>The buddy bounces and the menu bar count goes up at this level and above.</span></div>
         <div class="seg" id="nudge" style="width:max-content">${['info', 'notice', 'warning', 'critical'].map((l) => `<button data-v="${l}" class="${l === s.nudgeLevel ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}+</button>`).join('')}</div></div>
       <div class="row"><div class="lbl"><b>Buddy</b><span>The floating character on your screen.</span></div>
@@ -973,6 +976,7 @@ async function settings() {
       b.disabled = false;
     }
   };
+  drawUpdateStatus();
   api('/api/usage/stats').then((st) => {
     const el = view.querySelector('#usageStats');
     if (!el || !st.available) return;
@@ -997,6 +1001,7 @@ async function settings() {
       clusterTags: Object.fromEntries([...view.querySelectorAll('[data-tags]')].map((i) => [i.dataset.tags, i.value.split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)]).filter(([, v]) => v.length)),
       usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
       doctorEvery: view.querySelector('#doctorEvery').value,
+      updateCheck: view.querySelector('#updateCheck').checked ? 'on' : 'off',
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
@@ -1005,6 +1010,37 @@ async function settings() {
     view.querySelector('#dirty').textContent = '';
     setTimeout(loadClusters, 1500);
   };
+}
+
+// Settings → Updates: this version, what GitHub said last, and the links.
+async function drawUpdateStatus(again = 0) {
+  const el = view.querySelector('#updStatus');
+  if (!el) return;
+  const u = await api('/api/update').catch(() => null);
+  if (!u || current !== 'settings') return;
+  const checked = u.checkedAt ? ` · checked ${ago(u.checkedAt)} ago` : '';
+  let line;
+  if (!u.release) line = `You're running ${esc(u.current)}, a build that isn't a release, so it doesn't check.`;
+  else if (u.checking) line = `You're on ${esc(u.current)} · checking…`;
+  else if (u.available) line = `<b style="color:var(--text)">${esc(u.latest)} is out</b> · you're on ${esc(u.current)}${checked}`;
+  else if (u.error) line = `You're on ${esc(u.current)} · last check failed: ${esc(u.error)}${checked}`;
+  else if (u.latest) line = `You're on ${esc(u.current)}, the latest${checked}`;
+  else line = `You're on ${esc(u.current)}${u.enabled ? ' · not checked yet' : ''}`;
+  const btns = [];
+  if (u.release) btns.push('<button class="btn sm" data-upd="check">Check now</button>');
+  if (u.available && u.download) btns.push('<button class="btn sm primary" data-upd="download">Download</button>');
+  if (u.available) btns.push('<button class="btn sm" data-upd="notes">What\'s new</button>');
+  el.innerHTML = `<div>${line}</div>${btns.length ? `<div style="display:flex;gap:8px;margin-top:6px">${btns.join('')}</div>` : ''}`;
+  el.querySelectorAll('[data-upd]').forEach((b) => b.onclick = async () => {
+    if (b.dataset.upd === 'check') {
+      b.disabled = true;
+      await api('/api/update/check', { method: 'POST' }).catch(() => {});
+      setTimeout(() => drawUpdateStatus(1), 1500);
+      return;
+    }
+    await api(`/api/update/open?what=${b.dataset.upd}`, { method: 'POST' }).catch((e) => toast(e.message));
+  });
+  if (u.checking && again < 10) setTimeout(() => drawUpdateStatus(again + 1), 1500);
 }
 
 // ---------- live updates ----------

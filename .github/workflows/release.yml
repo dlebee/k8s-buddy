@@ -69,6 +69,11 @@ jobs:
       - name: Build universal app
         run: packaging/macos/build-app.sh "$VERSION" build
 
+      - name: Check the app reports this version
+        run: |
+          got="$(build/k8s-buddy.app/Contents/MacOS/k8s-buddy -version)"
+          [ "$got" = "k8s-buddy $VERSION" ] || { echo "::error::the app says '$got', want 'k8s-buddy $VERSION'"; exit 1; }
+
       - name: Import Developer ID certificate into a temporary keychain
         if: env.SIGNING == 'true'
         env:
@@ -264,6 +269,10 @@ jobs:
             dir="build/k8s-buddy-$VERSION-linux-$arch"
             mkdir -p "$dir"
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$dir/k8s-buddy" ./cmd/k8s-buddy
+            if [ "$arch" = amd64 ]; then
+              got="$("$dir/k8s-buddy" -version)"
+              [ "$got" = "k8s-buddy $VERSION" ] || { echo "::error::the binary says '$got', want 'k8s-buddy $VERSION'"; exit 1; }
+            fi
             cp LICENSE NOTICE README.md "$dir/"
             tar -C build -czf "dist/k8s-buddy-$VERSION-linux-$arch.tar.gz" "$(basename "$dir")"
           done

@@ -79,12 +79,28 @@ function setDoctor(d) {
   try { localStorage.setItem(DOC_KEY, String(n)); } catch { /* no storage */ }
 }
 
+// A newer release: a small arrow badge, and one "psst" per version (remembered across launches).
+const UPD_KEY = 'buddy.updateAnnounced';
+function setUpdate(u) {
+  const el = document.getElementById('upd');
+  const on = !!u?.available;
+  el.classList.toggle('on', on);
+  if (!on) return;
+  el.title = `k8s-buddy ${u.latest} is out (click me)`;
+  let announced = '';
+  try { announced = localStorage.getItem(UPD_KEY) || ''; } catch { /* no storage */ }
+  if (announced === u.latest) return;
+  try { localStorage.setItem(UPD_KEY, u.latest); } catch { /* no storage */ }
+  setTimeout(() => say('Psst… there\'s a new me', `k8s-buddy ${u.latest} is out · click me for the download`, 9000), bubble.classList.contains('on') ? 9000 : 0);
+}
+
 function onSummary(s) {
   cfg = { nudgeLevel: s.nudgeLevel, showBubble: s.showBubble };
   last = s;
   setBadge(s);
   mood(s);
   setDoctor(s.doctor);
+  setUpdate(s.update);
 }
 
 function onAlert(a) {
