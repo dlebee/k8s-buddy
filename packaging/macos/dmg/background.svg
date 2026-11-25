@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 400" width="660" height="400">
+  <!-- DMG window background, 660x400 pt. Finder draws the app icon at (180,190) and the Applications
+       folder at (480,190), 128 pt each, on top of this. Their labels land on the sea around y=262-282:
+       that band stays a plain mid blue so the labels read in black (light mode) and white (dark mode). -->
+  <defs>
+    <linearGradient id="sky" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="240">
+      <stop offset="0" stop-color="#f4f7ff"/>
+      <stop offset="1" stop-color="#cfdcfb"/>
+    </linearGradient>
+    <linearGradient id="sea" gradientUnits="userSpaceOnUse" x1="0" y1="232" x2="0" y2="400">
+      <stop offset="0" stop-color="#4479ee"/>
+      <stop offset="1" stop-color="#2459d6"/>
+    </linearGradient>
+    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="0" y1="12" x2="0" y2="100">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#2459d6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="660" height="400" fill="url(#sky)"/>
+
+  <!-- clouds -->
+  <g fill="#fff" opacity=".85">
+    <path d="M40 74 a14 14 0 0 1 14 -14 a20 20 0 0 1 38 -4 a16 16 0 0 1 22 18 Z"/>
+    <path d="M548 96 a11 11 0 0 1 11 -11 a16 16 0 0 1 30 -3 a13 13 0 0 1 18 14 Z"/>
+  </g>
+
+  <!-- the route: a dotted hop from the app icon to the Applications folder -->
+  <g fill="none" stroke="#5b8cff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M232 118 Q330 20 420 110" stroke-dasharray=".1 12"/>
+    <path d="M416.5 114.5 L428 118 L424.5 106.5"/>
+  </g>
+
+  <!-- far wave -->
+  <path fill="#a9c1fb" d="M-15 226 q15 -8 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 V400 H-15 Z"/>
+
+  <!-- the buddy, watching the hop from the water -->
+  <g transform="translate(295 166) scale(.7)">
+    <line x1="50" y1="14" x2="50" y2="4" stroke="#2459d6" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="50" cy="4" r="4" fill="#ffd60a"/>
+    <path fill="url(#body)" d="M50 12 C78 12 92 32 92 58 V130 H8 V58 C8 32 22 12 50 12 Z"/>
+    <ellipse cx="36" cy="26" rx="12" ry="6" fill="#fff" opacity=".18"/>
+    <ellipse cx="36" cy="46" rx="8" ry="9" fill="#fff"/><circle cx="38.5" cy="43.5" r="3.4" fill="#1c1c1e"/>
+    <ellipse cx="64" cy="46" rx="8" ry="9" fill="#fff"/><circle cx="66.5" cy="43.5" r="3.4" fill="#1c1c1e"/>
+    <ellipse cx="26" cy="58" rx="5" ry="3" fill="#ff8fa3" opacity=".55"/>
+    <ellipse cx="74" cy="58" rx="5" ry="3" fill="#ff8fa3" opacity=".55"/>
+    <g stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none">
+      <circle cx="50" cy="76" r="9"/><circle cx="50" cy="76" r="2.4" fill="#fff"/>
+      <path d="M50 64 V88 M39.6 70 L60.4 82 M39.6 82 L60.4 70"/>
+    </g>
+  </g>
+
+  <!-- the sea -->
+  <path fill="url(#sea)" d="M0 236 q15 -8 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 V400 H0 Z"/>
+  <!-- ripples where the buddy breaks the surface -->
+  <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".6">
+    <path d="M286 246 q6 -4 12 0"/>
+    <path d="M362 246 q6 -4 12 0"/>
+    <path d="M318 252 q6 -4 12 0 t12 0"/>
+  </g>
+  <!-- deep water -->
+  <path fill="#1f4fc4" opacity=".55" d="M-15 380 q15 -8 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0 V400 H-15 Z"/>
+
+  <!-- The comma inside the quotes is on purpose: without it rsvg-convert reads "Bold" as a weight,
+       looks for a family called "Arial Rounded MT" and falls back to Helvetica. -->
+  <text x="330" y="338" text-anchor="middle" font-family="'Arial Rounded MT Bold,'"
+        font-size="21" fill="#fff">Drag the buddy into Applications</text>
+</svg>
