@@ -43,6 +43,7 @@
   .empty .big { font-size: 34px; display: block; margin-bottom: 6px; }
   .azure { display: flex; gap: 10px; align-items: center; margin: 10px 14px 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,159,10,.14); }
   .azure[hidden] { display: none; }
+  h1 .ver { font-size: 11px; font-weight: 500; color: var(--muted, #8e8e93); margin-left: 5px; }
   .doc { display: flex; gap: 10px; align-items: center; margin: 10px 14px 0; padding: 9px 12px; border-radius: 10px; background: rgba(255,59,48,.10); }
   .doc[hidden] { display: none; }
   .doc svg { width: 16px; height: 16px; flex: none; }
@@ -59,7 +60,7 @@
 <body>
 <div class="card">
   <header>
-    <h1>k8s-buddy<span class="sub" id="sub"></span></h1>
+    <h1>k8s-buddy<span class="ver" id="ver"></span><span class="sub" id="sub"></span></h1>
     <button class="icon" id="openOverview" title="Multi-cluster overview">⎈ Overview</button>
     <button class="icon" id="close" title="Close">✕</button>
   </header>

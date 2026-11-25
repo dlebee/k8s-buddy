@@ -33,6 +33,14 @@ export async function api(path, opts = {}) {
   return r.status === 204 ? null : r.json();
 }
 
+// The build's version for display: "v1.2.3" for releases, "dev build" (full string on hover) otherwise.
+export function showVersion(el, v) {
+  if (!el) return;
+  const release = /^\d+\.\d+\.\d+$/.test(v || '');
+  el.textContent = !v ? '' : release ? `v${v}` : 'dev build';
+  el.title = v ? `k8s-buddy ${v}` : '';
+}
+
 export const post = (path) => api(path, { method: 'POST' });
 
 export function stream(handlers) {

@@ -1,4 +1,4 @@
-import { api, post, stream, esc, ago, copy, debounce } from '/static/common.js';
+import { api, post, stream, esc, ago, copy, debounce, showVersion } from '/static/common.js';
 
 let scope = 'pending';
 const open = new Set();
@@ -20,6 +20,7 @@ async function render() {
   const [alerts, sum] = await Promise.all([api(`/api/alerts?scope=${scope}&limit=300`), api('/api/summary')]);
   drawDoctor(sum.doctor);
   drawUpdate(sum.update);
+  showVersion(document.getElementById('ver'), sum.version);
   document.getElementById('sub').textContent = sum.pending ? `· ${sum.pending} open on ${sum.clusters} cluster${sum.clusters > 1 ? 's' : ''}` : '· all quiet';
   if (!alerts.length) {
     list.innerHTML = `<div class="empty"><span class="big">${scope === 'pending' ? '😌' : '🗂️'}</span>${scope === 'pending' ? 'Nothing needs your attention.' : 'No alerts yet.'}</div>`;

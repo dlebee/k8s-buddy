@@ -497,6 +497,7 @@ type summary struct {
 	Latest     []alert.Alert `json:"latest"`
 	Doctor     doctorSummary `json:"doctor"`
 	Update     updateSummary `json:"update"`
+	Version    string        `json:"version"` // this build, shown in the panel and the overview
 }
 
 // updateSummary says whether a newer release is out, for the buddy's update badge.
@@ -526,7 +527,15 @@ func (s *Server) summary() summary {
 		Latest:     s.store.List(alert.Query{Limit: 3}),
 		Doctor:     s.doctorSummary(),
 		Update:     s.updateSummary(),
+		Version:    s.version(),
 	}
+}
+
+func (s *Server) version() string {
+	if s.updates == nil {
+		return ""
+	}
+	return s.updates.Status().Current
 }
 
 func (s *Server) updateSummary() updateSummary {

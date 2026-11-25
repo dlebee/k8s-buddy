@@ -1,4 +1,4 @@
-import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN } from '/static/common.js';
+import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN, showVersion } from '/static/common.js';
 import { logsTab } from '/static/logs.js';
 import { costView } from '/static/cost.js';
 import { quotasView } from '/static/quotas.js';
@@ -1079,6 +1079,7 @@ async function startAzureLogin() {
 async function refreshBadges() {
   const sum = await api('/api/summary');
   document.getElementById('navAlerts').textContent = sum.pending ? String(sum.pending) : '';
+  showVersion(document.getElementById('brandVer'), sum.version);
   document.getElementById('brandSub').textContent = sum.pending ? `${plural(sum.pending, 'thing')} to look at` : 'all quiet';
   if (sum.doctor?.ran) document.getElementById('navDoctor').textContent = sum.doctor.findings ? String(sum.doctor.findings) : '';
 }
