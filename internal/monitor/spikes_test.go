@@ -43,7 +43,7 @@ func TestSpikeRows(t *testing.T) {
 
 func TestSpikeLimitsClamp(t *testing.T) {
 	got := SpikeLimits{NodeCPU: 0, NodeMem: math.NaN(), PodCPU: 500, PodMem: 0.2}.clamp()
-	if got != (SpikeLimits{NodeCPU: 50, NodeMem: 50, PodCPU: 100, PodMem: 1}) {
+	if got != (SpikeLimits{NodeCPU: 75, NodeMem: 75, PodCPU: 100, PodMem: 1}) {
 		t.Fatalf("%+v", got)
 	}
 }

@@ -18,7 +18,7 @@ export async function spikesView(view, { head, current, monitored, mountPickers,
   let res = load('buddy.spikes.res', 'all');
   let what = load('buddy.spikes.what', 'all');
   let system = load('buddy.quotas.system', false);
-  const DEF = { nodeCpu: 50, nodeMem: 50, podCpu: 75, podMem: 75 };
+  const DEF = { nodeCpu: 75, nodeMem: 75, podCpu: 75, podMem: 75 };
   let limits = { ...DEF, ...load('buddy.spikes.limits', {}) };
   let q = '';
   let open = null;
@@ -56,7 +56,7 @@ export async function spikesView(view, { head, current, monitored, mountPickers,
         <div class="s-limits">Counts as a spike above
           <span><b>Nodes</b> CPU ${pctBox('nodeCpu')} memory ${pctBox('nodeMem')} of allocatable</span>
           <span><b>Pods</b> CPU ${pctBox('podCpu')} memory ${pctBox('podMem')} of their limit</span>
-          ${Object.keys(DEF).some((k) => limits[k] !== DEF[k]) ? '<button class="btn sm" id="sReset">Defaults (50% / 75%)</button>' : ''}
+          ${Object.keys(DEF).some((k) => limits[k] !== DEF[k]) ? '<button class="btn sm" id="sReset">Defaults (75%)</button>' : ''}
           ${r.noLimitCpu || r.noLimitMem ? `<span class="muted small">Pods without a limit can't be judged: ${r.noLimitCpu} without a CPU limit, ${r.noLimitMem} without a memory limit.</span>` : ''}
         </div>
         ${shown.length ? `<div class="card q-table"><table><thead><tr><th>Workload or node</th><th>Resource</th><th>Usual → peak</th><th>Peak vs limit</th><th>Spikes</th><th>Last spike</th></tr></thead><tbody>

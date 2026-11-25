@@ -20,8 +20,8 @@ type SpikeLimits struct {
 	PodMem  float64 `json:"podMem"`
 }
 
-// DefaultSpikeLimits: half a node, three quarters of a pod's limit.
-var DefaultSpikeLimits = SpikeLimits{NodeCPU: 50, NodeMem: 50, PodCPU: 75, PodMem: 75}
+// DefaultSpikeLimits: three quarters of a node's allocatable or of a pod's limit.
+var DefaultSpikeLimits = SpikeLimits{NodeCPU: 75, NodeMem: 75, PodCPU: 75, PodMem: 75}
 
 // clamp keeps each share between 1% and 100%; 0 (not given) takes the default.
 func (l SpikeLimits) clamp() SpikeLimits {
