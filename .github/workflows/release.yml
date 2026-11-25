@@ -123,11 +123,8 @@ jobs:
       - name: Build DMG and zip
         run: |
           set -euo pipefail
-          mkdir -p dist "$RUNNER_TEMP/dmg"
-          ditto build/k8s-buddy.app "$RUNNER_TEMP/dmg/k8s-buddy.app"
-          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
-          hdiutil create -volname "k8s-buddy" -srcfolder "$RUNNER_TEMP/dmg" -fs HFS+ -format UDZO -ov \
-            "dist/k8s-buddy-$VERSION-macos-universal.dmg"
+          mkdir -p dist
+          packaging/macos/build-dmg.sh build/k8s-buddy.app "dist/k8s-buddy-$VERSION-macos-universal.dmg"
           ditto -c -k --keepParent build/k8s-buddy.app "dist/k8s-buddy-$VERSION-macos-universal.zip"
 
       - name: Sign, notarize and staple the DMG
