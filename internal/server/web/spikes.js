@@ -42,7 +42,8 @@ export async function spikesView(view, { head, current, monitored, mountPickers,
         && (what === 'all' || (what === 'nodes') === (x.kind === 'Node'))
         && (!q || `${x.cluster} ${x.namespace} ${x.kind} ${x.name}`.toLowerCase().includes(q)));
       const count = (f) => base.filter(f).length;
-      const pctBox = (k) => `<input class="input s-pct" type="number" min="1" max="100" step="5" data-lim="${k}" value="${r.limits[k] ?? limits[k]}" aria-label="${k}">%`;
+      const LABEL = { nodeCpu: 'Node CPU', nodeMem: 'Node memory', podCpu: 'Pod CPU', podMem: 'Pod memory' };
+      const pctBox = (k) => `<label class="s-slide"><span>${LABEL[k].split(' ')[1]}</span><input type="range" min="5" max="100" step="5" data-lim="${k}" value="${r.limits[k] ?? limits[k]}" aria-label="${LABEL[k]} spike line, percent"><output>${r.limits[k] ?? limits[k]}%</output></label>`;
       const seg = (id, cur, opts) => `<div class="seg" data-seg="${id}">${opts.map(([k, l, n]) => `<button class="${cur === k ? 'on' : ''}" data-v="${k}">${l}${n === undefined ? '' : ` <small>${n}</small>`}</button>`).join('')}</div>`;
       view.innerHTML = shell(`
         <div class="q-tools">
@@ -54,8 +55,8 @@ export async function spikesView(view, { head, current, monitored, mountPickers,
           <input class="input" id="sFind" placeholder="Filter…" value="${esc(q)}" spellcheck="false">
         </div>
         <div class="s-limits">Counts as a spike above
-          <span><b>Nodes</b> CPU ${pctBox('nodeCpu')} memory ${pctBox('nodeMem')} of allocatable</span>
-          <span><b>Pods</b> CPU ${pctBox('podCpu')} memory ${pctBox('podMem')} of their limit</span>
+          <span class="s-group"><b>Nodes</b> ${pctBox('nodeCpu')}${pctBox('nodeMem')} <span>of allocatable</span></span>
+          <span class="s-group"><b>Pods</b> ${pctBox('podCpu')}${pctBox('podMem')} <span>of their limit</span></span>
           ${Object.keys(DEF).some((k) => limits[k] !== DEF[k]) ? '<button class="btn sm" id="sReset">Defaults (75%)</button>' : ''}
           ${r.noLimitCpu || r.noLimitMem ? `<span class="muted small">Pods without a limit can't be judged: ${r.noLimitCpu} without a CPU limit, ${r.noLimitMem} without a memory limit.</span>` : ''}
         </div>
@@ -82,6 +83,8 @@ export async function spikesView(view, { head, current, monitored, mountPickers,
         if (g.dataset.seg === 'what') { what = v; store('buddy.spikes.what', what); }
         draw();
       }));
+      // The number follows the slider as it moves; the list reloads when it's let go.
+      view.querySelectorAll('[data-lim]').forEach((i) => { i.oninput = () => { i.nextElementSibling.textContent = `${i.value}%`; }; });
       view.querySelectorAll('[data-lim]').forEach((i) => i.onchange = () => {
         const v = Math.min(100, Math.max(1, Math.round(+i.value || DEF[i.dataset.lim])));
         limits = { ...limits, [i.dataset.lim]: v };
