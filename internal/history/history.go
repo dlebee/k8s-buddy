@@ -720,9 +720,9 @@ func (s *Store) AddOOMs(ev []OOM) error {
 
 // OOMStat is how often one workload's container was OOM-killed in a window.
 type OOMStat struct {
-	Count  int
-	Last   time.Time
-	MaxDay int // most kills within any 24 hours: repeated kills keep it down in restart back-off
+	Count    int
+	Last     time.Time
+	Max2Days int // most kills within any 2 days: repeated kills keep it down in restart back-off
 }
 
 // OOMs returns OOM kills per "ns/Kind/name/container" of a cluster since `since`.
@@ -749,10 +749,10 @@ func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error
 	for k, ts := range times { // sorted by time
 		st := OOMStat{Count: len(ts), Last: time.Unix(ts[len(ts)-1], 0)}
 		for i, j := 0, 0; j < len(ts); j++ {
-			for ts[j]-ts[i] >= 86400 {
+			for ts[j]-ts[i] >= 2*86400 {
 				i++
 			}
-			st.MaxDay = max(st.MaxDay, j-i+1)
+			st.Max2Days = max(st.Max2Days, j-i+1)
 		}
 		out[k] = st
 	}
