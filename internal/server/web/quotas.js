@@ -18,7 +18,7 @@ const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; 
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
 const VERDICT = {
-  risk: ['At risk', 'bad', 'OOM-killed often (more than about once a week per replica, or 3 times in a day), or CPU held at its limit (throttled)'],
+  risk: ['At risk', 'bad', 'OOM-killed often (more than once per replica in two weeks, or twice in a day), or CPU held at its limit (throttled)'],
   missing: ['Missing', 'warn', 'No requests or limits set'],
   under: ['Under-requested', 'warn', 'Typical memory use is above the request (allowed while under the limit): first to be evicted if the node runs short'],
   over: ['Over-provisioned', 'notice', 'Requests well above what it uses'],

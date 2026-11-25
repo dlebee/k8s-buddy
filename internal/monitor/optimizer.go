@@ -279,15 +279,21 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.O
 	return row
 }
 
-// rareOOMs: at most about one kill per replica per week, and never a burst (3 within 24 hours, when
-// Kubernetes' growing restart back-off starts keeping the container down). Fewer than 7 days of
-// data count as a week, so one early kill isn't read as "every day".
+// OOM kills are rare (the limit doing its job) at most once per replica in two weeks, and never
+// twice within 24 hours: repeated kills keep the container down in Kubernetes' growing restart
+// back-off. Less than two weeks of data counts as two weeks, so one early kill isn't read as
+// "every day".
+const (
+	oomRareDays  = 14
+	oomBurstADay = 2
+)
+
 func rareOOMs(o history.OOMStat, replicas int, spanDays float64) bool {
-	if o.MaxDay >= 3 {
+	if o.MaxDay >= oomBurstADay {
 		return false
 	}
-	weeks := max(spanDays, 7) / 7
-	return float64(o.Count)/float64(max(replicas, 1))/weeks <= 1
+	periods := max(spanDays, oomRareDays) / oomRareDays
+	return float64(o.Count)/float64(max(replicas, 1))/periods <= 1
 }
 
 // judge sets findings, verdict, freed requests and the command from current vs recommended.

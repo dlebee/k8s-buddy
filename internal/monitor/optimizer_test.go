@@ -54,15 +54,15 @@ func TestOptimizerRecommendations(t *testing.T) {
 	if r := optRow(base, ct, week, history.OOMStat{}, false); r.Verdict == "risk" || !r.FillsLimit || r.Mem.Limit.Recommended != 190<<20 {
 		t.Fatalf("fills limit: %s %v %d %+v", r.Verdict, r.FillsLimit, r.Mem.Limit.Recommended>>20, r.Findings)
 	}
-	// Frequent OOM kills (3 within a day): at risk, and the limit is raised from the limit itself.
-	if r := optRow(base, ct, week, history.OOMStat{Count: 3, Last: time.Now(), MaxDay: 3}, false); r.Verdict != "risk" || r.OOMRare || r.FillsLimit || r.Mem.Limit.Recommended != 240<<20 {
+	// Frequent OOM kills (2 within a day): at risk, and the limit is raised from the limit itself.
+	if r := optRow(base, ct, week, history.OOMStat{Count: 2, Last: time.Now(), MaxDay: 2}, false); r.Verdict != "risk" || r.OOMRare || r.FillsLimit || r.Mem.Limit.Recommended != 240<<20 {
 		t.Fatalf("frequent oom: %s %d %+v", r.Verdict, r.Mem.Limit.Recommended>>20, r.Findings)
 	}
-	// More than once a week per replica, spread out: also frequent.
-	if r := optRow(base, ct, week, history.OOMStat{Count: 7, Last: time.Now(), MaxDay: 1}, false); r.Verdict != "risk" || r.OOMRare {
+	// More than once per replica in two weeks, spread out: also frequent.
+	if r := optRow(base, ct, week, history.OOMStat{Count: 4, Last: time.Now(), MaxDay: 1}, false); r.Verdict != "risk" || r.OOMRare {
 		t.Fatalf("weekly+ oom: %s %+v", r.Verdict, r.Findings)
 	}
-	// Rare (3 kills over 8 days on 3 replicas, never a burst): a notice, and the limit is kept.
+	// Rare (3 kills on 3 replicas in under two weeks, never two in a day): a notice, and the limit is kept.
 	if r := optRow(base, ct, week, history.OOMStat{Count: 3, Last: time.Now(), MaxDay: 1}, false); r.Verdict == "risk" || !r.OOMRare || r.Mem.Limit.Recommended != 190<<20 ||
 		len(r.Findings) == 0 || !strings.Contains(r.Findings[0].Text, "Rare") || !strings.Contains(r.Findings[0].Text, "other replicas") {
 		t.Fatalf("rare oom: %s %d %+v", r.Verdict, r.Mem.Limit.Recommended>>20, r.Findings)
