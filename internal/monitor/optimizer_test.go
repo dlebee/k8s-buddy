@@ -108,3 +108,24 @@ func TestOptimizerRecommendations(t *testing.T) {
 		t.Fatalf("short: %s %s", r.Confidence, text)
 	}
 }
+
+// A CPU limit only throttles. A one-off spike to the limit (a restart, say) isn't a risk and isn't
+// mentioned; sitting at it a real share of the time is a notice, still not a risk.
+func TestCPULimitIsNeverARisk(t *testing.T) {
+	ct := corev1.Container{Name: "rpc", Resources: corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("3Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")}}}
+	base := OptRow{Cluster: "c", Namespace: "ns", Kind: "StatefulSet", Workload: "rpc", Replicas: 2}
+	cpuNote := func(r OptRow) bool {
+		return slices.ContainsFunc(r.Findings, func(f OptFinding) bool { return strings.Contains(f.Text, "throttled") })
+	}
+	spike := history.Profile{Minutes: 8 * 1440, Last: 8 * 86400, CPUMed: 18, CPUP95: 25, CPUMax: 1900, MemMed: 2400 << 20, MemP95: 3300 << 20, MemMax: 3600 << 20}
+	if r := optRow(base, ct, spike, history.OOMStat{}, false); r.Verdict == "risk" || cpuNote(r) {
+		t.Fatalf("one spike: %s %+v", r.Verdict, r.Findings)
+	}
+	busy := spike
+	busy.CPUMed, busy.CPUP95, busy.CPUMax = 1200, 1950, 2000
+	if r := optRow(base, ct, busy, history.OOMStat{}, false); r.Verdict == "risk" || !cpuNote(r) {
+		t.Fatalf("at the limit often: %s %+v", r.Verdict, r.Findings)
+	}
+}

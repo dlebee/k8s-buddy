@@ -292,8 +292,8 @@ func judge(r *OptRow) {
 			verdict = v
 		}
 	}
-	// At risk: OOM kills actually recorded, or CPU held at its limit. Memory near its limit
-	// without OOM kills is often by design (software sizing itself to its limit).
+	// At risk: repeated OOM kills only. Memory near its limit without OOM kills is often by design
+	// (software sizing itself to its limit).
 	switch {
 	case r.OOMs > 0 && mem.Limit.Current >= 0:
 		add("bad", "OOM-killed %d times within 2 days (%d in the recorded period, last %s): its %s limit is too low. Usage can't show above the limit, so the suggestion raises the limit itself; raise further if kills continue.", r.OOMBurst, r.OOMs, time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"), fmtBytes(mem.Limit.Current))
@@ -304,9 +304,11 @@ func judge(r *OptRow) {
 	case r.FillsLimit:
 		add("notice", "Uses up to %.0f%% of its %s memory limit and wasn't OOM-killed: it likely sizes itself to the memory it's given (JVM heap, databases, caches). The limit is kept; lowering it would shrink its cache rather than free memory it doesn't need.", 100*mem.Max/float64(max(mem.Limit.Current, 1)), fmtBytes(mem.Limit.Current))
 	}
-	if cpu.Limit.Current >= 0 && cpu.Max >= float64(cpu.Limit.Current)*0.95 {
-		add("warn", "CPU peaked at %s, at its %s limit: it gets throttled (slowed down) at its busiest.", fmtMilli(int64(cpu.Max)), fmtMilli(cpu.Limit.Current))
-		worse("risk")
+	// A CPU limit only slows the container down (throttling); it never kills it. Not a risk, and a
+	// brief spike (a restart, say) isn't worth a word. Mentioned when it sits at the limit for a
+	// real share of the time: requests get slower and health checks can time out.
+	if cpu.Limit.Current > 0 && cpu.P95 >= float64(cpu.Limit.Current)*0.9 {
+		add("notice", "CPU is at its %s limit at least 5%% of the time (P95 %s): it gets slowed down (throttled) then. That doesn't stop it, but requests take longer and health checks can time out; raise the limit if it's slow.", fmtMilli(cpu.Limit.Current), fmtMilli(int64(cpu.P95)))
 	}
 	// Under-requested: typical use above the request but under the limit. Allowed (that's what
 	// Burstable pods do), with side effects worth knowing.
