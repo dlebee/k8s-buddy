@@ -54,9 +54,29 @@ func TestOptimizerRecommendations(t *testing.T) {
 	if r := optRow(base, ct, week, history.OOMStat{}, false); r.Verdict == "risk" || !r.FillsLimit || r.Mem.Limit.Recommended != 190<<20 {
 		t.Fatalf("fills limit: %s %v %d %+v", r.Verdict, r.FillsLimit, r.Mem.Limit.Recommended>>20, r.Findings)
 	}
-	// The same with OOM kills recorded: at risk, and the limit is raised from the limit itself.
-	if r := optRow(base, ct, week, history.OOMStat{Count: 3, Last: time.Now()}, false); r.Verdict != "risk" || r.FillsLimit || r.Mem.Limit.Recommended != 240<<20 {
-		t.Fatalf("oom: %s %d %+v", r.Verdict, r.Mem.Limit.Recommended>>20, r.Findings)
+	// Frequent OOM kills (3 within a day): at risk, and the limit is raised from the limit itself.
+	if r := optRow(base, ct, week, history.OOMStat{Count: 3, Last: time.Now(), MaxDay: 3}, false); r.Verdict != "risk" || r.OOMRare || r.FillsLimit || r.Mem.Limit.Recommended != 240<<20 {
+		t.Fatalf("frequent oom: %s %d %+v", r.Verdict, r.Mem.Limit.Recommended>>20, r.Findings)
+	}
+	// More than once a week per replica, spread out: also frequent.
+	if r := optRow(base, ct, week, history.OOMStat{Count: 7, Last: time.Now(), MaxDay: 1}, false); r.Verdict != "risk" || r.OOMRare {
+		t.Fatalf("weekly+ oom: %s %+v", r.Verdict, r.Findings)
+	}
+	// Rare (3 kills over 8 days on 3 replicas, never a burst): a notice, and the limit is kept.
+	if r := optRow(base, ct, week, history.OOMStat{Count: 3, Last: time.Now(), MaxDay: 1}, false); r.Verdict == "risk" || !r.OOMRare || r.Mem.Limit.Recommended != 190<<20 ||
+		len(r.Findings) == 0 || !strings.Contains(r.Findings[0].Text, "Rare") || !strings.Contains(r.Findings[0].Text, "other replicas") {
+		t.Fatalf("rare oom: %s %d %+v", r.Verdict, r.Mem.Limit.Recommended>>20, r.Findings)
+	}
+	// One replica: rare kills are still short outages, and the notice says so.
+	one := base
+	one.Replicas = 1
+	if r := optRow(one, ct, week, history.OOMStat{Count: 1, Last: time.Now(), MaxDay: 1}, false); !r.OOMRare || !strings.Contains(r.Findings[0].Text, "short outage") {
+		t.Fatalf("one replica: %+v", r.Findings)
+	}
+	// No memory limit: the node ran out of memory, a risk however rare.
+	noLim := corev1.Container{Name: "api", Resources: corev1.ResourceRequirements{Requests: ct.Resources.Requests}}
+	if r := optRow(base, noLim, week, history.OOMStat{Count: 1, Last: time.Now(), MaxDay: 1}, false); r.Verdict != "risk" || r.OOMRare {
+		t.Fatalf("no limit: %s %+v", r.Verdict, r.Findings)
 	}
 
 	// Typical memory above the request but well under the limit: under-requested, not at risk.

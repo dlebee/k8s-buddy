@@ -62,6 +62,7 @@ type OptRow struct {
 	FreeMem     int64        `json:"freeMem"`
 	OOMs        int          `json:"ooms"`       // OOM kills recorded in the window
 	LastOOM     int64        `json:"lastOom"`    // unix seconds of the latest
+	OOMRare     bool         `json:"oomRare"`    // kills are rare enough that the limit is just doing its job
 	FillsLimit  bool         `json:"fillsLimit"` // uses most of its memory limit without OOM kills: sizes itself to it
 	PodLevel    bool         `json:"podLevel"`   // multi-container pod sized as a whole (per-container data still collecting)
 	HistoryKind string       `json:"historyKind"`
@@ -215,6 +216,7 @@ func (c *cluster) optimize(podProfiles, ctProfiles []history.Profile, ooms map[s
 		for _, ct := range p.Spec.Containers {
 			if o := ooms[k+"/"+ct.Name]; o.Count > 0 {
 				podOOM.Count += o.Count
+				podOOM.MaxDay = max(podOOM.MaxDay, o.MaxDay)
 				if o.Last.After(podOOM.Last) {
 					podOOM.Last = o.Last
 				}
@@ -249,8 +251,14 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.O
 	row.OOMs = oom.Count
 	if oom.Count > 0 {
 		row.LastOOM = oom.Last.Unix()
+		row.OOMRare = curMemLim > 0 && rareOOMs(oom, row.Replicas, row.SpanDays)
 	}
 	switch {
+	case row.OOMRare:
+		// A kill now and then: the container restarts in seconds and the limit is doing its job.
+		// Keep the limit it was killed at.
+		memLim = curMemLim
+		memReq = min(memReq, curMemLim)
 	case oom.Count > 0 && curMemLim > 0:
 		// Usage can't be seen above the limit it was killed at: raise from the limit itself.
 		memLim = max(memLim, roundMem(float64(curMemLim)*1.25))
@@ -271,6 +279,17 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.O
 	return row
 }
 
+// rareOOMs: at most about one kill per replica per week, and never a burst (3 within 24 hours, when
+// Kubernetes' growing restart back-off starts keeping the container down). Fewer than 7 days of
+// data count as a week, so one early kill isn't read as "every day".
+func rareOOMs(o history.OOMStat, replicas int, spanDays float64) bool {
+	if o.MaxDay >= 3 {
+		return false
+	}
+	weeks := max(spanDays, 7) / 7
+	return float64(o.Count)/float64(max(replicas, 1))/weeks <= 1
+}
+
 // judge sets findings, verdict, freed requests and the command from current vs recommended.
 func judge(r *OptRow) {
 	var f []OptFinding
@@ -285,6 +304,13 @@ func judge(r *OptRow) {
 	// At risk: OOM kills actually recorded, or CPU held at its limit. Memory near its limit
 	// without OOM kills is often by design (software sizing itself to its limit).
 	switch {
+	case r.OOMRare:
+		rate := fmt.Sprintf("OOM-killed %d time(s) in %s (last %s)", r.OOMs, fmtDays(max(r.SpanDays, 1)), time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"))
+		if r.Replicas <= 1 {
+			add("notice", "%s. Rare, so the %s limit is doing its job and is kept. With one replica each kill is a short outage while it restarts; raise the limit if kills become more frequent.", rate, fmtBytes(mem.Limit.Current))
+		} else {
+			add("notice", "%s. Rare, so the %s limit is doing its job and is kept: the container restarts in seconds while the other replicas serve. Raise it if kills become more frequent.", rate, fmtBytes(mem.Limit.Current))
+		}
 	case r.OOMs > 0 && mem.Limit.Current >= 0:
 		add("bad", "OOM-killed %d time(s) in the recorded period (last %s): its %s limit is too low. Usage can't show above the limit, so the suggestion raises the limit itself; raise further if kills continue.", r.OOMs, time.Unix(r.LastOOM, 0).Format("Jan 2 15:04"), fmtBytes(mem.Limit.Current))
 		worse("risk")

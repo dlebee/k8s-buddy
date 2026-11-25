@@ -720,26 +720,41 @@ func (s *Store) AddOOMs(ev []OOM) error {
 
 // OOMStat is how often one workload's container was OOM-killed in a window.
 type OOMStat struct {
-	Count int
-	Last  time.Time
+	Count  int
+	Last   time.Time
+	MaxDay int // most kills within any 24 hours: repeated kills keep it down in restart back-off
 }
 
 // OOMs returns OOM kills per "ns/Kind/name/container" of a cluster since `since`.
 func (s *Store) OOMs(cluster string, since time.Time) (map[string]OOMStat, error) {
-	rows, err := s.db.Query(`SELECT ns, owner, container, COUNT(*), MAX(ts) FROM ooms WHERE cluster = ? AND ts >= ? GROUP BY ns, owner, container`, cluster, since.Unix())
+	rows, err := s.db.Query(`SELECT ns, owner, container, ts FROM ooms WHERE cluster = ? AND ts >= ? ORDER BY ns, owner, container, ts`, cluster, since.Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]OOMStat{}
+	times := map[string][]int64{}
 	for rows.Next() {
 		var ns, owner, ct string
-		var n int
-		var last int64
-		if err := rows.Scan(&ns, &owner, &ct, &n, &last); err != nil {
+		var ts int64
+		if err := rows.Scan(&ns, &owner, &ct, &ts); err != nil {
 			return nil, err
 		}
-		out[ns+"/"+owner+"/"+ct] = OOMStat{Count: n, Last: time.Unix(last, 0)}
+		k := ns + "/" + owner + "/" + ct
+		times[k] = append(times[k], ts)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]OOMStat, len(times))
+	for k, ts := range times { // sorted by time
+		st := OOMStat{Count: len(ts), Last: time.Unix(ts[len(ts)-1], 0)}
+		for i, j := 0, 0; j < len(ts); j++ {
+			for ts[j]-ts[i] >= 86400 {
+				i++
+			}
+			st.MaxDay = max(st.MaxDay, j-i+1)
+		}
+		out[k] = st
+	}
+	return out, nil
 }

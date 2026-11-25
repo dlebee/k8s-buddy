@@ -18,7 +18,7 @@ const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; 
 const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 
 const VERDICT = {
-  risk: ['At risk', 'bad', 'OOM kills recorded, or CPU held at its limit (throttled)'],
+  risk: ['At risk', 'bad', 'OOM-killed often (more than about once a week per replica, or 3 times in a day), or CPU held at its limit (throttled)'],
   missing: ['Missing', 'warn', 'No requests or limits set'],
   under: ['Under-requested', 'warn', 'Typical memory use is above the request (allowed while under the limit): first to be evicted if the node runs short'],
   over: ['Over-provisioned', 'notice', 'Requests well above what it uses'],
@@ -39,7 +39,7 @@ function resCell(r, fmt) {
     <div class="q-res"><span class="q-k">lim</span>${pair(r.limit.current, r.limit.recommended, fmt)}</div>
     <div class="q-use muted">use ${fmt(r.median)} typical · ${fmt(r.max)} max</div>`;
 }
-const memTags = (x) => (x.ooms ? `<span class="q-tag q-bad" title="Last ${new Date(x.lastOom * 1000).toLocaleString()}">OOM-killed ×${x.ooms}</span>`
+const memTags = (x) => (x.ooms ? `<span class="q-tag ${x.oomRare ? 'q-notice' : 'q-bad'}" title="${x.oomRare ? 'Rare: the limit is doing its job. ' : ''}Last ${new Date(x.lastOom * 1000).toLocaleString()}">OOM-killed ×${x.ooms}${x.oomRare ? ' · rare' : ''}</span>`
   : x.fillsLimit ? '<span class="q-tag q-notice" title="Uses most of its memory limit without OOM kills: likely sizes itself to it (JVM, databases, caches)">fills its limit</span>' : '');
 
 function detail(r) {
@@ -97,7 +97,7 @@ export async function quotasView(view, { head, current, monitored, mountPickers,
       ${banner}
       <div class="stats q-stats">
         <div class="card stat"><div class="label">Containers analysed</div><div class="value">${base.length}</div><div class="foot">${r.collecting ? `${r.collecting} workload${r.collecting === 1 ? '' : 's'} still collecting (need 1 h)` : `in ${r.clusters.length} cluster${r.clusters.length === 1 ? '' : 's'}`}</div></div>
-        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">OOM-killed, or CPU at its limit</div></div>
+        <div class="card stat ${count('risk') ? 'bad' : ''}"><div class="label">At risk</div><div class="value">${count('risk')}</div><div class="foot">OOM-killed often, or CPU at its limit</div></div>
         <div class="card stat ${count('under') ? 'warn' : ''}"><div class="label">Under-requested</div><div class="value">${count('under')}</div><div class="foot">memory use above request, under limit</div></div>
         <div class="card stat ${count('missing') ? 'warn' : ''}"><div class="label">Missing requests/limits</div><div class="value">${count('missing')}</div><div class="foot">suggested from their use</div></div>
         <div class="card stat"><div class="label">Over-provisioned</div><div class="value">${count('over')}</div><div class="foot">could free ${fmtCPU(freeCPU)} CPU · ${fmtMem(freeMem)} requested</div></div>

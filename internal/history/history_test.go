@@ -175,7 +175,7 @@ func TestOOMsDedupeAndPrune(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st := m["ns/Deployment/web/app"]; st.Count != 2 || !st.Last.Equal(at.Add(time.Minute)) {
+	if st := m["ns/Deployment/web/app"]; st.Count != 2 || !st.Last.Equal(at.Add(time.Minute)) || st.MaxDay != 2 {
 		t.Fatalf("ooms: %+v", m)
 	}
 }
@@ -201,5 +201,29 @@ func TestDecodeBlockRejectsDamage(t *testing.T) {
 	}
 	if b, err := decodeBlock(tier5, good); err != nil || b[0].CPU != 120 {
 		t.Errorf("round trip: %v %v", b, err)
+	}
+}
+
+// Three kills within a day count as a burst; the same three a few days apart don't.
+func TestOOMsMostInADay(t *testing.T) {
+	s := open(t)
+	base := time.Now().Add(-6 * 24 * time.Hour).Truncate(time.Second)
+	at := func(h int) OOM {
+		return OOM{"c", "ns", "Deployment/a", "app", "a-1", base.Add(time.Duration(h) * time.Hour)}
+	}
+	burst := []OOM{at(0), at(10), at(23)}
+	spread := []OOM{at(0), at(30), at(80)}
+	for i := range spread {
+		spread[i].Owner, spread[i].Pod = "Deployment/b", "b-1"
+	}
+	if err := s.AddOOMs(append(burst, spread...)); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.OOMs("c", base.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := m["ns/Deployment/a/app"], m["ns/Deployment/b/app"]; a.MaxDay != 3 || b.MaxDay != 1 || a.Count != 3 || b.Count != 3 {
+		t.Fatalf("a %+v b %+v", a, b)
 	}
 }
