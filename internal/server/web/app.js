@@ -2,6 +2,7 @@ import { api, post, stream, esc, ago, copy, debounce, RANK, TOKEN, showVersion }
 import { logsTab } from '/static/logs.js';
 import { costView } from '/static/cost.js';
 import { quotasView } from '/static/quotas.js';
+import { spikesView } from '/static/spikes.js';
 import { loadReleases, verSpan } from '/static/versions.js';
 import { renderSummary } from '/static/summary.js';
 import { mountForwardsDock } from '/static/forwards.js';
@@ -10,7 +11,7 @@ import { openTagEditor } from '/static/tags.js';
 import { mountExposure } from '/static/exposure.js';
 
 const view = document.getElementById('view');
-const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'quotas', 'cost', 'settings'];
+const VIEWS = ['overview', 'resources', 'exposure', 'alerts', 'history', 'doctor', 'quotas', 'spikes', 'cost', 'settings'];
 const HEALTH_ORDER = { bad: 0, warn: 1, neutral: 2, ok: 3 };
 const SEV_PILL = { critical: 'bad', warning: 'warn', notice: 'notice', info: '' };
 let current = null;
@@ -44,7 +45,7 @@ async function render() {
   closeDrawer();
   exposureHandle?.destroy(); exposureHandle = null;
   try {
-    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings, cost: costPage, quotas: quotasPage })[r.name](r.params);
+    await ({ overview, resources, exposure, alerts: () => alertsView('active'), history: () => alertsView('all'), doctor, settings, cost: costPage, quotas: quotasPage, spikes: spikesPage })[r.name](r.params);
   } catch (e) {
     view.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`;
   }
@@ -829,6 +830,14 @@ async function loadBeta() {
   return beta;
 }
 loadBeta();
+
+async function spikesPage() {
+  const ov = clustersCache || await loadClusters();
+  if (current !== 'spikes') return;
+  const monitored = ov.clusters.filter((c) => c.status !== 'excluded').map((c) => c.name);
+  pruneClusters(monitored);
+  await spikesView(view, { head, current: () => current, monitored, mountPickers, scopeChip, openWorkload: (r) => openRelated(KIND_IDS[r.kind] || 'pods', { cluster: r.cluster, namespace: r.namespace, name: r.workload }) });
+}
 
 async function quotasPage() {
   const ov = clustersCache || await loadClusters();

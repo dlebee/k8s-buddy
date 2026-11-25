@@ -346,6 +346,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/optimizer", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, s.mgr.Optimize(listParam(r, "cluster")))
 	})
+	mux.HandleFunc("GET /api/spikes", func(w http.ResponseWriter, r *http.Request) {
+		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+		writeJSON(w, s.mgr.Spikes(listParam(r, "cluster"), days))
+	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()
 		if h == nil {
