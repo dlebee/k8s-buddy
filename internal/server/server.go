@@ -379,8 +379,11 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/spikes", func(w http.ResponseWriter, r *http.Request) {
-		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
-		writeJSON(w, s.mgr.Spikes(listParam(r, "cluster"), days))
+		q := r.URL.Query()
+		days, _ := strconv.Atoi(q.Get("days"))
+		pct := func(k string) float64 { v, _ := strconv.ParseFloat(q.Get(k), 64); return v }
+		writeJSON(w, s.mgr.Spikes(listParam(r, "cluster"), days, monitor.SpikeLimits{
+			NodeCPU: pct("nodeCpu"), NodeMem: pct("nodeMem"), PodCPU: pct("podCpu"), PodMem: pct("podMem")}))
 	})
 	mux.HandleFunc("GET /api/usage/stats", func(w http.ResponseWriter, r *http.Request) {
 		h := s.mgr.History()

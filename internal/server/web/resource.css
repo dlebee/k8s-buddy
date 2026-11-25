@@ -292,3 +292,12 @@ body.has-forwards .drawer-body { padding-bottom: 70px; }
 .uc-chart .cross { stroke: var(--faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .uc-tip { position: absolute; top: 22px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow); padding: 4px 8px; font-size: 11.5px; white-space: nowrap; pointer-events: none; }
 .uc-chart .dot { fill: var(--accent); }
+.uc-chart .hot .band { fill: var(--bad); opacity: .3; }
+.uc-chart .hot .avg { stroke: var(--bad); stroke-width: 2; }
+.uc-chart .over { stroke: var(--warn, #ff9f0a); stroke-dasharray: 6 3; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.uc-chart text.lbl.over { fill: var(--warn, #ff9f0a); stroke: none; }
+.uc-chart .sel { fill: var(--accent); opacity: .15; }
+.uc-chart svg { cursor: crosshair; }
+.uc-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 8px; }
+.uc-bar .uc-win { margin-bottom: 0; }
+.uc-zoom { display: flex; gap: 8px; align-items: center; font-size: 11.5px; }

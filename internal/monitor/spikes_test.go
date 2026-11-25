@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"math"
 	"testing"
 
 	"github.com/dlebee/k8s-buddy/internal/history"
@@ -26,7 +27,7 @@ func TestSpikeRows(t *testing.T) {
 	if len(rows) != 4 {
 		t.Fatalf("rows: %+v", rows)
 	}
-	if w := by["Deployment/web/cpu"]; w.Pods != 2 || w.Spikes != 3 || w.Minutes != 6 || w.Peak != 900 || w.Usual != 80 || w.LastAt != 9000 || w.HistoryKind != "workload" || w.HistoryName != "Deployment/web" || w.System {
+	if w := by["Deployment/web/cpu"]; w.Pods != 2 || w.Spikes != 3 || w.Minutes != 6 || w.Peak != 900 || w.Usual != 80 || w.LastAt != 9000 || w.HistoryKind != "workload" || w.HistoryName != "Deployment/web" || w.PeakPod != "web-2" || w.System {
 		t.Fatalf("web: %+v", w)
 	}
 	if d := by["Deployment/dns/memory"]; !d.System || d.Limit != -1 {
@@ -37,5 +38,12 @@ func TestSpikeRows(t *testing.T) {
 	}
 	if n := by["Node/n1/memory"]; n.Pods != 0 || n.Limit != 16<<30 || n.HistoryKind != "node" || n.Namespace != "" {
 		t.Fatalf("node: %+v", n)
+	}
+}
+
+func TestSpikeLimitsClamp(t *testing.T) {
+	got := SpikeLimits{NodeCPU: 0, NodeMem: math.NaN(), PodCPU: 500, PodMem: 0.2}.clamp()
+	if got != (SpikeLimits{NodeCPU: 50, NodeMem: 50, PodCPU: 100, PodMem: 1}) {
+		t.Fatalf("%+v", got)
 	}
 }

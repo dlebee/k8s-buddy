@@ -11,11 +11,28 @@ import (
 // Spikes lists workloads and nodes whose CPU or memory jumped well above their usual use. It's for
 // looking, not for sizing: it never changes a Quotas verdict or suggestion.
 
-// spikeRules: CPU at least 2x usual and 200m more (500m for a node); memory at least 1.5x usual
-// and 256Mi more (1Gi for a node).
-var spikeRules = map[string][2]history.SpikeRule{
-	"pod":  {{Ratio: 2, Floor: 200}, {Ratio: 1.5, Floor: 256 << 20}},
-	"node": {{Ratio: 2, Floor: 500}, {Ratio: 1.5, Floor: 1 << 30}},
+// SpikeLimits are the shares, in percent, above which usage counts as a spike: of a node's
+// allocatable CPU and memory, and of a pod's CPU and memory limits.
+type SpikeLimits struct {
+	NodeCPU float64 `json:"nodeCpu"`
+	NodeMem float64 `json:"nodeMem"`
+	PodCPU  float64 `json:"podCpu"`
+	PodMem  float64 `json:"podMem"`
+}
+
+// DefaultSpikeLimits: half a node, three quarters of a pod's limit.
+var DefaultSpikeLimits = SpikeLimits{NodeCPU: 50, NodeMem: 50, PodCPU: 75, PodMem: 75}
+
+// clamp keeps each share between 1% and 100%; 0 (not given) takes the default.
+func (l SpikeLimits) clamp() SpikeLimits {
+	fix := func(v, d float64) float64 {
+		if !(v > 0) { // also NaN
+			return d
+		}
+		return min(max(v, 1), 100)
+	}
+	d := DefaultSpikeLimits
+	return SpikeLimits{fix(l.NodeCPU, d.NodeCPU), fix(l.NodeMem, d.NodeMem), fix(l.PodCPU, d.PodCPU), fix(l.PodMem, d.PodMem)}
 }
 
 // SpikeRow is one workload (replicas together) or node, for one resource.
@@ -34,24 +51,29 @@ type SpikeRow struct {
 	Pods      int     `json:"pods"`    // pods that spiked (workloads)
 	Limit     int64   `json:"limit"`   // per pod limit, or the node's allocatable; -1: none
 	System    bool    `json:"system"`
+	PeakPod   string  `json:"peakPod,omitempty"` // workloads: the pod that went highest (its chart matches its limit)
 	// For the chart: what to ask /api/usage for.
 	HistoryKind string `json:"historyKind"`
 	HistoryName string `json:"historyName"`
 }
 
 type SpikeReport struct {
-	Available     bool       `json:"available"`
-	Days          int        `json:"days"`
-	RetentionDays int        `json:"retentionDays"`
-	Clusters      []string   `json:"clusters"`
-	Rows          []SpikeRow `json:"rows"`
+	Available     bool        `json:"available"`
+	Limits        SpikeLimits `json:"limits"`
+	NoLimitCPU    int         `json:"noLimitCpu"` // pods that couldn't be judged: no CPU limit
+	NoLimitMem    int         `json:"noLimitMem"` // … no memory limit
+	Days          int         `json:"days"`
+	RetentionDays int         `json:"retentionDays"`
+	Clusters      []string    `json:"clusters"`
+	Rows          []SpikeRow  `json:"rows"`
 }
 
 // Spikes looks back `days` days (capped at the history kept) in the given clusters (all when empty).
-func (m *Manager) Spikes(clusters []string, days int) SpikeReport {
+func (m *Manager) Spikes(clusters []string, days int, limits SpikeLimits) SpikeReport {
+	limits = limits.clamp()
 	s := m.settings.Get()
 	days = min(max(days, 1), max(s.UsageRetentionDays, 1))
-	rep := SpikeReport{Days: days, RetentionDays: s.UsageRetentionDays, Clusters: []string{}, Rows: []SpikeRow{}}
+	rep := SpikeReport{Limits: limits, Days: days, RetentionDays: s.UsageRetentionDays, Clusters: []string{}, Rows: []SpikeRow{}}
 	h := m.History()
 	if h == nil || !s.UsageHistory {
 		return rep
@@ -63,10 +85,16 @@ func (m *Manager) Spikes(clusters []string, days int) SpikeReport {
 			continue
 		}
 		rep.Clusters = append(rep.Clusters, c.name)
-		series, err := h.Spikes(c.name, since, spikeRules)
+		rules := map[string][2]history.SpikeRule{
+			"node": {{Pct: limits.NodeCPU}, {Pct: limits.NodeMem}},
+			"pod":  {{Pct: limits.PodCPU}, {Pct: limits.PodMem}},
+		}
+		series, skips, err := h.Spikes(c.name, since, rules)
 		if err != nil {
 			continue
 		}
+		rep.NoLimitCPU += skips.PodCPU
+		rep.NoLimitMem += skips.PodMem
 		rep.Rows = append(rep.Rows, spikeRows(c.name, series)...)
 	}
 	slices.SortFunc(rep.Rows, func(a, b SpikeRow) int {
@@ -108,6 +136,9 @@ func spikeRows(cluster string, series []history.SeriesSpikes) []SpikeRow {
 			cur.LastAt = max(cur.LastAt, e.Start)
 			if e.Peak > cur.Peak {
 				cur.Peak, cur.PeakAt, cur.Usual, cur.Limit = e.Peak, e.PeakAt, usual, limit
+				if sr.Kind == "pod" {
+					cur.PeakPod = sr.Name
+				}
 			}
 		}
 	}
