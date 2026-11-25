@@ -126,6 +126,11 @@ type cluster struct {
 }
 
 func newCluster(name, server string, cfg *rest.Config, store *alert.Store) *cluster {
+	if cfg != nil {
+		// Every client made from this config shares one cache of refused lists (see denialCache).
+		cfg = rest.CopyConfig(cfg)
+		cfg.Wrap(newDenialCache().wrap)
+	}
 	return &cluster{
 		name:      name,
 		server:    server,
