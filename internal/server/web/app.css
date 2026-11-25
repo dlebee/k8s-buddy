@@ -179,7 +179,9 @@ pre.yaml { white-space: pre; overflow: auto; max-height: none; }
 .ctx-list label { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .ctx-list label:hover { background: var(--surface-2); }
 .ctx-list label .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.save-bar { position: sticky; bottom: 0; display: flex; gap: 10px; justify-content: flex-end; align-items: center; padding: 14px 0 0; }
+/* Stays in reach at the bottom while scrolling, on its own solid strip so it never sits on top of a setting. */
+.save-bar { position: sticky; bottom: -60px; z-index: 5; display: flex; gap: 10px; justify-content: flex-end; align-items: center;
+  margin: 14px -32px -60px; padding: 12px 32px 14px; background: var(--bg); border-top: 1px solid var(--border); }
 
 /* drawer */
 .drawer { position: fixed; inset: 0; z-index: 20; }
