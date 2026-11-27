@@ -11,8 +11,9 @@
   #float { position: absolute; inset: 0; animation: float 3.2s ease-in-out infinite; }
   #buddy.bounce #float { animation: bounce .9s cubic-bezier(.3,1.6,.5,1) 2; }
   #buddy.critical #float { animation: float 3.2s ease-in-out infinite, shake .5s ease-in-out 3; }
-  svg { position: absolute; left: 10px; bottom: 14px; width: 100px; height: 116px; overflow: visible; }
-  #shadow { position: absolute; left: 32px; bottom: 6px; width: 56px; height: 9px; border-radius: 50%;
+  /* The art sits 6px left of centre, so the badges on its right clear the eye. */
+  svg { position: absolute; left: 4px; bottom: 14px; width: 100px; height: 116px; overflow: visible; }
+  #shadow { position: absolute; left: 26px; bottom: 6px; width: 56px; height: 9px; border-radius: 50%;
     background: rgba(0,0,0,.22); filter: blur(2px); animation: shadow 3.2s ease-in-out infinite; }
 
   .body { transition: fill .6s; }
@@ -44,7 +45,7 @@
   #doc svg { position: static; width: 12px; height: 12px; }
   #doc.calm { border-color: #34c759; }
   /* A newer release is out: a small blue arrow, top left. */
-  #upd { position: absolute; left: 2px; top: 14px; width: 22px; height: 22px; box-sizing: border-box; border-radius: 11px; background: #0a84ff;
+  #upd { position: absolute; left: 0; top: 14px; width: 22px; height: 22px; box-sizing: border-box; border-radius: 11px; background: #0a84ff;
     border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); transform: scale(0); transition: transform .25s cubic-bezier(.3,1.8,.5,1); }
   #upd.on { transform: scale(1); }
   #upd svg { position: static; width: 18px; height: 18px; }
