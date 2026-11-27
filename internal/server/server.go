@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"sigs.k8s.io/yaml"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -346,8 +347,19 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, res)
 	})
+	// The Quotas page asks for everything; the filters are for the MCP tool, whose reader can't
+	// take 900 rows: namespace, verdict, limit (rows are already sorted most urgent first) and brief.
 	mux.HandleFunc("GET /api/optimizer", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.mgr.Optimize(listParam(r, "cluster")))
+		rep := s.mgr.Optimize(listParam(r, "cluster"))
+		q := r.URL.Query()
+		nss, verdicts := listParam(r, "namespace"), listParam(r, "verdict")
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		brief := q.Get("brief") == "1"
+		if len(nss) == 0 && len(verdicts) == 0 && limit <= 0 && !brief {
+			writeJSON(w, rep)
+			return
+		}
+		writeJSON(w, filterOpt(rep, nss, verdicts, limit, brief))
 	})
 	// Marks a workload's OOM kills as known and expected (or not any more). Kills after the mute
 	// still count, so it comes back if they get frequent again.
@@ -541,6 +553,68 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			"img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// filterOpt narrows a Quotas report (rows arrive sorted most urgent first) and counts what it left out.
+func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief bool) any {
+	rows := slices.DeleteFunc(slices.Clone(rep.Rows), func(x monitor.OptRow) bool {
+		return len(nss) > 0 && !slices.Contains(nss, x.Namespace) || len(verdicts) > 0 && !slices.Contains(verdicts, x.Verdict)
+	})
+	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}}
+	for _, x := range rep.Rows {
+		if len(nss) == 0 || slices.Contains(nss, x.Namespace) {
+			out.ByVerdict[x.Verdict]++
+		}
+	}
+	if limit > 0 && len(rows) > limit {
+		out.Truncated, out.Omitted = true, len(rows)-limit
+		rows = rows[:limit]
+	}
+	out.OptReport.Rows = rows
+	if !brief {
+		return out
+	}
+	out.OptReport.Rows = nil
+	b := optBriefAnswer{optAnswer: out, Rows: make([]optBriefRow, len(rows))}
+	for i, x := range rows {
+		b.Rows[i] = optBriefRow{x.Cluster, x.Namespace, x.Kind, x.Workload, x.Container, x.Replicas, x.Verdict, x.Confidence, x.Days,
+			x.CPU, x.Mem, x.OOMs, x.OOMBurst, x.Command}
+	}
+	return b
+}
+
+// optAnswer is a filtered Quotas report: how many rows there are in all, how many matched, how
+// many of each verdict (in the picked clusters and namespaces), and whether a limit cut it short.
+type optAnswer struct {
+	monitor.OptReport
+	Total     int            `json:"total"`
+	Matching  int            `json:"matching"`
+	ByVerdict map[string]int `json:"byVerdict"`
+	Truncated bool           `json:"truncated"`
+	Omitted   int            `json:"omitted"` // matching rows left out by the limit
+}
+
+// optBriefRow is a recommendation without its prose and chart pointers: the numbers and the command.
+type optBriefRow struct {
+	Cluster    string              `json:"cluster"`
+	Namespace  string              `json:"namespace"`
+	Kind       string              `json:"kind"`
+	Workload   string              `json:"workload"`
+	Container  string              `json:"container"`
+	Replicas   int                 `json:"replicas"`
+	Verdict    string              `json:"verdict"`
+	Confidence string              `json:"confidence"`
+	Days       float64             `json:"days"`
+	CPU        monitor.OptResource `json:"cpu"`
+	Mem        monitor.OptResource `json:"mem"`
+	OOMs       int                 `json:"ooms"`
+	OOMBurst   int                 `json:"oomBurst"`
+	Command    string              `json:"command"`
+}
+
+type optBriefAnswer struct {
+	optAnswer
+	Rows []optBriefRow `json:"rows"`
 }
 
 type summary struct {

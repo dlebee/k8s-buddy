@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dlebee/k8s-buddy/internal/config"
+	"github.com/dlebee/k8s-buddy/internal/monitor"
 )
 
 const testMCPKey = "test-key-0123456789abcdef"
@@ -250,5 +251,98 @@ func TestMCPGuessLimit(t *testing.T) {
 	}
 	if g.ok(now.Add(time.Second)) || !g.ok(now.Add(mcpGuessEvery+time.Second)) {
 		t.Fatal("the allowance doesn't refill one try per 3 seconds")
+	}
+}
+
+// An answer over the cap stays valid JSON: rows drop off the end of its list, and it says how
+// many and which arguments narrow it down (only ones the tool really has).
+func TestMCPCapKeepsJSONValid(t *testing.T) {
+	tool := mcpTool{Params: []mcpParam{{Name: "cluster"}, {Name: "limit"}}}
+	rows := make([]map[string]any, 200)
+	for i := range rows {
+		rows[i] = map[string]any{"n": i, "text": strings.Repeat("é", 50)}
+	}
+	check := func(body any, field string) {
+		t.Helper()
+		raw, _ := json.Marshal(body)
+		out := capResult(string(raw), 4000, tool)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil || len(out) > 4000 {
+			t.Fatalf("capped answer: %d bytes, parse error %v", len(out), err)
+		}
+		kept := got[field].([]any)
+		if got["truncated"] != true || int(got["omitted"].(float64))+len(kept) != 200 || len(kept) == 0 {
+			t.Fatalf("kept %d, omitted %v, truncated %v", len(kept), got["omitted"], got["truncated"])
+		}
+		if kept[0].(map[string]any)["n"] != float64(0) {
+			t.Fatal("the first rows weren't the ones kept")
+		}
+		hint := got["truncatedHint"].(string)
+		if !strings.Contains(hint, "cluster, limit") || strings.Contains(hint, "namespace") {
+			t.Fatalf("hint names the wrong arguments: %s", hint)
+		}
+	}
+	check(map[string]any{"available": true, "clusters": []string{"a", "b"}, "rows": rows}, "rows")
+	check(rows, "items")
+	if out := capResult(`{"rows":[1,2]}`, 4000, tool); out != `{"rows":[1,2]}` {
+		t.Fatalf("a small answer was changed: %s", out)
+	}
+	text := capResult(strings.Repeat("a line of describe output\n", 500), 1000, tool)
+	if len(text) > 1200 || !strings.Contains(text, "cut") || strings.Contains(text[:900], "a line of describe outp\n") {
+		t.Fatalf("text cut badly: %q", text[len(text)-150:])
+	}
+}
+
+func TestMCPQuotaToolHasItsFilters(t *testing.T) {
+	for _, tool := range mcpTools {
+		if tool.Name != "get_quota_recommendations" {
+			continue
+		}
+		q, err := tool.query(map[string]any{"namespace": "shop", "brief": true})
+		if err != nil || q.Get("namespace") != "shop" || q.Get("brief") != "1" || q.Get("limit") != "100" || q.Get("verdict") != "risk,missing,under,over" {
+			t.Fatalf("query %v, err %v", q, err)
+		}
+		q, _ = tool.query(map[string]any{"verdict": "risk", "limit": float64(5)})
+		if q.Get("verdict") != "risk" || q.Get("limit") != "5" {
+			t.Fatalf("overrides lost: %v", q)
+		}
+		return
+	}
+	t.Fatal("tool not found")
+}
+
+// The quota filters keep the most urgent rows, count every verdict, and say what a limit left out.
+func TestFilterOpt(t *testing.T) {
+	row := func(ns, verdict string) monitor.OptRow {
+		return monitor.OptRow{Cluster: "a", Namespace: ns, Kind: "Deployment", Workload: "api", Verdict: verdict,
+			Findings: []monitor.OptFinding{{Level: "bad", Text: "long explanation"}}, Command: "kubectl set resources", HistoryName: "Deployment/api"}
+	}
+	rep := monitor.OptReport{Available: true, Rows: []monitor.OptRow{
+		row("shop", "risk"), row("web", "risk"), row("shop", "under"), row("shop", "over"), row("shop", "over"), row("shop", "ok"), row("web", "ok")}}
+	parse := func(v any) map[string]any {
+		raw, _ := json.Marshal(v)
+		var out map[string]any
+		_ = json.Unmarshal(raw, &out)
+		return out
+	}
+	got := parse(filterOpt(rep, []string{"shop"}, []string{"risk", "under", "over"}, 2, false))
+	rows := got["rows"].([]any)
+	if len(rows) != 2 || rows[0].(map[string]any)["verdict"] != "risk" || rows[1].(map[string]any)["verdict"] != "under" {
+		t.Fatalf("rows: %v", rows)
+	}
+	if got["total"] != float64(7) || got["matching"] != float64(4) || got["omitted"] != float64(2) || got["truncated"] != true {
+		t.Fatalf("counts: total %v matching %v omitted %v truncated %v", got["total"], got["matching"], got["omitted"], got["truncated"])
+	}
+	if by := got["byVerdict"].(map[string]any); by["ok"] != float64(1) || by["over"] != float64(2) || by["risk"] != float64(1) {
+		t.Fatalf("byVerdict: %v", by)
+	}
+	if rows[0].(map[string]any)["findings"] == nil {
+		t.Fatal("the full answer lost its findings")
+	}
+	brief := parse(filterOpt(rep, nil, []string{"risk"}, 0, true))
+	rows = brief["rows"].([]any)
+	first := rows[0].(map[string]any)
+	if len(rows) != 2 || first["findings"] != nil || first["historyName"] != nil || first["command"] != "kubectl set resources" || brief["truncated"] != false {
+		t.Fatalf("brief: %v", brief)
 	}
 }

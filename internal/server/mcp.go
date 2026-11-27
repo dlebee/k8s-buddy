@@ -97,8 +97,15 @@ var mcpTools = []mcpTool{
 	{Name: "get_doctor_report", Path: "/api/doctor",
 		Desc: "The latest Doctor checkup: things that are quietly wrong (idle load balancers, dangling services, broken ingresses, unused volumes, …) with a hint for each."},
 	{Name: "get_quota_recommendations", Path: "/api/optimizer",
-		Desc:   "Per workload container: recorded CPU and memory use against requests and limits, a verdict (at risk, over-provisioned, …) and suggested values. Needs usage history.",
-		Params: []mcpParam{pClusters}},
+		Desc: "Per workload container: recorded CPU and memory use against requests and limits, a verdict and suggested values, most urgent first " +
+			"(risk: OOM-killed or limit below real use; missing: no request or limit; under: request below typical use; over: over-provisioned; ok). " +
+			"The answer says how many rows there are of each verdict and how many a limit left out. Needs usage history.",
+		Params: []mcpParam{pClusters,
+			{Name: "namespace", Desc: "Namespaces, comma-separated. Empty: all.", Type: "string"},
+			{Name: "verdict", Desc: `Verdicts to include, comma-separated (default "risk,missing,under,over": everything but ok).`, Type: "string"},
+			{Name: "limit", Desc: "Most rows to return (default 100).", Type: "integer"},
+			{Name: "brief", Desc: "Leave out the explanations and chart pointers: just the numbers and the kubectl command.", Type: "boolean"}},
+		Defaults: map[string]string{"verdict": "risk,missing,under,over", "limit": "100"}},
 	{Name: "get_spikes", Path: "/api/spikes",
 		Desc: "Workloads and nodes whose CPU or memory went above a share of their limit (pods) or allocatable (nodes) in the recorded history.",
 		Params: []mcpParam{pClusters,
@@ -454,11 +461,7 @@ func (m *mcpServer) call(ctx context.Context, t mcpTool, args map[string]any) (t
 	}
 	rec := &bodyRecorder{code: http.StatusOK, h: http.Header{}}
 	m.s.api.ServeHTTP(rec, req)
-	text = strings.TrimSpace(rec.body.String())
-	if len(text) > mcpMaxResult {
-		text = strings.ToValidUTF8(text[:mcpMaxResult], "") + "\n… cut here: the answer was larger than 400 KB. Narrow it down (a cluster, a namespace, a smaller limit)."
-	}
-	return text, rec.code >= 400
+	return capResult(strings.TrimSpace(rec.body.String()), mcpMaxResult, t), rec.code >= 400
 }
 
 // bodyRecorder collects a handler's answer in memory.
@@ -477,4 +480,66 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// capResult keeps an answer under max bytes without breaking it. JSON stays valid JSON: rows are
+// dropped from the end of its list (the top-level array, or an object's largest array) and the
+// answer says so with "truncated", "omitted" and a hint naming the filters this tool really has.
+// Anything else (describe text) is cut at a line end.
+func capResult(text string, max int, t mcpTool) string {
+	if len(text) <= max {
+		return text
+	}
+	var names []string
+	for _, p := range t.Params {
+		names = append(names, p.Name)
+	}
+	hint := "The answer was too large and was cut."
+	if len(names) > 0 {
+		hint += " Narrow it down with this tool's arguments: " + strings.Join(names, ", ") + "."
+	}
+	var doc any
+	if json.Unmarshal([]byte(text), &doc) == nil {
+		switch x := doc.(type) {
+		case []any:
+			return trimList(map[string]any{"items": x}, "items", max, hint)
+		case map[string]any:
+			field, best := "", 0
+			for k, v := range x {
+				if arr, isArr := v.([]any); isArr {
+					if b, _ := json.Marshal(arr); len(b) > best {
+						field, best = k, len(b)
+					}
+				}
+			}
+			if field != "" {
+				return trimList(x, field, max, hint)
+			}
+		}
+	}
+	cut := strings.ToValidUTF8(text[:max], "")
+	if i := strings.LastIndexByte(cut, '\n'); i > 0 {
+		cut = cut[:i]
+	}
+	return cut + "\n… " + hint
+}
+
+// trimList drops rows from the end of obj[field] until the whole answer fits in max bytes.
+func trimList(obj map[string]any, field string, max int, hint string) string {
+	rows := obj[field].([]any)
+	obj[field] = []any{}
+	obj["truncated"], obj["omitted"], obj["truncatedHint"] = true, len(rows), hint
+	base, _ := json.Marshal(obj)
+	size, keep := len(base)+16, 0
+	for _, r := range rows {
+		b, err := json.Marshal(r)
+		if err != nil || size+len(b)+1 > max {
+			break
+		}
+		size += len(b) + 1
+		keep++
+	}
+	obj[field], obj["omitted"] = rows[:keep], len(rows)-keep
+	out, _ := json.Marshal(obj)
+	return string(out)
 }
