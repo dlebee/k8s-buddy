@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -575,6 +576,9 @@ func (m *Manager) Describe(clusterName, kind, ns, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if kind == "secrets" {
+		return c.describeSecret(ns, name)
+	}
 	cfg := rest.CopyConfig(c.cfg)
 	cfg.Timeout = 30 * time.Second
 	var d describe.ResourceDescriber
@@ -605,4 +609,50 @@ func (m *Manager) Describe(clusterName, kind, ns, name string) (string, error) {
 		}
 	}
 	return d.Describe(ns, name, describe.DescriberSettings{ShowEvents: true, ChunkSize: 500})
+}
+
+// describeSecret stands in for kubectl's Secret describer, which prints a service account token
+// in full. Ours never prints a value: keys and their sizes only.
+func (c *cluster) describeSecret(ns, name string) (string, error) {
+	if !validObjectName(ns) || !validObjectName(name) || c.cs == nil {
+		return "", fmt.Errorf("invalid secret reference")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s, err := c.cs.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return secretDescription(s), nil
+}
+
+func secretDescription(s *corev1.Secret) string {
+	var b strings.Builder
+	pairs := func(title string, m map[string]string) {
+		keys := slices.Sorted(maps.Keys(m))
+		// The last-applied annotation holds a full copy of what was applied, values included.
+		keys = slices.DeleteFunc(keys, func(k string) bool { return k == corev1.LastAppliedConfigAnnotation })
+		if len(keys) == 0 {
+			fmt.Fprintf(&b, "%-13s<none>\n", title+":")
+			return
+		}
+		for i, k := range keys {
+			label := ""
+			if i == 0 {
+				label = title + ":"
+			}
+			fmt.Fprintf(&b, "%-13s%s=%s\n", label, k, truncate(m[k], 200))
+		}
+	}
+	fmt.Fprintf(&b, "%-13s%s\n%-13s%s\n", "Name:", s.Name, "Namespace:", s.Namespace)
+	pairs("Labels", s.Labels)
+	pairs("Annotations", s.Annotations)
+	fmt.Fprintf(&b, "\n%-13s%s\n\nData\n====\n", "Type:", s.Type)
+	for _, k := range slices.Sorted(maps.Keys(s.Data)) {
+		fmt.Fprintf(&b, "%s:  %d bytes\n", k, len(s.Data[k]))
+	}
+	for _, k := range slices.Sorted(maps.Keys(s.StringData)) {
+		fmt.Fprintf(&b, "%s:  %d bytes\n", k, len(s.StringData[k]))
+	}
+	return b.String()
 }
