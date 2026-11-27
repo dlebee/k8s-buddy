@@ -316,12 +316,12 @@ func (c *cluster) ensureCRDWatchers() {
 				c.mu.Unlock()
 				return
 			}
-			c.dynf = dynamicinformer.NewDynamicSharedInformerFactory(dyn, 0)
+			c.dynf = dynamicinformer.NewFilteredDynamicSharedInformerFactory(dyn, 0, metav1.NamespaceAll, longWatch)
 		}
 		gi := c.dynf.ForResource(res.gvr())
 		inf := gi.Informer()
 		_ = inf.SetTransform(stripManagedFields)
-		_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.setResourceErr(w.resource, err) })
+		_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.watchFailed(w.resource, err) })
 		c.informers[w.id] = inf
 		if c.dynListers == nil {
 			c.dynListers = map[string]cache.GenericLister{}

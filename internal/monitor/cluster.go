@@ -2,12 +2,16 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -39,7 +43,7 @@ const (
 
 const (
 	sweepEvery   = 20 * time.Second
-	versionEvery = 5 * time.Minute
+	versionEvery = 15 * time.Minute
 	syncTimeout  = 2 * time.Minute
 )
 
@@ -110,6 +114,7 @@ type cluster struct {
 	nodeMetricsMu sync.Mutex
 	nodeMetrics   *nodeMetricsCacheEntry
 	retry         chan struct{}
+	lastRecheck   time.Time // last connection check a failed watch asked for
 	azureCLI      bool
 	// onAzureFailure reports whether an expired Azure CLI session explains a credential error.
 	onAzureFailure func(*cluster) bool
@@ -309,6 +314,43 @@ func (c *cluster) onFailure(err error) {
 	})
 }
 
+// client-go ends every watch after a random 5 to 10 minutes and opens it again, and each of those
+// lands in the cluster's audit log: about 3,000 requests a day per cluster for our 15 watches.
+// longWatch asks for 25 to 35 minutes instead (the API server's own default when a client doesn't
+// say). Nothing is missed in between: changes keep streaming on the open connection.
+const minWatch = 25 * time.Minute
+
+func longWatch(o *metav1.ListOptions) {
+	if o.TimeoutSeconds == nil { // a list: only watches carry a timeout
+		return
+	}
+	t := int64(minWatch.Seconds()) + rand.Int64N(600)
+	o.TimeoutSeconds = &t
+}
+
+// watchFailed records why a watch broke. When the cluster didn't answer at all it also checks the
+// connection now (at most once a minute) instead of at the next 15-minute version check, so an
+// unreachable cluster is still noticed quickly.
+func (c *cluster) watchFailed(resource string, err error) {
+	c.setResourceErr(resource, err)
+	var answered apierrors.APIStatus
+	if errors.As(err, &answered) || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return // the server answered, or the watch just ended
+	}
+	c.mu.Lock()
+	recent := time.Since(c.lastRecheck) < time.Minute
+	if !recent {
+		c.lastRecheck = time.Now()
+	}
+	c.mu.Unlock()
+	if !recent {
+		select {
+		case c.retry <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func stripManagedFields(obj any) (any, error) {
 	if acc, err := meta.Accessor(obj); err == nil {
 		acc.SetManagedFields(nil)
@@ -318,9 +360,9 @@ func stripManagedFields(obj any) (any, error) {
 
 func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	tr := informers.WithTransform(stripManagedFields)
-	f := informers.NewSharedInformerFactoryWithOptions(cs, 0, tr)
+	f := informers.NewSharedInformerFactoryWithOptions(cs, 0, tr, informers.WithTweakListOptions(longWatch))
 	ef := informers.NewSharedInformerFactoryWithOptions(cs, 0, tr,
-		informers.WithTweakListOptions(func(o *metav1.ListOptions) { o.FieldSelector = "type=Warning" }))
+		informers.WithTweakListOptions(func(o *metav1.ListOptions) { o.FieldSelector = "type=Warning"; longWatch(o) }))
 
 	pods := f.Core().V1().Pods()
 	pvcs := f.Core().V1().PersistentVolumeClaims()
@@ -349,14 +391,14 @@ func (c *cluster) startInformers(ctx context.Context, cs kubernetes.Interface) {
 	}
 	var mf metadatainformer.SharedInformerFactory
 	if mc, err := metadata.NewForConfig(c.cfg); err == nil {
-		mf = metadatainformer.NewFilteredSharedInformerFactory(mc, 0, "", func(o *metav1.ListOptions) { o.LabelSelector = "owner=helm" })
+		mf = metadatainformer.NewFilteredSharedInformerFactory(mc, 0, "", func(o *metav1.ListOptions) { o.LabelSelector = "owner=helm"; longWatch(o) })
 		h := mf.ForResource(corev1.SchemeGroupVersion.WithResource("secrets"))
 		_ = h.Informer().SetTransform(stripHelmMeta)
 		infs["helm"] = h.Informer()
 		c.helm = h.Lister()
 	}
 	for name, inf := range infs {
-		_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.setResourceErr(name, err) })
+		_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.watchFailed(name, err) })
 	}
 
 	_, _ = infs["pods"].AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -458,14 +500,14 @@ func (c *cluster) ensureLazy(resource string) {
 	var f informers.SharedInformerFactory
 	switch resource {
 	case "configmaps":
-		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(stripManagedFields))
+		f = informers.NewSharedInformerFactoryWithOptions(c.cs, 0, informers.WithTransform(stripManagedFields), informers.WithTweakListOptions(longWatch))
 		cm := f.Core().V1().ConfigMaps()
 		inf, c.configmaps = cm.Informer(), cm.Lister()
 	default:
 		c.mu.Unlock()
 		return
 	}
-	_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.setResourceErr(resource, err) })
+	_ = inf.SetWatchErrorHandler(func(_ *cache.Reflector, err error) { c.watchFailed(resource, err) })
 	c.informers[resource] = inf
 	ctx := c.runCtx
 	c.mu.Unlock()
