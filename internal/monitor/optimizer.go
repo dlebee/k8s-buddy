@@ -390,7 +390,14 @@ func optCommand(r *OptRow) string {
 	if target == "" {
 		return "# set in the pod spec of " + r.Kind + " " + r.Workload + ": " + res
 	}
+	if r.System {
+		// kube-proxy, ingress controllers and friends: something else owns the spec and puts it back.
+		return "# don't apply by hand: a system or add-on workload. Whatever manages it (the cluster provider, an operator, its chart)\n# puts the spec back, so change it there if at all. Suggested from recorded usage:\n# " + res
+	}
 	cmd := kubectl(r.Cluster, r.Namespace, fmt.Sprintf("set resources %s/%s -c %s %s", target, r.Workload, r.Container, res))
+	if r.Days < optGoodDays {
+		cmd = fmt.Sprintf("# from only %.1f days of usage: make sure that covers a busy period before applying\n", r.Days) + cmd
+	}
 	if r.Helm {
 		cmd = "# managed by Helm: set these in the chart values instead, or the next upgrade reverts them\n" + cmd
 	}

@@ -100,11 +100,13 @@ var mcpTools = []mcpTool{
 	{Name: "get_quota_recommendations", Path: "/api/optimizer",
 		Desc: "Per workload container: recorded CPU and memory use against requests and limits, a verdict and suggested values, most urgent first " +
 			"(risk: OOM-killed or limit below real use; missing: no request or limit; under: request below typical use; over: over-provisioned; ok). " +
-			"The answer says how many rows there are of each verdict and how many a limit left out. Needs usage history.",
+			"The answer says how many rows there are of each verdict and how many a limit left out. Suggestions come from recorded usage only: " +
+			"check `days` and `confidence` before acting, and rows marked helm belong in the chart's values. Needs usage history.",
 		Params: []mcpParam{pClusters,
 			{Name: "namespace", Desc: "Namespaces, comma-separated. Empty: all.", Type: "string"},
 			{Name: "verdict", Desc: `Verdicts to include, comma-separated (default "risk,missing,under,over": everything but ok).`, Type: "string"},
 			{Name: "limit", Desc: "Most rows to return (default 40).", Type: "integer"},
+			{Name: "system", Desc: "Also include system workloads (kube-system, ingress controllers and other add-on namespaces). Left out by default: their owner undoes manual changes, so don't apply those.", Type: "boolean"},
 			{Name: "brief", Desc: "Brief rows (the default): the numbers and the kubectl command. Pass false to also get each row's explanations and chart pointers, about three times the size.", Type: "boolean"}},
 		Defaults: map[string]string{"verdict": "risk,missing,under,over", "limit": "40", "brief": "1"}},
 	{Name: "get_spikes", Path: "/api/spikes",

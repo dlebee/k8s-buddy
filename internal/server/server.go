@@ -359,7 +359,7 @@ func (s *Server) Handler() http.Handler {
 			writeJSON(w, rep)
 			return
 		}
-		writeJSON(w, filterOpt(rep, nss, verdicts, limit, brief))
+		writeJSON(w, filterOpt(rep, nss, verdicts, limit, brief, q.Get("system") == "1"))
 	})
 	// Marks a workload's OOM kills as known and expected (or not any more). Kills after the mute
 	// still count, so it comes back if they get frequent again.
@@ -556,11 +556,16 @@ func (s *Server) guard(next http.Handler) http.Handler {
 }
 
 // filterOpt narrows a Quotas report (rows arrive sorted most urgent first) and counts what it left out.
-func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief bool) any {
+// System workloads (kube-system and add-on namespaces) are left out unless asked for: their owner
+// undoes manual changes, so their suggestions aren't something to act on.
+func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief, system bool) any {
+	all := rep.Rows
+	rep.Rows = slices.DeleteFunc(slices.Clone(all), func(x monitor.OptRow) bool { return x.System && !system })
+	hidden := len(all) - len(rep.Rows)
 	rows := slices.DeleteFunc(slices.Clone(rep.Rows), func(x monitor.OptRow) bool {
 		return len(nss) > 0 && !slices.Contains(nss, x.Namespace) || len(verdicts) > 0 && !slices.Contains(verdicts, x.Verdict)
 	})
-	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}}
+	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}, SystemHidden: hidden}
 	for _, x := range rep.Rows {
 		if len(nss) == 0 || slices.Contains(nss, x.Namespace) {
 			out.ByVerdict[x.Verdict]++
@@ -578,7 +583,7 @@ func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief b
 	b := optBriefAnswer{optAnswer: out, Rows: make([]optBriefRow, len(rows))}
 	for i, x := range rows {
 		b.Rows[i] = optBriefRow{x.Cluster, x.Namespace, x.Kind, x.Workload, x.Container, x.Replicas, x.Verdict, x.Confidence, x.Days,
-			x.CPU, x.Mem, x.OOMs, x.OOMBurst, x.Command}
+			x.CPU, x.Mem, x.OOMs, x.OOMBurst, x.System, x.Helm, x.Command}
 	}
 	return b
 }
@@ -592,6 +597,8 @@ type optAnswer struct {
 	ByVerdict map[string]int `json:"byVerdict"`
 	Truncated bool           `json:"truncated"`
 	Omitted   int            `json:"omitted"` // matching rows left out by the limit
+	// SystemHidden counts system-workload rows left out (ask with system=1 to see them).
+	SystemHidden int `json:"systemHidden"`
 }
 
 // optBriefRow is a recommendation without its prose and chart pointers: the numbers and the command.
@@ -609,6 +616,8 @@ type optBriefRow struct {
 	Mem        monitor.OptResource `json:"mem"`
 	OOMs       int                 `json:"ooms"`
 	OOMBurst   int                 `json:"oomBurst"`
+	System     bool                `json:"system"` // managed by the cluster provider or an add-on: don't apply
+	Helm       bool                `json:"helm"`   // managed by Helm: change the chart values instead
 	Command    string              `json:"command"`
 }
 

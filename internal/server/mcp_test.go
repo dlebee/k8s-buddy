@@ -331,7 +331,7 @@ func TestFilterOpt(t *testing.T) {
 		_ = json.Unmarshal(raw, &out)
 		return out
 	}
-	got := parse(filterOpt(rep, []string{"shop"}, []string{"risk", "under", "over"}, 2, false))
+	got := parse(filterOpt(rep, []string{"shop"}, []string{"risk", "under", "over"}, 2, false, false))
 	rows := got["rows"].([]any)
 	if len(rows) != 2 || rows[0].(map[string]any)["verdict"] != "risk" || rows[1].(map[string]any)["verdict"] != "under" {
 		t.Fatalf("rows: %v", rows)
@@ -345,7 +345,7 @@ func TestFilterOpt(t *testing.T) {
 	if rows[0].(map[string]any)["findings"] == nil {
 		t.Fatal("the full answer lost its findings")
 	}
-	brief := parse(filterOpt(rep, nil, []string{"risk"}, 0, true))
+	brief := parse(filterOpt(rep, nil, []string{"risk"}, 0, true, false))
 	rows = brief["rows"].([]any)
 	first := rows[0].(map[string]any)
 	if len(rows) != 2 || first["findings"] != nil || first["historyName"] != nil || first["command"] != "kubectl set resources" || brief["truncated"] != false {
@@ -368,10 +368,28 @@ func TestQuotaAnswerFitsAnAgent(t *testing.T) {
 			HistoryKind: "workload", HistoryName: "Deployment/" + strings.Repeat("z", 40)})
 	}
 	for _, brief := range []bool{true, false} {
-		raw, _ := json.Marshal(filterOpt(rep, nil, []string{"over"}, 40, brief))
+		raw, _ := json.Marshal(filterOpt(rep, nil, []string{"over"}, 40, brief, false))
 		if len(raw) > mcpMaxResult {
 			t.Errorf("brief=%v: %d KB, over the %d KB cap", brief, len(raw)>>10, mcpMaxResult>>10)
 		}
 		t.Logf("brief=%v: %d KB for 40 rows", brief, len(raw)>>10)
+	}
+}
+
+// System workloads are left out unless asked for, and the answer says how many were.
+func TestFilterOptHidesSystemWorkloads(t *testing.T) {
+	rep := monitor.OptReport{Rows: []monitor.OptRow{
+		{Namespace: "kube-system", Workload: "kube-proxy", Verdict: "over", System: true},
+		{Namespace: "shop", Workload: "api", Verdict: "over"}}}
+	raw, _ := json.Marshal(filterOpt(rep, nil, nil, 10, true, false))
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	if rows := got["rows"].([]any); len(rows) != 1 || rows[0].(map[string]any)["workload"] != "api" || got["systemHidden"] != float64(1) || got["total"] != float64(1) {
+		t.Fatalf("default: %s", raw)
+	}
+	raw, _ = json.Marshal(filterOpt(rep, nil, nil, 10, true, true))
+	_ = json.Unmarshal(raw, &got)
+	if rows := got["rows"].([]any); len(rows) != 2 || rows[0].(map[string]any)["system"] != true || got["systemHidden"] != float64(0) {
+		t.Fatalf("with system: %s", raw)
 	}
 }
