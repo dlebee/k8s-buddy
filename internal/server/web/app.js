@@ -869,12 +869,16 @@ async function doctor() {
   const byCheck = Object.fromEntries(rep.checks.map((c) => [c.id, []]));
   findings.forEach((x) => (byCheck[x.check] ||= []).push(x));
   const ran = !!rep.finishedAt;
+  const resolved = (rep.resolved || []).filter((x) => inScope('clusters', x.cluster) && inScope('namespaces', x.namespace));
+  // "new": found by the latest checkup and not before. Not on a first checkup, where everything would be.
+  const fresh = (x) => x.firstSeen && new Date(x.firstSeen) >= new Date(rep.startedAt);
+  const isNew = rep.findings.some((x) => !fresh(x)) || (rep.resolved || []).length ? fresh : () => false;
   const clusters = [...new Set(rep.findings.map((x) => x.cluster))].sort();
   document.getElementById('navDoctor').textContent = ran ? String(rep.findings.length) : '';
   view.innerHTML = `
     ${head('Doctor', 'A checkup for things that are quietly wrong: runs on its own a few times a day (Settings), or whenever you like.')}
     <div class="card hero">
-      <div><h2>${rep.running ? 'Examining your clusters…' : ran ? `${plural(rep.findings.length, 'finding')} across ${plural(rep.clusters.length, 'cluster')}` : 'Give your clusters a checkup'}</h2>
+      <div><h2>${rep.running ? 'Examining your clusters…' : ran ? `${plural(rep.findings.length, 'finding')} across ${plural(rep.clusters.length, 'cluster')}${rep.findings.filter(isNew).length ? ` · ${rep.findings.filter(isNew).length} new` : ''}` : 'Give your clusters a checkup'}</h2>
         <p>${rep.running ? 'Looking for dangling services, broken ingresses, blocking PDBs, orphaned volumes and more.'
           : ran ? `Last run ${ago(rep.finishedAt)} ago${rep.scheduled ? ' (automatic)' : ''}, took ${Math.max(1, Math.round((new Date(rep.finishedAt) - new Date(rep.startedAt)) / 1000))}s.${doctorNext(rep)}`
           : 'Looks for dangling services and ingresses, PDBs that will block upgrades, orphaned disks, unused claims and leftover pods. Read-only.'}</p></div>
@@ -889,11 +893,17 @@ async function doctor() {
       return `<details class="card check" data-check="${esc(c.id)}" ${list.length && doctorOpen.has(c.id) ? 'open' : ''}>
         <summary><span class="pill ${!list.length ? 'ok' : worst >= 2 ? 'warn' : worst === 1 ? 'notice' : ''}">${list.length || '✓'}</span>
           <div><div class="t">${esc(c.title)}</div><div class="d">${esc(c.description)}</div></div><span class="chev">›</span></summary>
-        ${list.map((x) => `<div class="finding"><div class="what">${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}</span></div>
+        ${list.map((x) => `<div class="finding"><div class="what">${isNew(x) ? '<span class="pill notice">new</span> ' : ''}${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}${x.firstSeen ? ` · since ${ago(x.firstSeen)} ago` : ''}</span></div>
           <div class="msg">${esc(x.message)}</div>
           <div class="act"><button class="btn sm primary" data-finding="${rep.findings.indexOf(x)}">Open</button></div></div>`).join('')}
       </details>`;
-    }).join('') : ''}`;
+    }).join('') : ''}
+    ${ran && resolved.length ? `<details class="card check" data-check="resolved" ${doctorOpen.has('resolved') ? 'open' : ''}>
+      <summary><span class="pill ok">${resolved.length}</span>
+        <div><div class="t">Resolved recently</div><div class="d">Findings a later checkup no longer found, kept for a week.</div></div><span class="chev">›</span></summary>
+      ${resolved.map((x) => `<div class="finding"><div class="what">${esc(x.name)} <span class="muted" style="font-weight:400">· ${esc(x.cluster)}${x.namespace ? ' / ' + esc(x.namespace) : ''}</span></div>
+        <div class="msg">${esc(rep.checks.find((c) => c.id === x.check)?.title || x.check)}: resolved ${ago(x.resolvedAt)} ago${x.firstSeen ? `, first seen ${ago(x.firstSeen)} ago` : ''}. ${esc(x.message)}</div></div>`).join('')}
+    </details>` : ''}`;
   view.querySelectorAll('details.check').forEach((d) => d.ontoggle = () => { d.open ? doctorOpen.add(d.dataset.check) : doctorOpen.delete(d.dataset.check); });
   view.querySelector('#runDoctor').onclick = async () => { await post('/api/doctor'); doctor(); };
   mountPickers(view, clusters, [...new Set(rep.findings.map((x) => x.namespace).filter(Boolean))].sort());

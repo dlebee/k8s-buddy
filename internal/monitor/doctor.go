@@ -53,6 +53,16 @@ type Finding struct {
 	Name      string         `json:"name"`
 	Message   string         `json:"message"`
 	Hint      string         `json:"hint,omitempty"`
+	// FirstSeen is the start of the first checkup that found it; it carries over while later
+	// checkups keep finding the same thing.
+	FirstSeen time.Time `json:"firstSeen,omitzero"`
+	// ResolvedAt is set on recently resolved findings: the checkup that no longer found it.
+	ResolvedAt time.Time `json:"resolvedAt,omitzero"`
+}
+
+// key is what makes two checkups' findings the same problem; the message may change in between.
+func (f Finding) key() string {
+	return strings.Join([]string{f.Cluster, f.Check, f.Kind, f.Namespace, f.Name}, "\x00")
 }
 
 type DoctorReport struct {
@@ -64,6 +74,7 @@ type DoctorReport struct {
 	Clusters   []string          `json:"clusters"`
 	Checks     []DoctorCheck     `json:"checks"`
 	Findings   []Finding         `json:"findings"`
+	Resolved   []Finding         `json:"resolved"` // gone since an earlier checkup, newest first, kept a while
 	Errors     map[string]string `json:"errors"`
 }
 
@@ -122,6 +133,7 @@ func (m *Manager) loadDoctor() {
 	}
 	s := m.settings.Get()
 	r.Findings = slices.DeleteFunc(r.Findings, func(x Finding) bool { return s.IsExcluded(x.Cluster) })
+	r.Resolved = slices.DeleteFunc(r.Resolved, func(x Finding) bool { return s.IsExcluded(x.Cluster) })
 	r.Clusters = slices.DeleteFunc(r.Clusters, s.IsExcluded)
 	r.Running, r.NextAt = false, time.Time{}
 	if r.Errors == nil {
@@ -151,6 +163,9 @@ func (m *Manager) DoctorReport() DoctorReport {
 	r.NextAt = m.nextDoctor(r)
 	if r.Findings == nil {
 		r.Findings = []Finding{}
+	}
+	if r.Resolved == nil {
+		r.Resolved = []Finding{}
 	}
 	return r
 }
@@ -239,6 +254,9 @@ func (m *Manager) startDoctor(scheduled bool) bool {
 		m.doc.mu.Lock()
 		m.doc.report.Running = false
 		m.doc.report.FinishedAt = time.Now()
+		// A cluster where a check failed can't tell fixed from not looked at, so it resolves nothing.
+		complete := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return errs[n] != "" })
+		all, m.doc.report.Resolved = trackFindings(m.doc.done, all, complete, m.doc.report.StartedAt)
 		m.doc.report.Findings = all
 		m.doc.report.Errors = errs
 		m.doc.report.Clusters = names
@@ -249,6 +267,61 @@ func (m *Manager) startDoctor(scheduled bool) bool {
 		m.store.Touch() // the buddy and the panel show the latest checkup
 	}()
 	return true
+}
+
+// Resolved findings are kept this long, and at most this many.
+const (
+	resolvedKeep = 7 * 24 * time.Hour
+	resolvedMax  = 50
+)
+
+// trackFindings compares a new checkup with the previous one. A finding seen before keeps its
+// FirstSeen; a new one gets now (the new checkup's start). A previous finding that is gone moves to
+// Resolved, but only for a cluster this checkup looked at: one that wasn't checked tells us nothing.
+// A resolved finding that comes back leaves Resolved and counts as new again.
+func trackFindings(prev DoctorReport, found []Finding, checked []string, now time.Time) ([]Finding, []Finding) {
+	before := map[string]Finding{}
+	for _, f := range prev.Findings {
+		before[f.key()] = f
+	}
+	seen := map[string]bool{}
+	for i, f := range found {
+		k := f.key()
+		seen[k] = true
+		if p, ok := before[k]; ok {
+			// Saved by a version that didn't track it: it's been there at least since that checkup.
+			found[i].FirstSeen = cmpOr(p.FirstSeen, prev.StartedAt, now)
+		} else {
+			found[i].FirstSeen = now
+		}
+	}
+	var resolved []Finding
+	for _, f := range prev.Findings {
+		if !seen[f.key()] && slices.Contains(checked, f.Cluster) {
+			f.FirstSeen = cmpOr(f.FirstSeen, prev.StartedAt)
+			f.ResolvedAt = now
+			resolved = append(resolved, f)
+		}
+	}
+	for _, f := range prev.Resolved {
+		if !seen[f.key()] && now.Sub(f.ResolvedAt) < resolvedKeep {
+			resolved = append(resolved, f)
+		}
+	}
+	if len(resolved) > resolvedMax {
+		resolved = resolved[:resolvedMax]
+	}
+	return found, resolved
+}
+
+// cmpOr is the first time that isn't zero.
+func cmpOr(ts ...time.Time) time.Time {
+	for _, t := range ts {
+		if !t.IsZero() {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 func later(a, b time.Time) time.Time {
