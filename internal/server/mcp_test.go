@@ -299,10 +299,16 @@ func TestMCPQuotaToolHasItsFilters(t *testing.T) {
 			continue
 		}
 		q, err := tool.query(map[string]any{"namespace": "shop", "brief": true})
-		if err != nil || q.Get("namespace") != "shop" || q.Get("brief") != "1" || q.Get("limit") != "100" || q.Get("verdict") != "risk,missing,under,over" {
+		if err != nil || q.Get("namespace") != "shop" || q.Get("brief") != "1" || q.Get("limit") != "40" || q.Get("verdict") != "risk,missing,under,over" {
 			t.Fatalf("query %v, err %v", q, err)
 		}
-		q, _ = tool.query(map[string]any{"verdict": "risk", "limit": float64(5)})
+		if q, _ = tool.query(nil); q.Get("brief") != "1" {
+			t.Fatalf("brief isn't the default: %v", q)
+		}
+		q, _ = tool.query(map[string]any{"verdict": "risk", "limit": float64(5), "brief": false})
+		if q.Has("brief") {
+			t.Fatalf("brief=false didn't turn brief off: %v", q)
+		}
 		if q.Get("verdict") != "risk" || q.Get("limit") != "5" {
 			t.Fatalf("overrides lost: %v", q)
 		}
@@ -344,5 +350,28 @@ func TestFilterOpt(t *testing.T) {
 	first := rows[0].(map[string]any)
 	if len(rows) != 2 || first["findings"] != nil || first["historyName"] != nil || first["command"] != "kubectl set resources" || brief["truncated"] != false {
 		t.Fatalf("brief: %v", brief)
+	}
+}
+
+// A default quota answer has to be small enough for an AI client to read directly (about
+// 100 KB): 40 brief rows with realistic values stay far under it, and so do 40 full ones.
+func TestQuotaAnswerFitsAnAgent(t *testing.T) {
+	val := monitor.OptValue{}
+	res := monitor.OptResource{Request: val, Limit: val, Median: 123456789, P95: 223456789, Max: 323456789}
+	var rep monitor.OptReport
+	for i := range 900 {
+		rep.Rows = append(rep.Rows, monitor.OptRow{
+			Cluster: "cluster-with-a-long-name-" + strings.Repeat("x", 20), Namespace: "namespace-" + strings.Repeat("y", 30),
+			Kind: "Deployment", Workload: fmt.Sprintf("workload-%d-%s", i, strings.Repeat("z", 30)), Container: "container-" + strings.Repeat("c", 20),
+			Verdict: "over", Confidence: "good", CPU: res, Mem: res, Command: strings.Repeat("kubectl set resources ", 12),
+			Findings:    []monitor.OptFinding{{Level: "warn", Text: strings.Repeat("an explanation ", 30)}, {Level: "info", Text: strings.Repeat("more ", 40)}},
+			HistoryKind: "workload", HistoryName: "Deployment/" + strings.Repeat("z", 40)})
+	}
+	for _, brief := range []bool{true, false} {
+		raw, _ := json.Marshal(filterOpt(rep, nil, []string{"over"}, 40, brief))
+		if len(raw) > mcpMaxResult {
+			t.Errorf("brief=%v: %d KB, over the %d KB cap", brief, len(raw)>>10, mcpMaxResult>>10)
+		}
+		t.Logf("brief=%v: %d KB for 40 rows", brief, len(raw)>>10)
 	}
 }

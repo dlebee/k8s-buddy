@@ -34,8 +34,9 @@ import (
 // mcpVersions are the protocol versions answered as asked; anything else gets the first.
 var mcpVersions = []string{"2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"}
 
-// mcpMaxResult caps a tool's answer, so one huge list can't flood the model reading it.
-const mcpMaxResult = 400 << 10
+// mcpMaxResult caps a tool's answer. AI clients read an answer directly only up to roughly
+// 100 KB (Claude Code saves anything larger to a file instead), so every answer stays under that.
+const mcpMaxResult = 90 << 10
 
 const mcpInstructions = "k8s-buddy watches the user's Kubernetes clusters from their computer. These tools read what it " +
 	"currently knows: clusters, alerts, resources, Doctor findings, usage history, quota recommendations and spikes. " +
@@ -103,9 +104,9 @@ var mcpTools = []mcpTool{
 		Params: []mcpParam{pClusters,
 			{Name: "namespace", Desc: "Namespaces, comma-separated. Empty: all.", Type: "string"},
 			{Name: "verdict", Desc: `Verdicts to include, comma-separated (default "risk,missing,under,over": everything but ok).`, Type: "string"},
-			{Name: "limit", Desc: "Most rows to return (default 100).", Type: "integer"},
-			{Name: "brief", Desc: "Leave out the explanations and chart pointers: just the numbers and the kubectl command.", Type: "boolean"}},
-		Defaults: map[string]string{"verdict": "risk,missing,under,over", "limit": "100"}},
+			{Name: "limit", Desc: "Most rows to return (default 40).", Type: "integer"},
+			{Name: "brief", Desc: "Brief rows (the default): the numbers and the kubectl command. Pass false to also get each row's explanations and chart pointers, about three times the size.", Type: "boolean"}},
+		Defaults: map[string]string{"verdict": "risk,missing,under,over", "limit": "40", "brief": "1"}},
 	{Name: "get_spikes", Path: "/api/spikes",
 		Desc: "Workloads and nodes whose CPU or memory went above a share of their limit (pods) or allocatable (nodes) in the recorded history.",
 		Params: []mcpParam{pClusters,
