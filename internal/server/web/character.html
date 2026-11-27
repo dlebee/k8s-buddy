@@ -35,26 +35,29 @@
   #badge.on { transform: scale(1); }
   #badge.warn { background: #ff9f0a; }
   #badge.calm { background: #0a84ff; }
-  /* The latest Doctor checkup: a little medical cross with how many things it found. */
-  #doc { position: absolute; left: 2px; top: 14px; height: 22px; padding: 0 7px 0 4px; box-sizing: border-box; display: flex; align-items: center; gap: 3px;
-    border-radius: 11px; background: #fff; color: #1c1c1e; font-weight: 700; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #ff3b30;
+  /* The latest Doctor checkup: a little medical cross with how many things it found, right under
+     the alert count and narrow enough to stay off the eye. */
+  #doc { position: absolute; right: 0; top: 38px; height: 20px; padding: 0 5px 0 3px; box-sizing: border-box; display: flex; align-items: center; gap: 2px;
+    border-radius: 10px; background: #fff; color: #1c1c1e; font-weight: 700; font-size: 11px; box-shadow: 0 1px 4px rgba(0,0,0,.35); border: 2px solid #ff3b30;
     transform: scale(0); transition: transform .25s cubic-bezier(.3,1.8,.5,1); }
   #doc.on { transform: scale(1); }
-  #doc svg { position: static; width: 14px; height: 14px; }
+  #doc svg { position: static; width: 12px; height: 12px; }
   #doc.calm { border-color: #34c759; }
-  /* A newer release is out: a small blue arrow under the doctor's badge. */
-  #upd { position: absolute; left: 2px; top: 40px; width: 22px; height: 22px; box-sizing: border-box; border-radius: 11px; background: #0a84ff;
+  /* A newer release is out: a small blue arrow, top left. */
+  #upd { position: absolute; left: 2px; top: 14px; width: 22px; height: 22px; box-sizing: border-box; border-radius: 11px; background: #0a84ff;
     border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); transform: scale(0); transition: transform .25s cubic-bezier(.3,1.8,.5,1); }
   #upd.on { transform: scale(1); }
   #upd svg { position: static; width: 18px; height: 18px; }
 
-  #bubble { position: absolute; right: 112px; bottom: 58px; max-width: 160px; padding: 8px 10px; border-radius: 12px;
+  /* The window is 280px wide and the bubble ends 112px from its right edge: with its padding it
+     must stay under 168px or its left side is cut off by the window. */
+  #bubble { position: absolute; right: 112px; bottom: 58px; box-sizing: border-box; max-width: 162px; padding: 8px 10px; border-radius: 12px; overflow-wrap: anywhere;
     background: #fff; color: #1c1c1e; box-shadow: 0 4px 16px rgba(0,0,0,.22); opacity: 0; transform: translateX(8px) scale(.96);
     transition: opacity .25s, transform .25s; pointer-events: none; }
   #bubble.on { opacity: 1; transform: none; }
   #bubble::after { content: ""; position: absolute; right: -6px; bottom: 16px; border: 7px solid transparent; border-right: 0; border-left-color: #fff; }
-  #bubble b { display: block; font-size: 11px; color: #6e6e73; font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #bubble span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  #bubble b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 11px; color: #6e6e73; font-weight: 600; margin-bottom: 2px; }
+  #bubble span { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
   @media (prefers-color-scheme: dark) {
     #bubble { background: #2c2c2e; color: #f2f2f7; }
     #bubble::after { border-left-color: #2c2c2e; }
