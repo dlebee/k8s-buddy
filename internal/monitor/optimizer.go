@@ -71,6 +71,9 @@ type OptRow struct {
 	HistoryName string       `json:"historyName"`
 }
 
+// ValidVerdict reports whether v is one of the verdicts a row can have.
+func ValidVerdict(v string) bool { _, ok := verdictOrder[v]; return ok }
+
 var verdictOrder = map[string]int{"risk": 0, "missing": 1, "under": 2, "over": 3, "ok": 4}
 
 type OptReport struct {
@@ -357,6 +360,16 @@ func judge(r *OptRow) {
 		add("info", "Gaps while k8s-buddy wasn't running are skipped (%s recorded over %s).", fmtDays(r.Days), fmtDays(r.SpanDays))
 	}
 	r.Findings, r.Verdict = f, verdict
+	if verdict == "ok" {
+		// Nothing worth changing: what's set is kept, so an ok row never reads as advice to cut a
+		// limit that merely has room to spare. Only values that aren't set get a suggestion.
+		for _, v := range []*OptValue{&r.CPU.Request, &r.CPU.Limit, &r.Mem.Request, &r.Mem.Limit} {
+			if v.Current >= 0 {
+				v.Recommended = v.Current
+			}
+		}
+		cpu, mem = r.CPU, r.Mem
+	}
 	if f == nil {
 		r.Findings = []OptFinding{}
 	}
@@ -381,6 +394,9 @@ func missingWord(a, b bool, x, y string) string {
 }
 
 func optCommand(r *OptRow) string {
+	if r.Verdict == "ok" && r.CPU.Request.Current >= 0 && r.CPU.Limit.Current >= 0 && r.Mem.Request.Current >= 0 && r.Mem.Limit.Current >= 0 {
+		return "# ok: its requests and limits fit its recorded usage, nothing to change"
+	}
 	res := fmt.Sprintf("--requests=cpu=%s,memory=%s --limits=cpu=%s,memory=%s",
 		cpuQty(r.CPU.Request.Recommended), memQty(r.Mem.Request.Recommended), cpuQty(r.CPU.Limit.Recommended), memQty(r.Mem.Limit.Recommended))
 	if r.PodLevel {

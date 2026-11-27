@@ -393,3 +393,62 @@ func TestFilterOptHidesSystemWorkloads(t *testing.T) {
 		t.Fatalf("with system: %s", raw)
 	}
 }
+
+// Under a limit the urgent verdicts don't crowd out the rest: each verdict keeps a few rows, the
+// order stays most urgent first, and the answer says which verdicts were cut into.
+func TestSpreadLimitKeepsEveryVerdict(t *testing.T) {
+	var rep monitor.OptReport
+	for _, v := range []struct {
+		verdict string
+		n       int
+	}{{"risk", 30}, {"missing", 30}, {"under", 80}, {"over", 96}} {
+		for i := range v.n {
+			rep.Rows = append(rep.Rows, monitor.OptRow{Namespace: "shop", Workload: fmt.Sprintf("%s-%d", v.verdict, i), Verdict: v.verdict})
+		}
+	}
+	raw, _ := json.Marshal(filterOpt(rep, nil, nil, 40, true, false))
+	var got struct {
+		Rows             []struct{ Verdict, Workload string }
+		Omitted          int
+		OmittedByVerdict map[string]int
+	}
+	_ = json.Unmarshal(raw, &got)
+	count := map[string]int{}
+	last := -1
+	order := map[string]int{"risk": 0, "missing": 1, "under": 2, "over": 3}
+	for _, r := range got.Rows {
+		count[r.Verdict]++
+		if order[r.Verdict] < last {
+			t.Fatalf("rows out of order at %s", r.Workload)
+		}
+		last = order[r.Verdict]
+	}
+	if len(got.Rows) != 40 || count["under"] != 5 || count["over"] != 5 || count["risk"] != 25 || count["missing"] != 5 {
+		t.Fatalf("kept %d: %v", len(got.Rows), count)
+	}
+	if got.Rows[0].Workload != "risk-0" || got.Omitted != 196 || got.OmittedByVerdict["over"] != 91 || got.OmittedByVerdict["risk"] != 5 {
+		t.Fatalf("first %s, omitted %d, by verdict %v", got.Rows[0].Workload, got.Omitted, got.OmittedByVerdict)
+	}
+}
+
+// A namespace that matches nothing is flagged instead of quietly answering "0 rows".
+func TestFilterOptWarnsOnUnknownNamespace(t *testing.T) {
+	rep := monitor.OptReport{Rows: []monitor.OptRow{
+		{Namespace: "kube-system", Workload: "kube-proxy", Verdict: "over", System: true},
+		{Namespace: "shop", Workload: "api", Verdict: "risk"}}}
+	warn := func(ns string) []any {
+		raw, _ := json.Marshal(filterOpt(rep, []string{ns}, nil, 10, true, false))
+		var got map[string]any
+		_ = json.Unmarshal(raw, &got)
+		return got["warnings"].([]any)
+	}
+	if w := warn("shop"); len(w) != 0 {
+		t.Fatalf("a real namespace was flagged: %v", w)
+	}
+	if w := warn("shpo"); len(w) != 1 || !strings.Contains(w[0].(string), "check the spelling") {
+		t.Fatalf("typo: %v", w)
+	}
+	if w := warn("kube-system"); len(w) != 1 || !strings.Contains(w[0].(string), "system=true") {
+		t.Fatalf("system-only namespace: %v", w)
+	}
+}

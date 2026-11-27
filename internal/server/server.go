@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -359,6 +360,12 @@ func (s *Server) Handler() http.Handler {
 			writeJSON(w, rep)
 			return
 		}
+		for _, v := range verdicts {
+			if !monitor.ValidVerdict(v) {
+				http.Error(w, fmt.Sprintf("unknown verdict %q: use risk, missing, under, over or ok", v), http.StatusBadRequest)
+				return
+			}
+		}
 		writeJSON(w, filterOpt(rep, nss, verdicts, limit, brief, q.Get("system") == "1"))
 	})
 	// Marks a workload's OOM kills as known and expected (or not any more). Kills after the mute
@@ -565,15 +572,35 @@ func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief, 
 	rows := slices.DeleteFunc(slices.Clone(rep.Rows), func(x monitor.OptRow) bool {
 		return len(nss) > 0 && !slices.Contains(nss, x.Namespace) || len(verdicts) > 0 && !slices.Contains(verdicts, x.Verdict)
 	})
-	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}, SystemHidden: hidden}
+	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}, SystemHidden: hidden,
+		OmittedByVerdict: map[string]int{}, Warnings: []string{}}
 	for _, x := range rep.Rows {
 		if len(nss) == 0 || slices.Contains(nss, x.Namespace) {
 			out.ByVerdict[x.Verdict]++
 		}
 	}
+	// A namespace that matches nothing is more likely a typo than an empty namespace: say so
+	// rather than answer "0 rows", which reads as "nothing to fix".
+	for _, ns := range nss {
+		inAll := slices.ContainsFunc(all, func(x monitor.OptRow) bool { return x.Namespace == ns })
+		switch {
+		case !inAll:
+			out.Warnings = append(out.Warnings, fmt.Sprintf("namespace %q: no workload with recorded usage found in the selected clusters (check the spelling)", ns))
+		case !slices.ContainsFunc(rep.Rows, func(x monitor.OptRow) bool { return x.Namespace == ns }):
+			out.Warnings = append(out.Warnings, fmt.Sprintf("namespace %q holds only system workloads: pass system=true to see them", ns))
+		}
+	}
 	if limit > 0 && len(rows) > limit {
 		out.Truncated, out.Omitted = true, len(rows)-limit
-		rows = rows[:limit]
+		kept := spreadLimit(rows, limit)
+		for _, x := range rows {
+			out.OmittedByVerdict[x.Verdict]++
+		}
+		for _, x := range kept {
+			out.OmittedByVerdict[x.Verdict]--
+		}
+		maps.DeleteFunc(out.OmittedByVerdict, func(_ string, n int) bool { return n == 0 })
+		rows = kept
 	}
 	out.OptReport.Rows = rows
 	if !brief {
@@ -588,6 +615,34 @@ func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief, 
 	return b
 }
 
+// spreadLimit keeps limit rows of rows (sorted most urgent first) without letting the urgent
+// verdicts crowd out the others entirely: each verdict present first gets a small share (an
+// eighth of the limit, at least one), then the rest goes to the most urgent. Order is kept.
+func spreadLimit(rows []monitor.OptRow, limit int) []monitor.OptRow {
+	share := max(1, limit/8)
+	taken := map[string]int{}
+	keep := make([]bool, len(rows))
+	n := 0
+	for i, x := range rows {
+		if n < limit && taken[x.Verdict] < share {
+			keep[i], n = true, n+1
+			taken[x.Verdict]++
+		}
+	}
+	for i := range rows {
+		if n < limit && !keep[i] {
+			keep[i], n = true, n+1
+		}
+	}
+	out := make([]monitor.OptRow, 0, limit)
+	for i, x := range rows {
+		if keep[i] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // optAnswer is a filtered Quotas report: how many rows there are in all, how many matched, how
 // many of each verdict (in the picked clusters and namespaces), and whether a limit cut it short.
 type optAnswer struct {
@@ -599,6 +654,9 @@ type optAnswer struct {
 	Omitted   int            `json:"omitted"` // matching rows left out by the limit
 	// SystemHidden counts system-workload rows left out (ask with system=1 to see them).
 	SystemHidden int `json:"systemHidden"`
+	// OmittedByVerdict says which verdicts the limit cut into; Warnings flags filters that matched nothing.
+	OmittedByVerdict map[string]int `json:"omittedByVerdict"`
+	Warnings         []string       `json:"warnings"`
 }
 
 // optBriefRow is a recommendation without its prose and chart pointers: the numbers and the command.
