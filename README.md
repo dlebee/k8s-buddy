@@ -2,6 +2,8 @@
 
 A little floating friend that watches **every Kubernetes context in your kubeconfig** while you work, and nudges you when something needs a look.
 
+**Website:** [dlebee.github.io/k8s-buddy-site](https://dlebee.github.io/k8s-buddy-site/) — screenshots, what it watches, and downloads.
+
 - **Floating buddy** — sits on top of your windows, bounces and shows a count when something new breaks. Click it for the alert history; drag it anywhere; right-click for the menu.
 - **Menu bar icon** — `⎈ 3` style count, overview, settings, show/hide the buddy.
 - **Multi-cluster overview** — health of all your clusters at a glance.
