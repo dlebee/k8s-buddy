@@ -40,11 +40,11 @@ func TestOptimizerRecommendations(t *testing.T) {
 
 	// No requests or limits: recommend both from median and max.
 	r := optRow(base, corev1.Container{Name: "api"}, week, history.OOMStat{}, false)
-	if r.Verdict != "missing" || r.Confidence != "high" || r.CPU.Request.Recommended != 50 || r.CPU.Limit.Recommended != 275 ||
+	if r.Verdict != "missing" || r.Confidence != "high" || r.CPU.Request.Recommended != 50 || r.CPU.Limit.Recommended != 300 ||
 		r.Mem.Request.Recommended != 120<<20 || r.Mem.Limit.Recommended != 232<<20 {
 		t.Fatalf("missing: %+v %+v %+v", r.Verdict, r.CPU, r.Mem)
 	}
-	if !strings.Contains(r.Command, "set resources deployment/api -c api --requests=cpu=50m,memory=120Mi --limits=cpu=275m,memory=232Mi") {
+	if !strings.Contains(r.Command, "set resources deployment/api -c api --requests=cpu=50m,memory=120Mi --limits=cpu=300m,memory=232Mi") {
 		t.Fatalf("command: %s", r.Command)
 	}
 

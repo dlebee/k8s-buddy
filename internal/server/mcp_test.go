@@ -336,7 +336,7 @@ func TestFilterOpt(t *testing.T) {
 	if len(rows) != 2 || rows[0].(map[string]any)["verdict"] != "risk" || rows[1].(map[string]any)["verdict"] != "under" {
 		t.Fatalf("rows: %v", rows)
 	}
-	if got["total"] != float64(7) || got["matching"] != float64(4) || got["omitted"] != float64(2) || got["truncated"] != true {
+	if got["total"] != float64(5) || got["matching"] != float64(4) || got["omitted"] != float64(2) || got["truncated"] != true {
 		t.Fatalf("counts: total %v matching %v omitted %v truncated %v", got["total"], got["matching"], got["omitted"], got["truncated"])
 	}
 	if by := got["byVerdict"].(map[string]any); by["ok"] != float64(1) || by["over"] != float64(2) || by["risk"] != float64(1) {
@@ -442,6 +442,13 @@ func TestFilterOptWarnsOnUnknownNamespace(t *testing.T) {
 		_ = json.Unmarshal(raw, &got)
 		return got["warnings"].([]any)
 	}
+	// total and byVerdict follow the namespace too: a typo reads as nothing there, not as 0 of the fleet.
+	raw, _ := json.Marshal(filterOpt(rep, []string{"shpo"}, nil, 10, true, false))
+	var typo map[string]any
+	_ = json.Unmarshal(raw, &typo)
+	if typo["total"] != float64(0) || typo["matching"] != float64(0) || len(typo["byVerdict"].(map[string]any)) != 0 {
+		t.Fatalf("unknown namespace still counts rows: %s", raw)
+	}
 	if w := warn("shop"); len(w) != 0 {
 		t.Fatalf("a real namespace was flagged: %v", w)
 	}
@@ -450,5 +457,30 @@ func TestFilterOptWarnsOnUnknownNamespace(t *testing.T) {
 	}
 	if w := warn("kube-system"); len(w) != 1 || !strings.Contains(w[0].(string), "system=true") {
 		t.Fatalf("system-only namespace: %v", w)
+	}
+}
+
+// The counts share one scope: byVerdict splits total, and matching is the sum of the picked verdicts.
+func TestFilterOptCountsAddUp(t *testing.T) {
+	var rep monitor.OptReport
+	for i, v := range []string{"risk", "missing", "under", "over", "over", "ok", "ok", "ok"} {
+		rep.Rows = append(rep.Rows, monitor.OptRow{Namespace: "shop", Workload: fmt.Sprint("w", i), Verdict: v},
+			monitor.OptRow{Namespace: "kube-system", Workload: fmt.Sprint("s", i), Verdict: v, System: true})
+	}
+	for _, system := range []bool{false, true} {
+		raw, _ := json.Marshal(filterOpt(rep, nil, []string{"risk", "over"}, 0, true, system))
+		var got struct {
+			Total, Matching, SystemHidden int
+			ByVerdict                     map[string]int
+			Rows                          []any
+		}
+		_ = json.Unmarshal(raw, &got)
+		sum := 0
+		for _, n := range got.ByVerdict {
+			sum += n
+		}
+		if sum != got.Total || got.Matching != got.ByVerdict["risk"]+got.ByVerdict["over"] || len(got.Rows) != got.Matching || got.Total+got.SystemHidden != 16 {
+			t.Fatalf("system=%v: total %d, byVerdict %v (sum %d), matching %d, rows %d, hidden %d", system, got.Total, got.ByVerdict, sum, got.Matching, len(got.Rows), got.SystemHidden)
+		}
 	}
 }

@@ -100,7 +100,8 @@ var mcpTools = []mcpTool{
 	{Name: "get_quota_recommendations", Path: "/api/optimizer",
 		Desc: "Per workload container: recorded CPU and memory use against requests and limits, a verdict and suggested values, most urgent first " +
 			"(risk: OOM-killed or limit below real use; missing: no request or limit; under: request below typical use; over: over-provisioned; ok). " +
-			"The answer counts the rows of each verdict (byVerdict) and what a limit left out (omittedByVerdict); under a limit every verdict keeps a few rows, " +
+			"In the answer, total is every row in scope (the clusters and namespaces asked for, system workloads only with system=true), byVerdict splits that total, " +
+			"and matching is what the verdict filter kept. omittedByVerdict is what a limit left out; under a limit every verdict keeps a few rows, " +
 			"so filter by verdict to see one in full. Check `warnings`: a namespace that matched nothing is reported there. Suggestions come from recorded usage only: " +
 			"check `days` and `confidence` before acting, and rows marked helm belong in the chart's values. Needs usage history.",
 		Params: []mcpParam{pClusters,

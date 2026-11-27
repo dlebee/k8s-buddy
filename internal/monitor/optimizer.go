@@ -257,9 +257,8 @@ func optRow(row OptRow, ct corev1.Container, prof history.Profile, oom history.O
 		row.Confidence = "low"
 	}
 	cpuReq := roundCPU(prof.CPUMed * 1.2)
-	cpuLim := roundCPU(max(prof.CPUMax*1.3, float64(cpuReq)*1.5))
 	memReq := roundMem(max(prof.MemMed*1.2, 16<<20))
-	memLim := max(roundMem(prof.MemMax*1.25), memReq)
+	cpuLim, memLim := suggestedLimits(prof.CPUMax, prof.MemMax, cpuReq, memReq)
 	curMemLim := quantity(ct.Resources.Limits, corev1.ResourceMemory, false)
 	if oom.Max2Days >= oomProblem {
 		row.OOMs, row.LastOOM, row.OOMBurst = oom.Count, oom.Last.Unix(), oom.Max2Days
@@ -418,6 +417,20 @@ func optCommand(r *OptRow) string {
 		cmd = "# managed by Helm: set these in the chart values instead, or the next upgrade reverts them\n" + cmd
 	}
 	return cmd
+}
+
+// Limits sit above the highest reading by a share of it, and by at least a fixed amount: a share
+// alone leaves a small container almost no room (25% of 12Mi is 3Mi), and readings are taken once
+// a minute, so a short burst between two of them is never seen.
+const (
+	cpuLimitRoom = 100      // millicores
+	memLimitRoom = 32 << 20 // bytes
+)
+
+func suggestedLimits(cpuMax, memMax float64, cpuReq, memReq int64) (cpuLim, memLim int64) {
+	cpuLim = roundCPU(max(cpuMax*1.3, cpuMax+cpuLimitRoom, float64(cpuReq)*1.5))
+	memLim = max(roundMem(max(memMax*1.25, memMax+memLimitRoom)), memReq)
+	return cpuLim, memLim
 }
 
 // roundCPU rounds up to 25m steps (25, 50, 75, 100…), and to quarter cores from 1 core up.

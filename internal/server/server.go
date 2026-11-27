@@ -566,18 +566,27 @@ func (s *Server) guard(next http.Handler) http.Handler {
 // System workloads (kube-system and add-on namespaces) are left out unless asked for: their owner
 // undoes manual changes, so their suggestions aren't something to act on.
 func filterOpt(rep monitor.OptReport, nss, verdicts []string, limit int, brief, system bool) any {
+	// In scope: the picked clusters (already), system workloads only when asked for, and the
+	// picked namespaces. total and byVerdict describe that scope; matching is what's left of it
+	// after the verdict filter, so matching is the sum of the picked verdicts' counts.
 	all := rep.Rows
-	rep.Rows = slices.DeleteFunc(slices.Clone(all), func(x monitor.OptRow) bool { return x.System && !system })
-	hidden := len(all) - len(rep.Rows)
-	rows := slices.DeleteFunc(slices.Clone(rep.Rows), func(x monitor.OptRow) bool {
-		return len(nss) > 0 && !slices.Contains(nss, x.Namespace) || len(verdicts) > 0 && !slices.Contains(verdicts, x.Verdict)
-	})
-	out := optAnswer{OptReport: rep, Total: len(rep.Rows), Matching: len(rows), ByVerdict: map[string]int{}, SystemHidden: hidden,
-		OmittedByVerdict: map[string]int{}, Warnings: []string{}}
-	for _, x := range rep.Rows {
-		if len(nss) == 0 || slices.Contains(nss, x.Namespace) {
-			out.ByVerdict[x.Verdict]++
+	inNS := func(x monitor.OptRow) bool { return len(nss) == 0 || slices.Contains(nss, x.Namespace) }
+	visible := slices.DeleteFunc(slices.Clone(all), func(x monitor.OptRow) bool { return x.System && !system })
+	hidden := 0
+	for _, x := range all {
+		if x.System && !system && inNS(x) {
+			hidden++
 		}
+	}
+	scope := slices.DeleteFunc(slices.Clone(visible), func(x monitor.OptRow) bool { return !inNS(x) })
+	rows := slices.DeleteFunc(slices.Clone(scope), func(x monitor.OptRow) bool {
+		return len(verdicts) > 0 && !slices.Contains(verdicts, x.Verdict)
+	})
+	rep.Rows = visible
+	out := optAnswer{OptReport: rep, Total: len(scope), Matching: len(rows), ByVerdict: map[string]int{}, SystemHidden: hidden,
+		OmittedByVerdict: map[string]int{}, Warnings: []string{}}
+	for _, x := range scope {
+		out.ByVerdict[x.Verdict]++
 	}
 	// A namespace that matches nothing is more likely a typo than an empty namespace: say so
 	// rather than answer "0 rows", which reads as "nothing to fix".
