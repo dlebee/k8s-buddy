@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -44,6 +45,8 @@ type Server struct {
 	actions  Actions
 	forwards *forwarder
 	updates  *update.Checker
+	api      http.Handler // the routes without the token guard, for the MCP server's in-process reads
+	mcp      *mcpServer
 
 	codesMu sync.Mutex
 	codes   map[string]time.Time // one-time page codes → expiry, see BrowserURL
@@ -438,6 +441,14 @@ func (s *Server) Handler() http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if in.MCP.Enabled && !config.ValidMCPKey(in.MCP.Key) {
+			http.Error(w, fmt.Sprintf("The MCP key must be %d to %d letters, digits or symbols, without spaces.", config.MinMCPKey, config.MaxMCPKey), http.StatusBadRequest)
+			return
+		}
+		if in.MCP.Port != 0 && (in.MCP.Port < 1024 || in.MCP.Port > 65535) {
+			http.Error(w, "The MCP port must be between 1024 and 65535.", http.StatusBadRequest)
+			return
+		}
 		// OOM mutes are changed from Quotas, not from the Settings page: keep the current ones.
 		if err := s.settings.Update(func(st *config.Settings) { in.MutedOOMs = st.MutedOOMs; *st = in }); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -494,6 +505,8 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("GET /api/mcp", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.MCPStatus()) })
+	s.api = mux
 	return s.guard(mux)
 }
 

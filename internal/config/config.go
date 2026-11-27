@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -44,6 +46,45 @@ type Settings struct {
 	MutedOOMs map[string]time.Time `json:"mutedOoms,omitempty"`
 	// UpdateCheck is "on" (default) to ask GitHub twice a day whether a newer release is out, or "off".
 	UpdateCheck string `json:"updateCheck"`
+	// MCP is the optional local MCP server that lets AI tools read what k8s-buddy knows.
+	MCP MCP `json:"mcp"`
+}
+
+// MCP configures the local MCP server. It's off unless turned on in Settings, listens on
+// 127.0.0.1 only, and every request must carry Key in its Authorization header.
+type MCP struct {
+	Enabled bool   `json:"enabled"`
+	Port    int    `json:"port"`
+	Key     string `json:"key"`
+}
+
+const (
+	DefaultMCPPort = 7411
+	MinMCPKey      = 16 // characters
+	MaxMCPKey      = 256
+)
+
+// ValidMCPKey reports whether k can be the MCP key: long enough to not be guessable, and plain
+// visible characters without spaces (it travels as the last word of an HTTP header).
+func ValidMCPKey(k string) bool {
+	if len(k) < MinMCPKey || len(k) > MaxMCPKey {
+		return false
+	}
+	for _, r := range k {
+		if r <= ' ' || r > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+// NewMCPKey makes a random key.
+func NewMCPKey() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err) // no randomness: nothing safe to do
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func Defaults() Settings {
@@ -98,6 +139,13 @@ func (s *Settings) normalize() {
 			break
 		}
 		delete(s.MutedOOMs, k)
+	}
+	if s.MCP.Port < 1024 || s.MCP.Port > 65535 {
+		s.MCP.Port = DefaultMCPPort
+	}
+	// Never run without a proper key: one that's missing or weak (a hand-edited file) is replaced.
+	if s.MCP.Enabled && !ValidMCPKey(s.MCP.Key) {
+		s.MCP.Key = NewMCPKey()
 	}
 	if s.UpdateCheck != "off" {
 		s.UpdateCheck = "on"

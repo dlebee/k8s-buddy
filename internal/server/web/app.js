@@ -936,6 +936,17 @@ async function settings() {
       <div class="row"><div class="lbl"><b>Updates</b><span>Asks GitHub twice a day whether a newer release is out. Only full releases, never pre-releases. Nothing is installed for you: you download it and install it over this one.</span></div>
         <div><label class="toggle" style="color:var(--text)"><input type="checkbox" id="updateCheck" ${s.updateCheck !== 'off' ? 'checked' : ''}> Tell me when a new version is out</label>
           <div id="updStatus" class="muted" style="font-size:12px;margin-top:6px" aria-live="polite"></div></div></div>
+      <div class="row"><div class="lbl"><b>MCP server</b><span>Lets AI tools on this computer (Claude Code, Cursor, …) ask what k8s-buddy knows: clusters, alerts, resources, Doctor findings, usage and quotas. Read-only, and Secret values are never included. Off unless you turn it on.</span></div>
+        <div class="mcp-box">
+          <label class="toggle" style="color:var(--text)"><input type="checkbox" id="mcpOn" ${s.mcp?.enabled ? 'checked' : ''}> Run a local MCP server</label>
+          <div class="mcp-fields">
+            <label class="toggle" style="color:var(--text)">Port <input class="input" type="number" id="mcpPort" min="1024" max="65535" value="${s.mcp?.port || 7411}" style="width:100px"></label>
+            <label class="toggle mcp-key" style="color:var(--text)">Key <input class="input" type="password" id="mcpKey" value="${esc(s.mcp?.key || '')}" placeholder="at least 16 characters" spellcheck="false" autocomplete="off"></label>
+            <button class="btn sm" id="mcpShow" type="button">Show</button><button class="btn sm" id="mcpNew" type="button">New key</button><button class="btn sm" id="mcpCopy" type="button">Copy key</button>
+          </div>
+          <div id="mcpStatus" class="muted" style="font-size:12px" aria-live="polite"></div>
+          <p class="muted" style="font-size:12px;margin:0">Only this computer can reach it (127.0.0.1), and every request must send the key as <code>Authorization: Bearer &lt;key&gt;</code> (any word works in place of Bearer). Anyone with the key can read everything k8s-buddy shows you, so treat it like a password.</p>
+        </div></div>
       <div class="row"><div class="lbl"><b>Nudge me for</b><span>The buddy bounces and the menu bar count goes up at this level and above.</span></div>
         <div class="seg" id="nudge" style="width:max-content">${['info', 'notice', 'warning', 'critical'].map((l) => `<button data-v="${l}" class="${l === s.nudgeLevel ? 'on' : ''}">${l[0].toUpperCase() + l.slice(1)}+</button>`).join('')}</div></div>
       <div class="row"><div class="lbl"><b>Buddy</b><span>The floating character on your screen.</span></div>
@@ -968,6 +979,13 @@ async function settings() {
   view.querySelector('#selBad').onclick = () => { boxes().forEach((b) => { if (byName[b.dataset.ctx]?.status === 'error') b.checked = false; }); dirty(); };
   view.querySelector('#usageRetentionDays').onchange = dirty;
   view.querySelector('#doctorEvery').onchange = dirty;
+  const mcpKey = view.querySelector('#mcpKey');
+  const newKey = () => [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  view.querySelector('#mcpOn').onchange = (e) => { if (e.target.checked && !mcpKey.value) mcpKey.value = newKey(); dirty(); };
+  view.querySelector('#mcpNew').onclick = () => { mcpKey.value = newKey(); mcpKey.type = 'text'; view.querySelector('#mcpShow').textContent = 'Hide'; dirty(); };
+  view.querySelector('#mcpShow').onclick = (e) => { mcpKey.type = mcpKey.type === 'password' ? 'text' : 'password'; e.target.textContent = mcpKey.type === 'password' ? 'Show' : 'Hide'; };
+  view.querySelector('#mcpCopy').onclick = () => copyCmd(mcpKey.value);
+  drawMCPStatus();
   view.querySelector('#reloadKube').onclick = async (e) => {
     const b = e.currentTarget, msg = view.querySelector('#reloadMsg');
     b.disabled = true;
@@ -1011,14 +1029,32 @@ async function settings() {
       usageRetentionDays: +view.querySelector('#usageRetentionDays').value,
       doctorEvery: view.querySelector('#doctorEvery').value,
       updateCheck: view.querySelector('#updateCheck').checked ? 'on' : 'off',
+      mcp: { enabled: view.querySelector('#mcpOn').checked, port: +view.querySelector('#mcpPort').value || 7411, key: mcpKey.value.trim() },
       ignoredNamespaces: view.querySelector('#ignoredNamespaces').value.split('\n').map((x) => x.trim()).filter(Boolean),
     };
-    await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) });
+    try { await api('/api/settings', { method: 'PUT', body: JSON.stringify(next) }); } catch (e) { toast(e.message.replace(/^\d+ /, '')); return; }
     toast('Settings saved');
+    drawMCPStatus();
     loadBeta();
     view.querySelector('#dirty').textContent = '';
     setTimeout(loadClusters, 1500);
   };
+}
+
+// Settings → MCP server: whether it's running, where, and the line that adds it to Claude Code.
+async function drawMCPStatus() {
+  const el = view.querySelector('#mcpStatus');
+  if (!el) return;
+  let m;
+  try { m = await api('/api/mcp'); } catch { return; }
+  if (!view.contains(el)) return;
+  if (m.error) el.innerHTML = `<span style="color:var(--bad)">Not running: ${esc(m.error)}</span>`;
+  else if (!m.running) el.textContent = m.enabled ? 'Starting…' : 'Off.';
+  else {
+    const cmd = `claude mcp add --transport http k8s-buddy ${m.url} --header "Authorization: Bearer <key>"`;
+    el.innerHTML = `<span style="color:var(--ok)">● Running</span> at <code>${esc(m.url)}</code><div class="mcp-cmd"><code>${esc(cmd)}</code><button class="btn sm" id="mcpCmdCopy" type="button">Copy with key</button></div>`;
+    el.querySelector('#mcpCmdCopy').onclick = () => copyCmd(cmd.replace('<key>', view.querySelector('#mcpKey').value.trim()));
+  }
 }
 
 // Settings → Updates: this version, what GitHub said last, and the links.

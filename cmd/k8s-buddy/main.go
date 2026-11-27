@@ -121,6 +121,7 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	}
 	httpSrv := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = httpSrv.Serve(ln) }()
+	srv.StartMCP() // only listens when turned on in Settings
 	releaseInstance := claimInstance(dataDir, srv.URL("overview"))
 
 	// hist is the usage history once opened. Quitting writes out its buffered readings here: on
@@ -129,6 +130,7 @@ func run(log *slog.Logger, headless, openOverview bool, kubeconfig, dataDir stri
 	quit := func() {
 		releaseInstance()
 		srv.StopForwards()
+		srv.StopMCP()
 		cancel()
 		if h := hist.Swap(nil); h != nil {
 			if err := h.Close(); err != nil {
